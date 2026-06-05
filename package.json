@@ -1,0 +1,55 @@
+{
+  "name": "input-panel",
+  "version": "0.1.0",
+  "description": "A local Tauri workbench for managing Sub2API sites, accounts, keys, subscriptions, and usage.",
+  "author": "xxxxxgold",
+  "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xxxxxgold/input-panel.git"
+  },
+  "homepage": "https://github.com/xxxxxgold/input-panel#readme",
+  "bugs": {
+    "url": "https://github.com/xxxxxgold/input-panel/issues"
+  },
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm tauri dev",
+    "dev:ui": "vite",
+    "dev:web": "concurrently -k \"cargo run --manifest-path src-tauri/Cargo.toml --example dev_api\" \"vite\"",
+    "dev:server": "cargo run --manifest-path src-tauri/Cargo.toml --example dev_api",
+    "build:web": "tsc -p tsconfig.json --noEmit && vite build",
+    "build": "pnpm build:web",
+    "build:desktop": "pnpm build:web && pnpm tauri build --debug --no-bundle",
+    "preview": "vite preview",
+    "start": "pnpm tauri dev",
+    "test": "vitest run",
+    "smoke:real": "cargo run --manifest-path src-tauri/Cargo.toml --example real_smoke",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.0",
+    "clsx": "^2.1.1",
+    "echarts": "^6.0.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zustand": "^5.0.14"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.0",
+    "@tauri-apps/cli": "^2.11.2",
+    "@types/node": "^22.13.10",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "supertest": "^7.0.0",
+    "tailwindcss": "^4.3.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vite": "^6.3.5",
+    "vitest": "^3.1.3"
+  }
+}
