@@ -9,6 +9,10 @@ use reqwest::{Client, Method};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+fn is_balance_warning_disabled(value: f64) -> bool {
+    value < 0.0
+}
+
 pub struct Sub2ApiClient {
     client: Client,
     base_url: String,
@@ -520,7 +524,7 @@ fn build_alerts(
             account_id: account.id.clone(),
             created_at: fetched_at.to_string(),
         });
-    } else if balance <= account.balance_warning {
+    } else if !is_balance_warning_disabled(account.balance_warning) && balance <= account.balance_warning {
         alerts.push(SnapshotAlert {
             id: format!("{}:balance-low", account.id),
             severity: "high".into(),
@@ -775,6 +779,34 @@ mod tests {
 
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].severity, "critical");
+    }
+
+    #[test]
+    fn build_alerts_skips_low_balance_when_warning_disabled() {
+        let alerts = build_alerts(
+            &AccountRecord {
+                id: "account-1".into(),
+                site_id: "site-1".into(),
+                label: "主账号".into(),
+                email: "demo@example.com".into(),
+                balance_warning: -1.0,
+                last_login_at: None,
+                created_at: "2026-06-05T00:00:00Z".into(),
+                updated_at: "2026-06-05T00:00:00Z".into(),
+            },
+            &SiteRecord {
+                id: "site-1".into(),
+                name: "AI INPUT".into(),
+                base_url: "https://ai.input.im".into(),
+                created_at: "2026-06-05T00:00:00Z".into(),
+                updated_at: "2026-06-05T00:00:00Z".into(),
+            },
+            0.5,
+            &[],
+            "2026-06-05T12:00:00Z",
+        );
+
+        assert!(alerts.is_empty());
     }
 
     #[test]

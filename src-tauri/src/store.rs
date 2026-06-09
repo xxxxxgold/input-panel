@@ -10,6 +10,18 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
+const DISABLED_BALANCE_WARNING: f64 = -1.0;
+
+fn normalize_balance_warning(value: f64) -> f64 {
+    if !value.is_finite() {
+        DISABLED_BALANCE_WARNING
+    } else if value < 0.0 {
+        DISABLED_BALANCE_WARNING
+    } else {
+        value
+    }
+}
+
 fn data_dir(app: &AppHandle) -> Result<PathBuf> {
     let dir = app
         .path()
@@ -179,7 +191,7 @@ pub fn add_account(app: &AppHandle, input: crate::models::AccountInput) -> Resul
         site_id: input.site_id,
         label: input.label.trim().to_string(),
         email: input.email.trim().to_string(),
-        balance_warning: input.balance_warning,
+        balance_warning: normalize_balance_warning(input.balance_warning),
         last_login_at: None,
         created_at: now.clone(),
         updated_at: now,
@@ -210,7 +222,7 @@ pub fn update_account(
         account.email = email.trim().to_string();
     }
     if let Some(balance_warning) = balance_warning {
-        account.balance_warning = balance_warning;
+        account.balance_warning = normalize_balance_warning(balance_warning);
     }
     if let Some(last_login_at) = last_login_at {
         account.last_login_at = Some(last_login_at);
