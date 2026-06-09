@@ -68,6 +68,11 @@ import {
   verifyNotifyEmail,
   updateSite
 } from "./api";
+import {
+  DISABLED_BALANCE_WARNING,
+  formatBalanceWarningSummary,
+  normalizeBalanceWarning
+} from "./account-warning";
 import projectLogo from "./assets/project-logo.webp";
 import { useMonitorStore } from "./store/monitor-store";
 import type {
@@ -106,7 +111,6 @@ const NAV_ITEMS: Array<{
   { key: "usage", label: "用量", icon: ChartColumn },
   { key: "subscriptions", label: "订阅", icon: BadgeDollarSign },
   { key: "keyUsage", label: "单 Key", icon: MonitorDot },
-  { key: "profile", label: "资料", icon: UserRound },
   { key: "trends", label: "趋势", icon: ChartColumn },
   { key: "alerts", label: "告警", icon: ShieldAlert },
   { key: "settings", label: "站点账号配置", icon: Server },
@@ -122,7 +126,7 @@ const defaultAccountForm: AccountInput = {
   siteId: "",
   label: "",
   email: "",
-  balanceWarning: 0
+  balanceWarning: DISABLED_BALANCE_WARNING
 };
 
 interface UsageModelSummary {
@@ -176,7 +180,7 @@ function buildKeyExpiryValue(days: number) {
 function inferKeyExpiryPreset(expiresAt?: string | null): { enabled: boolean; preset: KeyExpiryPreset; value: string } {
   if (!expiresAt) {
     return {
-      enabled: true,
+      enabled: false,
       preset: "30d",
       value: buildKeyExpiryValue(30)
     };
@@ -184,7 +188,7 @@ function inferKeyExpiryPreset(expiresAt?: string | null): { enabled: boolean; pr
   const target = new Date(expiresAt);
   if (Number.isNaN(target.getTime())) {
     return {
-      enabled: true,
+      enabled: false,
       preset: "30d",
       value: buildKeyExpiryValue(30)
     };
@@ -228,11 +232,14 @@ export default function App() {
   const [siteFormOpen, setSiteFormOpen] = useState(false);
   const [accountFormOpen, setAccountFormOpen] = useState(false);
   const [accountSitePickerOpen, setAccountSitePickerOpen] = useState(false);
-  const [topbarSitePickerOpen, setTopbarSitePickerOpen] = useState(false);
-  const [topbarAccountPickerOpen, setTopbarAccountPickerOpen] = useState(false);
+  const [accountBalanceWarningInput, setAccountBalanceWarningInput] = useState(
+    String(DISABLED_BALANCE_WARNING)
+  );
   const [topbarAlertsExpanded, setTopbarAlertsExpanded] = useState(false);
   const [topbarSubscriptionsExpanded, setTopbarSubscriptionsExpanded] = useState(false);
   const [topbarAccountMenuOpen, setTopbarAccountMenuOpen] = useState(false);
+  const [topbarAccountSearch, setTopbarAccountSearch] = useState("");
+  const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [accountPassword, setAccountPassword] = useState("");
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
   const [loginModal, setLoginModal] = useState<{
@@ -288,6 +295,7 @@ export default function App() {
   const [usageRangePreset, setUsageRangePreset] =
     useState<(typeof USAGE_RANGE_PRESETS)[number]["key"]>("today");
   const [usageDraftRange, setUsageDraftRange] = useState({ startDate: "", endDate: "" });
+  const usageRangePickerRef = useRef<HTMLDivElement | null>(null);
   const [keyUsageKeyId, setKeyUsageKeyId] = useState<string>("");
   const [keyUsageRows, setKeyUsageRows] = useState<DailyUsagePoint[]>([]);
   const [subscriptionSummary, setSubscriptionSummary] = useState<SubscriptionSummaryPayload | null>(null);
@@ -300,6 +308,7 @@ export default function App() {
 
   const deferredSiteSearch = useDeferredValue(siteSearch.trim().toLowerCase());
   const deferredAccountSearch = useDeferredValue(accountSearch.trim().toLowerCase());
+  const deferredTopbarAccountSearch = useDeferredValue(topbarAccountSearch.trim().toLowerCase());
 
   useEffect(() => {
     document.documentElement.classList.remove("light", "dark", "deep-blue");
@@ -333,6 +342,14 @@ export default function App() {
   }, [nav, setNav]);
 
   useEffect(() => {
+    if (nav !== "profile") {
+      return;
+    }
+    setProfileModalOpen(true);
+    setNav("overview");
+  }, [nav, setNav]);
+
+  useEffect(() => {
     if (!selectedAccountId) {
       setManagedKeys(null);
       setUsageRecords(null);
@@ -363,6 +380,25 @@ export default function App() {
     void loadAccountScopedData(selectedAccountId, effectiveStart, effectiveEnd);
   }, [selectedAccountId]);
 
+  useEffect(() => {
+    if (!usageRangePickerOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      if (!usageRangePickerRef.current) {
+        return;
+      }
+      if (usageRangePickerRef.current.contains(event.target as Node)) {
+        return;
+      }
+      setUsageRangePickerOpen(false);
+    }
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
+  }, [usageRangePickerOpen]);
+
   const sites = overview?.sites ?? [];
   const accounts = overview?.accounts ?? [];
   const filteredSites = sites.filter((item) => {
@@ -375,6 +411,14 @@ export default function App() {
   const selectedSiteAccounts = selectedSiteId
     ? accounts.filter((item) => item.siteId === selectedSiteId)
     : accounts;
+  const topbarFilteredAccounts = accounts.filter((item) => {
+    if (!deferredTopbarAccountSearch) return true;
+    return (
+      item.label.toLowerCase().includes(deferredTopbarAccountSearch) ||
+      item.email.toLowerCase().includes(deferredTopbarAccountSearch) ||
+      item.site?.name.toLowerCase().includes(deferredTopbarAccountSearch)
+    );
+  });
   const filteredAccounts = accounts.filter((item) => {
     if (selectedSiteId && item.siteId !== selectedSiteId && nav !== "overview") {
       return false;
@@ -413,6 +457,13 @@ export default function App() {
       : subscriptionCount > 0
         ? "查看配额与到期时间"
         : "暂无订阅数据";
+  const selectedAccountStatusLabel = selectedAccount
+    ? selectedAccount.sessionState === "ready"
+      ? "已连接"
+      : selectedAccount.sessionState === "expired"
+        ? "已失效"
+        : "未登录"
+    : "未选择账号";
   const filteredKeyGroups = groups.filter((group) => {
     if (!keyGroupSearch.trim()) {
       return true;
@@ -492,10 +543,12 @@ export default function App() {
     setEditingAccount(null);
     setAccountSitePickerOpen(false);
     setAccountPassword("");
-    setAccountForm({
+    const nextForm = {
       ...defaultAccountForm,
       siteId: siteId ?? selectedSiteId ?? sites[0]?.id ?? ""
-    });
+    };
+    setAccountForm(nextForm);
+    setAccountBalanceWarningInput(String(nextForm.balanceWarning));
     setAccountFormOpen(true);
   }
 
@@ -503,13 +556,27 @@ export default function App() {
     setEditingAccount(account);
     setAccountSitePickerOpen(false);
     setAccountPassword("");
-    setAccountForm({
+    const nextForm = {
       siteId: account.siteId,
       label: account.label,
       email: account.email,
       balanceWarning: account.balanceWarning
-    });
+    };
+    setAccountForm(nextForm);
+    setAccountBalanceWarningInput(String(nextForm.balanceWarning));
     setAccountFormOpen(true);
+  }
+
+  function handleBalanceWarningInput(value: string) {
+    setAccountBalanceWarningInput(value);
+    if (value.trim() === "" || value === "-" || value === "." || value === "-.") {
+      return;
+    }
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+      return;
+    }
+    setAccountForm((prev) => ({ ...prev, balanceWarning: normalizeBalanceWarning(parsed) }));
   }
 
   function openAccountManager(account: AccountRuntime) {
@@ -531,6 +598,17 @@ export default function App() {
 
   function handleNavChange(nextNav: NavKey) {
     setNav(nextNav);
+  }
+
+  function openProfileModal() {
+    setTopbarAccountMenuOpen(false);
+    setProfileModalOpen(true);
+  }
+
+  function closeProfileModal() {
+    setProfileModalOpen(false);
+    setProfilePassword({ oldPassword: "", newPassword: "" });
+    setNotifyEmailDraft((prev) => ({ ...prev, code: "" }));
   }
 
   async function submitSiteForm() {
@@ -601,19 +679,11 @@ export default function App() {
     }
   }
 
-  function handleTopbarSiteSelect(site: SiteRecord) {
-    setSelectedSiteId(site.id);
-    const fallbackAccount = accounts.find((item) => item.siteId === site.id) ?? null;
-    setSelectedAccountId(fallbackAccount?.id ?? null);
-    setTopbarSitePickerOpen(false);
-    setTopbarAccountPickerOpen(false);
-  }
-
   function handleTopbarAccountSelect(account: AccountRuntime) {
     setSelectedSiteId(account.siteId);
     setSelectedAccountId(account.id);
-    setTopbarSitePickerOpen(false);
-    setTopbarAccountPickerOpen(false);
+    setTopbarAccountSearch("");
+    setTopbarAccountMenuOpen(false);
   }
 
   async function handleLogin() {
@@ -850,9 +920,9 @@ export default function App() {
     setKeyGroupPickerOpen(false);
     setKeyGroupSearch("");
     setKeyCustomKeyEnabled(false);
-    setKeyIpLimitEnabled(true);
-    setKeyRateLimitEnabled(true);
-    setKeyExpiryEnabled(true);
+    setKeyIpLimitEnabled(false);
+    setKeyRateLimitEnabled(false);
+    setKeyExpiryEnabled(false);
     setKeyExpiryPreset("30d");
     setKeyExpiryDateTime(buildKeyExpiryValue(30));
   }
@@ -1335,73 +1405,20 @@ export default function App() {
       <main className="workspace">
         <header className="global-topbar">
           <div className="global-topbar-grid">
-            <div className="topbar-select">
-              <button
-                type="button"
-                className={`topbar-card topbar-card-brand topbar-select-trigger ${topbarSitePickerOpen ? "open" : ""}`}
-                onClick={() => {
-                  setTopbarSitePickerOpen((current) => !current);
-                  setTopbarAccountPickerOpen(false);
-                }}
-                aria-expanded={topbarSitePickerOpen}
-                aria-label="选择站点"
-              >
-                <div className="topbar-card-copy topbar-select-copy">
-                  <strong className="topbar-select-value">{`站点 ${selectedSite?.name ?? "未选择站点"}`}</strong>
-                </div>
-                <ChevronDown size={16} className={`site-picker-icon ${topbarSitePickerOpen ? "open" : ""}`} />
-              </button>
-              {topbarSitePickerOpen && (
-                <div className="topbar-select-menu">
-                  {sites.map((site) => (
-                    <button
-                      key={site.id}
-                      type="button"
-                      className={`topbar-select-option ${selectedSite?.id === site.id ? "selected" : ""}`}
-                      onClick={() => handleTopbarSiteSelect(site)}
-                    >
-                      <strong>{site.name}</strong>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="topbar-select">
-              <button
-                type="button"
-                className={`topbar-card topbar-select-trigger ${topbarAccountPickerOpen ? "open" : ""}`}
-                onClick={() => {
-                  if (selectedSiteAccounts.length === 0) return;
-                  setTopbarAccountPickerOpen((current) => !current);
-                  setTopbarSitePickerOpen(false);
-                }}
-                disabled={selectedSiteAccounts.length === 0}
-                aria-expanded={topbarAccountPickerOpen}
-                aria-label="选择账号"
-              >
-                <div className="topbar-card-copy topbar-select-copy">
-                  <strong className="topbar-select-value">
-                    {`账号 ${selectedAccount?.label ?? (selectedSite ? "当前站点暂无账号" : "请先选择站点")}`}
-                  </strong>
-                </div>
-                <ChevronDown size={16} className={`site-picker-icon ${topbarAccountPickerOpen ? "open" : ""}`} />
-              </button>
-              {topbarAccountPickerOpen && selectedSiteAccounts.length > 0 && (
-                <div className="topbar-select-menu">
-                  {selectedSiteAccounts.map((account) => (
-                    <button
-                      key={account.id}
-                      type="button"
-                      className={`topbar-select-option ${selectedAccount?.id === account.id ? "selected" : ""}`}
-                      onClick={() => handleTopbarAccountSelect(account)}
-                    >
-                      <strong>{account.label || maskEmail(account.email)}</strong>
-                      <StatusBadge state={account.sessionState} />
-                    </button>
-                  ))}
-                </div>
-              )}
+            <div className="topbar-card topbar-context-card">
+              <div className="topbar-card-icon">
+                <Server size={18} />
+              </div>
+              <div className="topbar-card-copy">
+                <span className="topbar-card-label">当前上下文</span>
+                <strong className="topbar-select-value">{selectedSite?.name ?? "未选择站点"}</strong>
+                <p>
+                  {selectedAccount
+                    ? `${selectedAccount.label || maskEmail(selectedAccount.email)} · ${selectedAccountStatusLabel}`
+                    : "从右上角主账号入口切换账号"}
+                </p>
+              </div>
+              <span className="topbar-metric">{accounts.length} 个账号</span>
             </div>
 
             <div
@@ -1503,18 +1520,29 @@ export default function App() {
             {selectedAccount && (
               <div
                 className={`topbar-account-menu ${topbarAccountMenuOpen ? "open" : ""}`}
-                onMouseLeave={() => setTopbarAccountMenuOpen(false)}
+                onMouseLeave={() => {
+                  setTopbarAccountMenuOpen(false);
+                  setTopbarAccountSearch("");
+                }}
               >
                 <button
                   type="button"
                   className="topbar-account-trigger"
-                  onClick={() => setTopbarAccountMenuOpen((current) => !current)}
+                  onClick={() =>
+                    setTopbarAccountMenuOpen((current) => {
+                      const next = !current;
+                      if (!next) {
+                        setTopbarAccountSearch("");
+                      }
+                      return next;
+                    })
+                  }
                   aria-expanded={topbarAccountMenuOpen}
                   aria-label="当前账号菜单"
                 >
                   <div className="topbar-account-trigger-copy">
                     <strong>{selectedAccount.label || "当前账号"}</strong>
-                    <span>{selectedAccount.sessionState === "ready" ? "已连接" : selectedAccount.sessionState === "expired" ? "已失效" : "未登录"}</span>
+                    <span>{selectedAccountStatusLabel}</span>
                   </div>
                   <div className="topbar-account-avatar" aria-hidden="true">
                     {(selectedAccount.label || selectedAccount.email || "A").slice(0, 1).toUpperCase()}
@@ -1527,13 +1555,50 @@ export default function App() {
                       <strong>{selectedAccount.label || "当前账号"}</strong>
                       <p>{selectedAccount.site?.name ?? selectedSite?.name ?? "未知站点"}</p>
                     </div>
+                    <div className="topbar-account-switcher">
+                      <div className="topbar-account-section-head">
+                        <strong>切换账号</strong>
+                        <span>
+                          {topbarFilteredAccounts.length === accounts.length
+                            ? "全部账号"
+                            : `${topbarFilteredAccounts.length} / ${accounts.length}`}
+                        </span>
+                      </div>
+                      <label className="topbar-account-search-field" aria-label="筛选账号">
+                        <Search size={14} />
+                        <input
+                          type="text"
+                          autoFocus
+                          value={topbarAccountSearch}
+                          onChange={(event) => setTopbarAccountSearch(event.target.value)}
+                          placeholder="搜索账号 / 站点 / 邮箱"
+                        />
+                      </label>
+                      <div className="topbar-account-switcher-list">
+                        {topbarFilteredAccounts.map((account) => (
+                          <button
+                            key={account.id}
+                            type="button"
+                            className={`topbar-account-option ${selectedAccount.id === account.id ? "selected" : ""}`}
+                            onClick={() => handleTopbarAccountSelect(account)}
+                          >
+                            <div className="topbar-account-option-copy">
+                              <strong>{account.label || maskEmail(account.email)}</strong>
+                              <span>{`${account.site?.name ?? "未知站点"} · ${account.email}`}</span>
+                            </div>
+                            <StatusBadge state={account.sessionState} />
+                          </button>
+                        ))}
+                        {topbarFilteredAccounts.length === 0 && (
+                          <div className="topbar-account-empty">没有匹配的账号, 试试搜索站点名或邮箱。</div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="topbar-account-divider" />
                     <button
                       type="button"
                       className="topbar-account-item"
-                      onClick={() => {
-                        setTopbarAccountMenuOpen(false);
-                        setNav("profile");
-                      }}
+                      onClick={openProfileModal}
                     >
                       <UserRound size={16} />
                       <span>个人中心</span>
@@ -2284,7 +2349,7 @@ export default function App() {
                         ))}
                       </select>
                     </label>
-                    <div className="field range-field">
+                    <div className="field range-field" ref={usageRangePickerRef}>
                       <span>时间范围</span>
                       <div className="range-picker-shell">
                         <button
@@ -2687,124 +2752,6 @@ export default function App() {
               </section>
             )}
 
-            {nav === "profile" && (
-              <section className="content-grid">
-                <SectionCard title="个人资料" subtitle="对齐 user/profile 与 user 更新接口">
-                  {profileRecord ? (
-                    <div className="stack-list">
-                      <label className="field">
-                        <span>邮箱</span>
-                        <input
-                          value={profileForm.email ?? ""}
-                          onChange={(event) => setProfileForm((prev) => ({ ...prev, email: event.target.value }))}
-                        />
-                      </label>
-                      <label className="field">
-                        <span>用户名</span>
-                        <input
-                          value={profileForm.username ?? ""}
-                          onChange={(event) => setProfileForm((prev) => ({ ...prev, username: event.target.value }))}
-                        />
-                      </label>
-                      <div className="summary-stat">
-                        <span>并发数 / RPM 限制</span>
-                        <strong>{profileRecord.concurrency} / {profileRecord.rpmLimit ?? 0}</strong>
-                      </div>
-                      <button className="primary-button" onClick={() => void handleProfileSave()}>
-                        保存资料
-                      </button>
-                    </div>
-                  ) : (
-                    <EmptyState title="当前没有资料数据" detail="先登录并刷新当前账号。" compact />
-                  )}
-                </SectionCard>
-                <SectionCard title="密码与通知" subtitle="改密、通知邮箱与账号绑定状态">
-                  <div className="stack-list">
-                    <label className="field">
-                      <span>旧密码</span>
-                      <input
-                        type="password"
-                        value={profilePassword.oldPassword}
-                        onChange={(event) => setProfilePassword((prev) => ({ ...prev, oldPassword: event.target.value }))}
-                      />
-                    </label>
-                    <label className="field">
-                      <span>新密码</span>
-                      <input
-                        type="password"
-                        value={profilePassword.newPassword}
-                        onChange={(event) => setProfilePassword((prev) => ({ ...prev, newPassword: event.target.value }))}
-                      />
-                    </label>
-                    <button className="ghost-button" onClick={() => void handleProfilePasswordChange()}>
-                      修改密码
-                    </button>
-                    <div className="summary-stat">
-                      <span>通知邮箱草稿</span>
-                      <strong>{notifyEmailDraft.target || "未验证"}</strong>
-                    </div>
-                    <label className="field">
-                      <span>通知邮箱</span>
-                      <input
-                        value={notifyEmailDraft.email}
-                        onChange={(event) => setNotifyEmailDraft((prev) => ({ ...prev, email: event.target.value }))}
-                      />
-                    </label>
-                    <div className="inline-actions">
-                      <button className="ghost-button" onClick={() => void handleNotifyEmailSend()}>
-                        发送验证码
-                      </button>
-                      <input
-                        className="inline-input"
-                        value={notifyEmailDraft.code}
-                        onChange={(event) => setNotifyEmailDraft((prev) => ({ ...prev, code: event.target.value }))}
-                        placeholder="验证码"
-                      />
-                      <button className="primary-button" onClick={() => void handleNotifyEmailVerify()}>
-                        验证
-                      </button>
-                    </div>
-                    <div className="table-list">
-                      {Object.entries(profileRecord?.identityBindings ?? {}).map(([provider, binding]) => (
-                        <div key={provider} className="table-row">
-                          <div>
-                            <strong>{provider}</strong>
-                            <p>{binding.displayName ?? binding.subjectHint ?? "未绑定"}</p>
-                          </div>
-                          <div className="table-numbers">
-                            <span>{binding.bound ? "已绑定" : "未绑定"}</span>
-                            {binding.canUnbind && (
-                              <button className="inline-text-button danger" onClick={() => void handleUnbind(provider)}>
-                                解绑
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </SectionCard>
-                <SectionCard title="平台配额" subtitle="对齐 user/platform-quotas 接口">
-                  <div className="table-list">
-                    {(platformQuotas?.platformQuotas ?? []).map((quota, index) => (
-                      <div key={`${quota.platform ?? "platform"}-${index}`} className="table-row">
-                        <div>
-                          <strong>{quota.platform ?? "unknown"}</strong>
-                          <p>已用 {Number(quota.used ?? 0).toFixed(2)} / 总额 {Number(quota.quota ?? 0).toFixed(2)}</p>
-                        </div>
-                        <div className="table-numbers">
-                          <strong>{Number(quota.remaining ?? 0).toFixed(2)}</strong>
-                        </div>
-                      </div>
-                    ))}
-                    {(!platformQuotas || platformQuotas.platformQuotas.length === 0) && (
-                      <EmptyState title="当前没有平台配额" detail="站点当前返回为空，这与网页版一致。" compact />
-                    )}
-                  </div>
-                </SectionCard>
-              </section>
-            )}
-
             {nav === "trends" && (
               <section className="content-grid">
                 <SectionCard title="当前账号趋势" subtitle="actual cost / requests / total tokens">
@@ -2938,7 +2885,7 @@ export default function App() {
                   <small>{account.site?.name ?? "未知站点"}</small>
                 </div>
                 <div className="row-meta">
-                  <span>预警 ${account.balanceWarning.toFixed(2)}</span>
+                  <span>{formatBalanceWarningSummary(account.balanceWarning)}</span>
                   <span>{account.snapshot ? formatTime(account.snapshot.fetchedAt) : "未拉取"}</span>
                 </div>
                 <div className="row-actions">
@@ -3090,11 +3037,11 @@ export default function App() {
             <span>低余额预警阈值</span>
             <input
               type="number"
-              value={accountForm.balanceWarning}
-              onChange={(event) =>
-                setAccountForm((prev) => ({ ...prev, balanceWarning: Number(event.target.value) || 0 }))
-              }
+              value={accountBalanceWarningInput}
+              onChange={(event) => handleBalanceWarningInput(event.target.value)}
+              placeholder="-1"
             />
+            <p className="field-help">设为 `-1` 表示关闭低余额提醒。默认值为 `-1`。</p>
           </label>
         </Modal>
       )}
@@ -3138,7 +3085,7 @@ export default function App() {
                   >
                     <div className="key-group-trigger-copy">
                       <strong>{selectedKeyGroup?.name ?? "选择分组"}</strong>
-                      <span>{selectedKeyGroup ? `${selectedKeyGroup.platform} / x${selectedKeyGroup.rateMultiplier.toFixed(1)}` : "请选择分组"}</span>
+                      <span>{selectedKeyGroup ? `${selectedKeyGroup.platform} / x${selectedKeyGroup.rateMultiplier.toFixed(1)}` : ""}</span>
                     </div>
                     <ChevronDown size={18} className={`site-picker-icon ${keyGroupPickerOpen ? "open" : ""}`} />
                   </button>
@@ -3216,6 +3163,7 @@ export default function App() {
               <div className="key-switch-row">
                 <div>
                   <strong>IP 限制</strong>
+                  <p>开启后可按白名单和黑名单限制此密钥的来源 IP。</p>
                 </div>
                 <button
                   type="button"
@@ -3345,6 +3293,7 @@ export default function App() {
               <div className="key-switch-row">
                 <div>
                   <strong>密钥有效期</strong>
+                  <p>默认关闭。开启后可快速选择 7 天、30 天、90 天或自定义过期时间。</p>
                 </div>
                 <button
                   type="button"
@@ -3451,6 +3400,47 @@ export default function App() {
           )}
         </Modal>
       )}
+
+      {profileModalOpen && (
+        <Modal
+          title={`${selectedAccount?.label || "当前账号"} · 个人中心`}
+          onClose={closeProfileModal}
+          size="wide"
+          className="profile-modal"
+          bodyClassName="profile-modal-body"
+          footerClassName="profile-modal-footer"
+          closeText={null}
+          footer={
+            <>
+              <button className="ghost-button" onClick={closeProfileModal}>
+                关闭
+              </button>
+              {selectedAccount && (
+                <button className="ghost-button" onClick={() => void handleRefreshAccount(selectedAccount.id)}>
+                  <RefreshCcw size={16} />
+                  刷新当前账号
+                </button>
+              )}
+            </>
+          }
+        >
+          <ProfileModalContent
+            profileRecord={profileRecord}
+            profileForm={profileForm}
+            setProfileForm={setProfileForm}
+            profilePassword={profilePassword}
+            setProfilePassword={setProfilePassword}
+            notifyEmailDraft={notifyEmailDraft}
+            setNotifyEmailDraft={setNotifyEmailDraft}
+            platformQuotas={platformQuotas}
+            onProfileSave={() => void handleProfileSave()}
+            onPasswordChange={() => void handleProfilePasswordChange()}
+            onNotifyEmailSend={() => void handleNotifyEmailSend()}
+            onNotifyEmailVerify={() => void handleNotifyEmailVerify()}
+            onUnbind={(provider) => void handleUnbind(provider)}
+          />
+        </Modal>
+      )}
     </div>
   );
 }
@@ -3473,8 +3463,6 @@ function navTitle(key: NavKey) {
       return "订阅视图";
     case "keyUsage":
       return "单 Key 用量";
-    case "profile":
-      return "个人资料";
     case "trends":
       return "趋势视图";
     case "alerts":
@@ -3571,6 +3559,158 @@ function SectionCard({
   );
 }
 
+function ProfileModalContent({
+  profileRecord,
+  profileForm,
+  setProfileForm,
+  profilePassword,
+  setProfilePassword,
+  notifyEmailDraft,
+  setNotifyEmailDraft,
+  platformQuotas,
+  onProfileSave,
+  onPasswordChange,
+  onNotifyEmailSend,
+  onNotifyEmailVerify,
+  onUnbind
+}: {
+  profileRecord: UserProfileRecord | null;
+  profileForm: ProfileUpdateInput;
+  setProfileForm: React.Dispatch<React.SetStateAction<ProfileUpdateInput>>;
+  profilePassword: { oldPassword: string; newPassword: string };
+  setProfilePassword: React.Dispatch<React.SetStateAction<{ oldPassword: string; newPassword: string }>>;
+  notifyEmailDraft: { email: string; code: string; target: string };
+  setNotifyEmailDraft: React.Dispatch<
+    React.SetStateAction<{ email: string; code: string; target: string }>
+  >;
+  platformQuotas: PlatformQuotaPayload | null;
+  onProfileSave: () => void;
+  onPasswordChange: () => void;
+  onNotifyEmailSend: () => void;
+  onNotifyEmailVerify: () => void;
+  onUnbind: (provider: string) => void;
+}) {
+  return (
+    <div className="profile-modal-shell">
+      <section className="content-grid profile-modal-grid">
+        <SectionCard title="个人资料" subtitle="对齐 user/profile 与 user 更新接口">
+          {profileRecord ? (
+            <div className="stack-list">
+              <label className="field">
+                <span>邮箱</span>
+                <input
+                  value={profileForm.email ?? ""}
+                  onChange={(event) => setProfileForm((prev) => ({ ...prev, email: event.target.value }))}
+                />
+              </label>
+              <label className="field">
+                <span>用户名</span>
+                <input
+                  value={profileForm.username ?? ""}
+                  onChange={(event) => setProfileForm((prev) => ({ ...prev, username: event.target.value }))}
+                />
+              </label>
+              <div className="summary-stat">
+                <span>并发数 / RPM 限制</span>
+                <strong>{profileRecord.concurrency} / {profileRecord.rpmLimit ?? 0}</strong>
+              </div>
+              <button className="primary-button" onClick={onProfileSave}>
+                保存资料
+              </button>
+            </div>
+          ) : (
+            <EmptyState title="当前没有资料数据" detail="先登录并刷新当前账号。" compact />
+          )}
+        </SectionCard>
+        <SectionCard title="密码与通知" subtitle="改密、通知邮箱与账号绑定状态">
+          <div className="stack-list">
+            <label className="field">
+              <span>旧密码</span>
+              <input
+                type="password"
+                value={profilePassword.oldPassword}
+                onChange={(event) => setProfilePassword((prev) => ({ ...prev, oldPassword: event.target.value }))}
+              />
+            </label>
+            <label className="field">
+              <span>新密码</span>
+              <input
+                type="password"
+                value={profilePassword.newPassword}
+                onChange={(event) => setProfilePassword((prev) => ({ ...prev, newPassword: event.target.value }))}
+              />
+            </label>
+            <button className="ghost-button" onClick={onPasswordChange}>
+              修改密码
+            </button>
+            <div className="summary-stat">
+              <span>通知邮箱草稿</span>
+              <strong>{notifyEmailDraft.target || "未验证"}</strong>
+            </div>
+            <label className="field">
+              <span>通知邮箱</span>
+              <input
+                value={notifyEmailDraft.email}
+                onChange={(event) => setNotifyEmailDraft((prev) => ({ ...prev, email: event.target.value }))}
+              />
+            </label>
+            <div className="inline-actions">
+              <button className="ghost-button" onClick={onNotifyEmailSend}>
+                发送验证码
+              </button>
+              <input
+                className="inline-input"
+                value={notifyEmailDraft.code}
+                onChange={(event) => setNotifyEmailDraft((prev) => ({ ...prev, code: event.target.value }))}
+                placeholder="验证码"
+              />
+              <button className="primary-button" onClick={onNotifyEmailVerify}>
+                验证
+              </button>
+            </div>
+            <div className="table-list">
+              {Object.entries(profileRecord?.identityBindings ?? {}).map(([provider, binding]) => (
+                <div key={provider} className="table-row">
+                  <div>
+                    <strong>{provider}</strong>
+                    <p>{binding.displayName ?? binding.subjectHint ?? "未绑定"}</p>
+                  </div>
+                  <div className="table-numbers">
+                    <span>{binding.bound ? "已绑定" : "未绑定"}</span>
+                    {binding.canUnbind && (
+                      <button className="inline-text-button danger" onClick={() => onUnbind(provider)}>
+                        解绑
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </SectionCard>
+      </section>
+      <SectionCard title="平台配额" subtitle="对齐 user/platform-quotas 接口">
+        <div className="table-list">
+          {(platformQuotas?.platformQuotas ?? []).map((quota, index) => (
+            <div key={`${quota.platform ?? "platform"}-${index}`} className="table-row">
+              <div>
+                <strong>{quota.platform ?? "unknown"}</strong>
+                <p>已用 {Number(quota.used ?? 0).toFixed(2)} / 总额 {Number(quota.quota ?? 0).toFixed(2)}</p>
+              </div>
+              <div className="table-numbers">
+                <strong>{Number(quota.remaining ?? 0).toFixed(2)}</strong>
+              </div>
+            </div>
+          ))}
+          {(!platformQuotas || platformQuotas.platformQuotas.length === 0) && (
+            <EmptyState title="当前没有平台配额" detail="站点当前返回为空，这与网页版一致。" compact />
+          )}
+        </div>
+      </SectionCard>
+    </div>
+  );
+}
+
 function Modal({
   title,
   children,
@@ -3599,8 +3739,11 @@ function Modal({
   closeText?: string | null;
 }) {
   return (
-    <div className="modal-backdrop">
-      <div className={`modal-card ${size === "wide" ? "wide" : ""} ${className ?? ""}`.trim()}>
+    <div className="modal-backdrop" onClick={onClose}>
+      <div
+        className={`modal-card ${size === "wide" ? "wide" : ""} ${className ?? ""}`.trim()}
+        onClick={(event) => event.stopPropagation()}
+      >
         <header className={`modal-header ${headerClassName ?? ""}`.trim()}>
           <h3>{title}</h3>
           {closeText === null ? (
@@ -3662,6 +3805,26 @@ function DetailItem({ label, value }: { label: string; value: string }) {
   );
 }
 
+function UsageMetricDetailItem({
+  label,
+  value,
+  description
+}: {
+  label: string;
+  value: string;
+  description?: string;
+}) {
+  return (
+    <div className="detail-item usage-metric-detail-item">
+      <div className="usage-metric-detail-copy">
+        <span>{label}</span>
+        {description ? <small>{description}</small> : null}
+      </div>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
 function renderUsageModelRequestDetails(models: UsageModelSummary[], loading = false) {
   if (loading) {
     return <DetailItem label="模型明细" value="正在统计模型明细..." />;
@@ -3697,14 +3860,16 @@ function renderUsageTokenMetricDetails(
     <>
       {models.map((model) => {
         const tokenValue = field === "input" ? model.inputTokens : model.outputTokens;
-        const cacheLabel = field === "input"
-          ? `缓存读 ${compact(model.cacheReadTokens)} / 写 ${compact(model.cacheCreationTokens)}`
-          : `请求 ${model.requests.toLocaleString()} / 总 ${compact(model.totalTokens)}`;
+        const valueLabel = field === "input" ? "输入" : "输出";
+        const description = field === "input"
+          ? `缓存命中: 读取 ${compact(model.cacheReadTokens)}, 写入 ${compact(model.cacheCreationTokens)}`
+          : `请求数 ${model.requests.toLocaleString()} 次, 全部 Token ${compact(model.totalTokens)}`;
         return (
-          <DetailItem
+          <UsageMetricDetailItem
             key={`${field}-${model.model}`}
-            label={`${model.model} · ${cacheLabel}`}
-            value={compact(tokenValue)}
+            label={model.model}
+            description={description}
+            value={`${valueLabel} ${compact(tokenValue)}`}
           />
         );
       })}
