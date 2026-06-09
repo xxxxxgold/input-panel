@@ -2,6 +2,7 @@ export type NavKey =
   | "overview"
   | "sites"
   | "accounts"
+  | "serviceStatus"
   | "keys"
   | "usage"
   | "subscriptions"

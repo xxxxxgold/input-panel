@@ -1,4 +1,5 @@
 import {
+  Activity,
   AlertTriangle,
   BadgeDollarSign,
   Bell,
@@ -97,6 +98,7 @@ const NAV_ITEMS: Array<{
   icon: typeof LayoutDashboard;
 }> = [
   { key: "overview", label: "总览", icon: LayoutDashboard },
+  { key: "serviceStatus", label: "服务状态", icon: Activity },
   { key: "keys", label: "密钥", icon: KeyRound },
   { key: "usage", label: "用量", icon: ChartColumn },
   { key: "subscriptions", label: "订阅", icon: BadgeDollarSign },
@@ -104,7 +106,7 @@ const NAV_ITEMS: Array<{
   { key: "profile", label: "资料", icon: UserRound },
   { key: "trends", label: "趋势", icon: ChartColumn },
   { key: "alerts", label: "告警", icon: ShieldAlert },
-  { key: "settings", label: "设置", icon: Server },
+  { key: "settings", label: "站点账号配置", icon: Server },
   { key: "systemSettings", label: "系统设置", icon: Settings2 }
 ];
 
@@ -119,6 +121,17 @@ const defaultAccountForm: AccountInput = {
   email: "",
   balanceWarning: 0
 };
+
+interface UsageModelSummary {
+  model: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  totalTokens: number;
+  actualCost: number;
+}
 
 const USAGE_RANGE_PRESETS = [
   { key: "today", label: "今天" },
@@ -161,6 +174,11 @@ export default function App() {
   const [siteFormOpen, setSiteFormOpen] = useState(false);
   const [accountFormOpen, setAccountFormOpen] = useState(false);
   const [accountSitePickerOpen, setAccountSitePickerOpen] = useState(false);
+  const [topbarSitePickerOpen, setTopbarSitePickerOpen] = useState(false);
+  const [topbarAccountPickerOpen, setTopbarAccountPickerOpen] = useState(false);
+  const [topbarAlertsExpanded, setTopbarAlertsExpanded] = useState(false);
+  const [topbarSubscriptionsExpanded, setTopbarSubscriptionsExpanded] = useState(false);
+  const [topbarAccountMenuOpen, setTopbarAccountMenuOpen] = useState(false);
   const [accountPassword, setAccountPassword] = useState("");
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
   const [loginModal, setLoginModal] = useState<{
@@ -199,6 +217,8 @@ export default function App() {
   const [usageStats, setUsageStats] = useState<UsageStatsRecord | null>(null);
   const [usageTrend, setUsageTrend] = useState<UsageTrendPayload | null>(null);
   const [usageModels, setUsageModels] = useState<DashboardModelsPayload | null>(null);
+  const [usageModelSummaries, setUsageModelSummaries] = useState<UsageModelSummary[]>([]);
+  const [usageModelSummariesLoading, setUsageModelSummariesLoading] = useState(false);
   const [usageApiKeyFilter, setUsageApiKeyFilter] = useState<string>("");
   const [usageStartDate, setUsageStartDate] = useState<string>("");
   const [usageEndDate, setUsageEndDate] = useState<string>("");
@@ -257,6 +277,8 @@ export default function App() {
       setUsageStats(null);
       setUsageTrend(null);
       setUsageModels(null);
+      setUsageModelSummaries([]);
+      setUsageModelSummariesLoading(false);
       setSubscriptionSummary(null);
       setProfileRecord(null);
       setPlatformQuotas(null);
@@ -288,6 +310,9 @@ export default function App() {
       item.baseUrl.toLowerCase().includes(deferredSiteSearch)
     );
   });
+  const selectedSiteAccounts = selectedSiteId
+    ? accounts.filter((item) => item.siteId === selectedSiteId)
+    : accounts;
   const filteredAccounts = accounts.filter((item) => {
     if (selectedSiteId && item.siteId !== selectedSiteId && nav !== "overview") {
       return false;
@@ -300,7 +325,10 @@ export default function App() {
     );
   });
   const selectedAccount =
-    accounts.find((item) => item.id === selectedAccountId) ?? filteredAccounts[0] ?? null;
+    accounts.find((item) => item.id === selectedAccountId && (!selectedSiteId || item.siteId === selectedSiteId)) ??
+    (selectedSiteId
+      ? selectedSiteAccounts[0] ?? null
+      : accounts.find((item) => item.id === selectedAccountId) ?? filteredAccounts[0] ?? null);
   const selectedSite =
     sites.find((item) => item.id === selectedSiteId) ??
     (selectedAccount ? sites.find((item) => item.id === selectedAccount.siteId) ?? null : null);
@@ -330,6 +358,18 @@ export default function App() {
     .filter(Boolean)
     .join(" ");
   const railToggleTitle = isRailExpanded ? "收起导航" : "展开导航";
+
+  useEffect(() => {
+    if (!selectedSiteId) return;
+    const accountInSelectedSite = accounts.find(
+      (item) => item.id === selectedAccountId && item.siteId === selectedSiteId
+    );
+    if (accountInSelectedSite) return;
+    const fallbackAccount = accounts.find((item) => item.siteId === selectedSiteId) ?? null;
+    if ((fallbackAccount?.id ?? null) !== selectedAccountId) {
+      setSelectedAccountId(fallbackAccount?.id ?? null);
+    }
+  }, [selectedSiteId, selectedAccountId, accounts, setSelectedAccountId]);
 
   useEffect(() => {
     if (!visibleHistory.length) {
@@ -474,6 +514,21 @@ export default function App() {
     } finally {
       setBusyText(null);
     }
+  }
+
+  function handleTopbarSiteSelect(site: SiteRecord) {
+    setSelectedSiteId(site.id);
+    const fallbackAccount = accounts.find((item) => item.siteId === site.id) ?? null;
+    setSelectedAccountId(fallbackAccount?.id ?? null);
+    setTopbarSitePickerOpen(false);
+    setTopbarAccountPickerOpen(false);
+  }
+
+  function handleTopbarAccountSelect(account: AccountRuntime) {
+    setSelectedSiteId(account.siteId);
+    setSelectedAccountId(account.id);
+    setTopbarSitePickerOpen(false);
+    setTopbarAccountPickerOpen(false);
   }
 
   async function handleLogin() {
@@ -621,7 +676,10 @@ export default function App() {
       });
       setPlatformQuotas(nextPlatformQuotas);
       setSubscriptionSummary(nextSubscriptionSummary);
-      await loadUsageRecordsForFilters(accountId, startDate, endDate, usageApiKeyFilter, usagePage);
+      await Promise.all([
+        loadUsageRecordsForFilters(accountId, startDate, endDate, usageApiKeyFilter, usagePage),
+        loadUsageModelSummaries(accountId, startDate, endDate, usageApiKeyFilter)
+      ]);
       const initialKeyId = keyUsageKeyId || nextKeys.items[0]?.id || "";
       setKeyUsageKeyId(initialKeyId);
       if (initialKeyId) {
@@ -650,6 +708,46 @@ export default function App() {
     setUsageRecords(next);
   }
 
+  async function loadUsageModelSummaries(
+    accountId: string,
+    startDate: string,
+    endDate: string,
+    apiKeyId: string
+  ) {
+    setUsageModelSummariesLoading(true);
+    try {
+      const pageSize = 100;
+      const firstPage = await listUsageRecords(accountId, {
+        page: 1,
+        pageSize,
+        apiKeyId,
+        startDate,
+        endDate
+      });
+      const remainingPages = Array.from({ length: Math.max(firstPage.pages - 1, 0) }, (_, index) => index + 2);
+      const pageResults = remainingPages.length
+        ? await Promise.all(
+            remainingPages.map((page) =>
+              listUsageRecords(accountId, {
+                page,
+                pageSize,
+                apiKeyId,
+                startDate,
+                endDate
+              })
+            )
+          )
+        : [];
+      const allItems = [
+        ...firstPage.items,
+        ...pageResults.flatMap((page) => page.items)
+      ];
+      setUsageModelSummaries(summarizeUsageRowsByModel(allItems));
+    } finally {
+      setUsageModelSummariesLoading(false);
+    }
+  }
+
   function resetKeyForm(nextGroupId?: number | null) {
     setKeyForm({
       name: "",
@@ -666,7 +764,20 @@ export default function App() {
     });
   }
 
+  function parseOptionalNumberInput(value: string) {
+    if (!value.trim()) {
+      return null;
+    }
+    const next = Number(value);
+    return Number.isFinite(next) ? next : null;
+  }
+
   function openNewKey() {
+    if (!selectedAccountId) {
+      setError("请先选择一个账号，再新增密钥。");
+      return;
+    }
+    setError(null);
     setEditingKey(null);
     resetKeyForm();
     setKeyModalOpen(true);
@@ -707,14 +818,32 @@ export default function App() {
   }
 
   async function submitKeyForm() {
-    if (!selectedAccountId) return;
+    if (!selectedAccountId) {
+      setError("请先选择一个账号，再提交密钥。");
+      return;
+    }
+    if (!keyForm.name.trim()) {
+      setError("请输入密钥名称。");
+      return;
+    }
+    if (keyForm.groupId == null) {
+      setError("请选择一个可用分组。");
+      return;
+    }
     setBusyText(editingKey ? "正在更新密钥..." : "正在创建密钥...");
     setError(null);
     try {
+      const payload: KeyMutationInput = {
+        ...keyForm,
+        name: keyForm.name.trim(),
+        customKey: keyForm.customKey?.trim() || "",
+        ipWhitelist: keyForm.ipWhitelist?.trim() || "",
+        ipBlacklist: keyForm.ipBlacklist?.trim() || ""
+      };
       if (editingKey) {
-        await updateManagedKey(selectedAccountId, editingKey.id, keyForm);
+        await updateManagedKey(selectedAccountId, editingKey.id, payload);
       } else {
-        await createManagedKey(selectedAccountId, keyForm);
+        await createManagedKey(selectedAccountId, payload);
       }
       setKeyModalOpen(false);
       await refreshManagedKeys();
@@ -794,18 +923,26 @@ export default function App() {
     setError(null);
     try {
       setUsagePage(1);
-      await loadUsageRecordsForFilters(
-        selectedAccountId,
-        usageStartDate,
-        usageEndDate,
-        usageApiKeyFilter,
-        1
-      );
-      const stats = await getUsageStats(selectedAccountId, {
-        startDate: usageStartDate,
-        endDate: usageEndDate,
-        apiKeyId: usageApiKeyFilter || null
-      });
+      const [stats] = await Promise.all([
+        getUsageStats(selectedAccountId, {
+          startDate: usageStartDate,
+          endDate: usageEndDate,
+          apiKeyId: usageApiKeyFilter || null
+        }),
+        loadUsageRecordsForFilters(
+          selectedAccountId,
+          usageStartDate,
+          usageEndDate,
+          usageApiKeyFilter,
+          1
+        ),
+        loadUsageModelSummaries(
+          selectedAccountId,
+          usageStartDate,
+          usageEndDate,
+          usageApiKeyFilter
+        )
+      ]);
       setUsageStats(stats);
     } catch (cause) {
       setError((cause as Error).message);
@@ -864,18 +1001,26 @@ export default function App() {
     setBusyText("正在应用时间范围...");
     setError(null);
     try {
-      await loadUsageRecordsForFilters(
-        selectedAccountId,
-        nextStart,
-        nextEnd,
-        usageApiKeyFilter,
-        1
-      );
-      const stats = await getUsageStats(selectedAccountId, {
-        startDate: nextStart,
-        endDate: nextEnd,
-        apiKeyId: usageApiKeyFilter || null
-      });
+      const [stats] = await Promise.all([
+        getUsageStats(selectedAccountId, {
+          startDate: nextStart,
+          endDate: nextEnd,
+          apiKeyId: usageApiKeyFilter || null
+        }),
+        loadUsageRecordsForFilters(
+          selectedAccountId,
+          nextStart,
+          nextEnd,
+          usageApiKeyFilter,
+          1
+        ),
+        loadUsageModelSummaries(
+          selectedAccountId,
+          nextStart,
+          nextEnd,
+          usageApiKeyFilter
+        )
+      ]);
       setUsageStats(stats);
     } catch (cause) {
       setError((cause as Error).message);
@@ -1052,65 +1197,158 @@ export default function App() {
       <main className="workspace">
         <header className="global-topbar">
           <div className="global-topbar-grid">
-            <button className="topbar-card topbar-card-brand" onClick={() => setNav("settings")}>
-              <div className="topbar-card-icon">
-                <Server size={18} />
-              </div>
-              <div className="topbar-card-copy">
-                <span className="topbar-card-label">站点</span>
-                <strong>{selectedSite?.name ?? "未选择站点"}</strong>
-                <p>{selectedSite?.baseUrl ?? "点击前往站点设置与账号绑定"}</p>
-              </div>
-              <ChevronRight size={16} />
-            </button>
+            <div className="topbar-select">
+              <button
+                type="button"
+                className={`topbar-card topbar-card-brand topbar-select-trigger ${topbarSitePickerOpen ? "open" : ""}`}
+                onClick={() => {
+                  setTopbarSitePickerOpen((current) => !current);
+                  setTopbarAccountPickerOpen(false);
+                }}
+                aria-expanded={topbarSitePickerOpen}
+                aria-label="选择站点"
+              >
+                <div className="topbar-card-copy topbar-select-copy">
+                  <strong className="topbar-select-value">{`站点 ${selectedSite?.name ?? "未选择站点"}`}</strong>
+                </div>
+                <ChevronDown size={16} className={`site-picker-icon ${topbarSitePickerOpen ? "open" : ""}`} />
+              </button>
+              {topbarSitePickerOpen && (
+                <div className="topbar-select-menu">
+                  {sites.map((site) => (
+                    <button
+                      key={site.id}
+                      type="button"
+                      className={`topbar-select-option ${selectedSite?.id === site.id ? "selected" : ""}`}
+                      onClick={() => handleTopbarSiteSelect(site)}
+                    >
+                      <strong>{site.name}</strong>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
 
-            <button
-              className="topbar-card"
-              onClick={() => {
-                if (selectedSite) {
-                  setSelectedSiteId(selectedSite.id);
-                }
-                setNav("settings");
-              }}
+            <div className="topbar-select">
+              <button
+                type="button"
+                className={`topbar-card topbar-select-trigger ${topbarAccountPickerOpen ? "open" : ""}`}
+                onClick={() => {
+                  if (selectedSiteAccounts.length === 0) return;
+                  setTopbarAccountPickerOpen((current) => !current);
+                  setTopbarSitePickerOpen(false);
+                }}
+                disabled={selectedSiteAccounts.length === 0}
+                aria-expanded={topbarAccountPickerOpen}
+                aria-label="选择账号"
+              >
+                <div className="topbar-card-copy topbar-select-copy">
+                  <strong className="topbar-select-value">
+                    {`账号 ${selectedAccount?.label ?? (selectedSite ? "当前站点暂无账号" : "请先选择站点")}`}
+                  </strong>
+                </div>
+                <ChevronDown size={16} className={`site-picker-icon ${topbarAccountPickerOpen ? "open" : ""}`} />
+              </button>
+              {topbarAccountPickerOpen && selectedSiteAccounts.length > 0 && (
+                <div className="topbar-select-menu">
+                  {selectedSiteAccounts.map((account) => (
+                    <button
+                      key={account.id}
+                      type="button"
+                      className={`topbar-select-option ${selectedAccount?.id === account.id ? "selected" : ""}`}
+                      onClick={() => handleTopbarAccountSelect(account)}
+                    >
+                      <strong>{account.label || maskEmail(account.email)}</strong>
+                      <StatusBadge state={account.sessionState} />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div
+              className={`topbar-peek-card ${topbarAlertsExpanded ? "expanded" : ""}`}
+              onMouseEnter={() => setTopbarAlertsExpanded(true)}
+              onMouseLeave={() => setTopbarAlertsExpanded(false)}
             >
-              <div className="topbar-card-icon">
-                <UserRound size={18} />
-              </div>
-              <div className="topbar-card-copy">
-                <span className="topbar-card-label">账号</span>
-                <strong>{selectedAccount?.label ?? "未选择账号"}</strong>
-                <p>{selectedAccount ? maskEmail(selectedAccount.email) : "点击维护登录、资料与密钥上下文"}</p>
-              </div>
-              {selectedAccount ? <StatusBadge state={selectedAccount.sessionState} /> : <ChevronRight size={16} />}
-            </button>
-
-            <button className="topbar-card" onClick={() => setNav("alerts")}>
-              <div className="topbar-card-icon">
+              <button
+                type="button"
+                className="topbar-peek-trigger"
+                onClick={() => {
+                  setTopbarAlertsExpanded((current) => !current);
+                  setTopbarSubscriptionsExpanded(false);
+                }}
+                aria-expanded={topbarAlertsExpanded}
+                aria-label="通知详情"
+              >
                 <Bell size={18} />
+              </button>
+              <div className="topbar-card topbar-peek-panel">
+                <div className="topbar-card-icon">
+                  <Bell size={18} />
+                </div>
+                <div className="topbar-card-copy">
+                  <span className="topbar-card-label">通知</span>
+                  <strong>{alertCount === 0 ? "全部正常" : `${alertCount} 条待处理`}</strong>
+                  <p>{alertCount === 0 ? "当前没有新的余额或订阅告警" : "点击进入告警中心查看详情"}</p>
+                </div>
+                <span className={`status-pill ${alertCount > 0 ? "critical" : "ready"}`}>
+                  {alertCount === 0 ? "静默" : "提醒"}
+                </span>
+                <button
+                  type="button"
+                  className="topbar-peek-action"
+                  onClick={() => {
+                    setTopbarAlertsExpanded(false);
+                    setNav("alerts");
+                  }}
+                >
+                  打开告警中心
+                </button>
               </div>
-              <div className="topbar-card-copy">
-                <span className="topbar-card-label">通知</span>
-                <strong>{alertCount === 0 ? "全部正常" : `${alertCount} 条待处理`}</strong>
-                <p>{alertCount === 0 ? "当前没有新的余额或订阅告警" : "点击进入告警中心查看详情"}</p>
-              </div>
-              <span className={`status-pill ${alertCount > 0 ? "critical" : "ready"}`}>
-                {alertCount === 0 ? "静默" : "提醒"}
-              </span>
-            </button>
+            </div>
 
-            <button className="topbar-card" onClick={() => setNav("subscriptions")}>
-              <div className="topbar-card-icon">
+            <div
+              className={`topbar-peek-card ${topbarSubscriptionsExpanded ? "expanded" : ""}`}
+              onMouseEnter={() => setTopbarSubscriptionsExpanded(true)}
+              onMouseLeave={() => setTopbarSubscriptionsExpanded(false)}
+            >
+              <button
+                type="button"
+                className="topbar-peek-trigger"
+                onClick={() => {
+                  setTopbarSubscriptionsExpanded((current) => !current);
+                  setTopbarAlertsExpanded(false);
+                }}
+                aria-expanded={topbarSubscriptionsExpanded}
+                aria-label="订阅使用情况详情"
+              >
                 <Crown size={18} />
+              </button>
+              <div className="topbar-card topbar-peek-panel">
+                <div className="topbar-card-icon">
+                  <Crown size={18} />
+                </div>
+                <div className="topbar-card-copy">
+                  <span className="topbar-card-label">订阅使用情况</span>
+                  <strong>{usageStatusLabel}</strong>
+                  <p>{usageStatusHint}</p>
+                </div>
+                <span className="topbar-metric">
+                  {subscriptionSpend > 0 ? formatUsd(subscriptionSpend, 2) : subscriptionCount.toString()}
+                </span>
+                <button
+                  type="button"
+                  className="topbar-peek-action"
+                  onClick={() => {
+                    setTopbarSubscriptionsExpanded(false);
+                    setNav("subscriptions");
+                  }}
+                >
+                  打开订阅页
+                </button>
               </div>
-              <div className="topbar-card-copy">
-                <span className="topbar-card-label">订阅使用情况</span>
-                <strong>{usageStatusLabel}</strong>
-                <p>{usageStatusHint}</p>
-              </div>
-              <span className="topbar-metric">
-                {subscriptionSpend > 0 ? formatUsd(subscriptionSpend, 2) : subscriptionCount.toString()}
-              </span>
-            </button>
+            </div>
           </div>
 
           <div className="header-actions global-topbar-actions">
@@ -1125,20 +1363,104 @@ export default function App() {
               重新加载
             </button>
             {selectedAccount && (
-              <button className="primary-button" onClick={() => openPasswordLogin(selectedAccount)}>
-                <UserRound size={16} />
-                登录当前账号
-              </button>
+              <div
+                className={`topbar-account-menu ${topbarAccountMenuOpen ? "open" : ""}`}
+                onMouseLeave={() => setTopbarAccountMenuOpen(false)}
+              >
+                <button
+                  type="button"
+                  className="topbar-account-trigger"
+                  onClick={() => setTopbarAccountMenuOpen((current) => !current)}
+                  aria-expanded={topbarAccountMenuOpen}
+                  aria-label="当前账号菜单"
+                >
+                  <div className="topbar-account-trigger-copy">
+                    <strong>{selectedAccount.label || "当前账号"}</strong>
+                    <span>{selectedAccount.sessionState === "ready" ? "已连接" : selectedAccount.sessionState === "expired" ? "已失效" : "未登录"}</span>
+                  </div>
+                  <div className="topbar-account-avatar" aria-hidden="true">
+                    {(selectedAccount.label || selectedAccount.email || "A").slice(0, 1).toUpperCase()}
+                  </div>
+                  <ChevronDown size={16} className={`site-picker-icon ${topbarAccountMenuOpen ? "open" : ""}`} />
+                </button>
+                {topbarAccountMenuOpen && (
+                  <div className="topbar-account-dropdown">
+                    <div className="topbar-account-summary">
+                      <strong>{selectedAccount.label || "当前账号"}</strong>
+                      <p>{selectedAccount.site?.name ?? selectedSite?.name ?? "未知站点"}</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="topbar-account-item"
+                      onClick={() => {
+                        setTopbarAccountMenuOpen(false);
+                        setNav("profile");
+                      }}
+                    >
+                      <UserRound size={16} />
+                      <span>个人中心</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="topbar-account-item"
+                      onClick={() => {
+                        setTopbarAccountMenuOpen(false);
+                        setNav("systemSettings");
+                      }}
+                    >
+                      <Settings2 size={16} />
+                      <span>设置</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="topbar-account-item"
+                      onClick={() => {
+                        setTopbarAccountMenuOpen(false);
+                        setNav("settings");
+                      }}
+                    >
+                      <Server size={16} />
+                      <span>站点账号配置</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="topbar-account-item"
+                      onClick={() => {
+                        setTopbarAccountMenuOpen(false);
+                        void handleRefreshAccount(selectedAccount.id);
+                      }}
+                    >
+                      <RefreshCcw size={16} />
+                      <span>刷新账号</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="topbar-account-item danger"
+                      onClick={() => {
+                        setTopbarAccountMenuOpen(false);
+                        openPasswordLogin(selectedAccount);
+                      }}
+                    >
+                      <UserRound size={16} />
+                      <span>登录当前账号</span>
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
           </div>
         </header>
 
         <header className="workspace-header">
           <div>
-            <p className="eyebrow">QMAI-inspired Shell</p>
+            <p className="eyebrow">总览面板</p>
             <h2>{navTitle(nav)}</h2>
             <p className="workspace-subtitle">
-              {selectedSite ? `${selectedSite.name} / ${selectedAccount?.label ?? "未选择账号"}` : "请先添加站点与账号"}
+              {nav === "serviceStatus"
+                ? "嵌入 status.input.im 的实时服务监控页面"
+                : selectedSite
+                  ? `${selectedSite.name} / ${selectedAccount?.label ?? "未选择账号"}`
+                  : "请先添加站点与账号"}
             </p>
           </div>
           <div className="workspace-header-summary">
@@ -1327,12 +1649,48 @@ export default function App() {
               </>
             )}
 
+            {nav === "serviceStatus" && (
+              <section className="content-grid status-page-grid">
+                <SectionCard
+                  title="AI.INPUT.IM 服务状态"
+                  subtitle="直接内嵌官方状态页, 保持内容和远端展示一致。"
+                  actions={
+                    <a
+                      className="inline-text-button"
+                      href="https://status.input.im"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      打开原页面
+                    </a>
+                  }
+                >
+                  <div className="status-embed-shell">
+                    <div className="status-embed-toolbar">
+                      <div>
+                        <strong>status.input.im</strong>
+                        <p>终端风格监控、历史条形状态和实时刷新均由远端页面维护。</p>
+                      </div>
+                      <span className="status-pill neutral">Live</span>
+                    </div>
+                    <iframe
+                      className="status-embed-frame"
+                      src="https://status.input.im"
+                      title="AI.INPUT.IM 服务状态"
+                      loading="lazy"
+                      referrerPolicy="no-referrer"
+                    />
+                  </div>
+                </SectionCard>
+              </section>
+            )}
+
             {nav === "settings" && (
               <>
                 <section className="management-grid">
                   <SectionCard
                     title="站点默认管理"
-                    subtitle="默认站点配置现在统一收口到设置页内维护。"
+                    subtitle="默认站点配置现在统一收口到站点账号配置页内维护。"
                     actions={
                       <button className="mini-button" onClick={openNewSite} title="新增站点" aria-label="新增站点">
                         <Plus size={14} />
@@ -1858,15 +2216,52 @@ export default function App() {
                   </div>
                   {usageStats && (
                     <div className="metric-grid compact-metrics">
-                      <MetricCard label="请求数" value={String(usageStats.totalRequests)} hint="筛选结果" accent="sky" icon={<LayoutDashboard size={18} />} />
-                      <MetricCard label="输入 Tokens" value={compact(usageStats.totalInputTokens)} hint="筛选结果" accent="emerald" icon={<MonitorDot size={18} />} />
-                      <MetricCard label="输出 Tokens" value={compact(usageStats.totalOutputTokens)} hint="筛选结果" accent="indigo" icon={<MonitorDot size={18} />} />
+                      <MetricCard
+                        label="请求数"
+                        value={String(usageStats.totalRequests)}
+                        hint="筛选结果"
+                        accent="sky"
+                        icon={<LayoutDashboard size={18} />}
+                        detailTitle="模型请求次数"
+                        detail={renderUsageModelRequestDetails(usageModelSummaries, usageModelSummariesLoading)}
+                      />
+                      <MetricCard
+                        label="输入 Tokens"
+                        value={compact(usageStats.totalInputTokens)}
+                        hint="筛选结果"
+                        accent="emerald"
+                        icon={<MonitorDot size={18} />}
+                        detailTitle="输入 Token 明细"
+                        detail={renderUsageTokenMetricDetails(usageModelSummaries, "input", usageModelSummariesLoading)}
+                      />
+                      <MetricCard
+                        label="输出 Tokens"
+                        value={compact(usageStats.totalOutputTokens)}
+                        hint="筛选结果"
+                        accent="indigo"
+                        icon={<MonitorDot size={18} />}
+                        detailTitle="输出 Token 明细"
+                        detail={renderUsageTokenMetricDetails(usageModelSummaries, "output", usageModelSummariesLoading)}
+                      />
                       <MetricCard
                         label="实际成本"
                         value={`$${usageStats.totalActualCost.toFixed(4)}`}
-                        hint={`平均 ${formatDurationSeconds(usageStats.averageDurationMs)}`}
+                        hint={`平均耗时 ${formatDurationSeconds(usageStats.averageDurationMs)}`}
                         accent="violet"
                         icon={<BadgeDollarSign size={18} />}
+                        detailTitle="筛选结果概览"
+                        detail={
+                          <>
+                            <DetailItem label="实际成本" value={formatUsd(usageStats.totalActualCost, 4)} />
+                            <DetailItem label="标准成本" value={formatUsd(usageStats.totalCost, 4)} />
+                            <DetailItem label="平均耗时" value={formatDurationSeconds(usageStats.averageDurationMs)} />
+                            <DetailItem label="缓存总 Token" value={compact(usageStats.totalCacheTokens ?? 0)} />
+                            <DetailItem label="缓存写入 Token" value={compact(usageStats.totalCacheCreationTokens ?? 0)} />
+                            <DetailItem label="缓存读取 Token" value={compact(usageStats.totalCacheReadTokens ?? 0)} />
+                            <DetailItem label="RPM" value={usageStats.rpm ? usageStats.rpm.toFixed(2) : "-"} />
+                            <DetailItem label="TPM" value={usageStats.tpm ? compact(usageStats.tpm) : "-"} />
+                          </>
+                        }
                       />
                     </div>
                   )}
@@ -1958,6 +2353,11 @@ export default function App() {
                                 <DetailItem label="输出成本" value={formatUsd(row.outputCost)} />
                                 <DetailItem label="缓存写入成本" value={formatUsd(row.cacheCreationCost)} />
                                 <DetailItem label="缓存读取成本" value={formatUsd(row.cacheReadCost)} />
+                                <DetailItem label="输入 Token" value={compact(row.inputTokens)} />
+                                <DetailItem label="输出 Token" value={compact(row.outputTokens)} />
+                                <DetailItem label="缓存写入 Token" value={compact(row.cacheCreationTokens ?? 0)} />
+                                <DetailItem label="缓存读取 Token" value={compact(row.cacheReadTokens ?? 0)} />
+                                <DetailItem label="总 Token" value={compact(row.totalTokens)} />
                                 <DetailItem
                                   label="输入单价"
                                   value={formatUsdPerMillion(row.inputCost, row.inputTokens)}
@@ -2561,6 +2961,167 @@ export default function App() {
         </Modal>
       )}
 
+      {keyModalOpen && (
+        <Modal
+          title={editingKey ? "编辑密钥" : "新增密钥"}
+          onClose={() => setKeyModalOpen(false)}
+          onSubmit={() => void submitKeyForm()}
+          submitText={editingKey ? "更新密钥" : "创建密钥"}
+          size="wide"
+        >
+          <p className="modal-hint">
+            {editingKey
+              ? "这里编辑的是当前密钥的展示名、额度、限流和访问限制。留空字段会按现有站点兼容逻辑提交。"
+              : "这里会直接调用当前账号的真实创建接口。若自定义密钥留空，则按站点默认方式生成。"}
+          </p>
+          <label className="field">
+            <span>所属分组</span>
+            <select
+              value={keyForm.groupId ?? ""}
+              onChange={(event) =>
+                setKeyForm((prev) => ({
+                  ...prev,
+                  groupId: event.target.value ? Number(event.target.value) : null
+                }))
+              }
+            >
+              <option value="">{groups.length === 0 ? "当前没有可用分组" : "请选择分组"}</option>
+              {keyForm.groupId != null && !groups.some((group) => group.id === keyForm.groupId) && (
+                <option value={keyForm.groupId}>
+                  {editingKey?.groupName ? `${editingKey.groupName} (当前分组)` : `当前分组 #${keyForm.groupId}`}
+                </option>
+              )}
+              {groups.map((group) => (
+                <option key={group.id} value={group.id}>
+                  {group.name} / {group.platform}
+                </option>
+              ))}
+            </select>
+            {groups.length === 0 && (
+              <p className="field-help">当前账号没有返回可用分组，先刷新账号后再创建密钥。</p>
+            )}
+          </label>
+          <label className="field">
+            <span>密钥名称</span>
+            <input
+              value={keyForm.name}
+              onChange={(event) => setKeyForm((prev) => ({ ...prev, name: event.target.value }))}
+              placeholder="例如: Claude 标准额度"
+            />
+          </label>
+          <label className="field">
+            <span>自定义密钥</span>
+            <input
+              value={keyForm.customKey ?? ""}
+              onChange={(event) => setKeyForm((prev) => ({ ...prev, customKey: event.target.value }))}
+              placeholder={editingKey ? "可留空，表示不主动覆盖当前 key" : "可选。留空则由站点自动生成"}
+            />
+            <p className="field-help">创建时可直接填已有 key；编辑时留空可避免误覆盖真实密钥。</p>
+          </label>
+          <label className="field">
+            <span>额度 (USD)</span>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={keyForm.quota ?? ""}
+              onChange={(event) =>
+                setKeyForm((prev) => ({ ...prev, quota: parseOptionalNumberInput(event.target.value) }))
+              }
+              placeholder="0"
+            />
+          </label>
+          <label className="field">
+            <span>有效天数</span>
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={keyForm.expiresInDays ?? ""}
+              onChange={(event) =>
+                setKeyForm((prev) => ({ ...prev, expiresInDays: parseOptionalNumberInput(event.target.value) }))
+              }
+              placeholder={editingKey ? "留空则不重设有效期" : "默认 30"}
+            />
+            <p className="field-help">{editingKey ? "编辑时留空表示不额外重置有效期。" : "默认 30 天，可按需调整。"}</p>
+          </label>
+          <label className="field">
+            <span>状态</span>
+            <select
+              value={keyForm.status ?? "active"}
+              onChange={(event) => setKeyForm((prev) => ({ ...prev, status: event.target.value }))}
+            >
+              {keyForm.status &&
+                !["active", "inactive"].includes(keyForm.status) && (
+                  <option value={keyForm.status}>保持当前状态 ({keyForm.status})</option>
+                )}
+              <option value="active">启用</option>
+              <option value="inactive">停用</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>IP 白名单</span>
+            <input
+              value={keyForm.ipWhitelist ?? ""}
+              onChange={(event) => setKeyForm((prev) => ({ ...prev, ipWhitelist: event.target.value }))}
+              placeholder="多个 IP 用逗号分隔"
+            />
+          </label>
+          <label className="field">
+            <span>IP 黑名单</span>
+            <input
+              value={keyForm.ipBlacklist ?? ""}
+              onChange={(event) => setKeyForm((prev) => ({ ...prev, ipBlacklist: event.target.value }))}
+              placeholder="多个 IP 用逗号分隔"
+            />
+          </label>
+          <div className="form-callout">
+            <p>限流窗口填 0 或留空都表示不主动提高额度上限，按站点当前兼容策略处理。</p>
+          </div>
+          <div className="stack-list">
+            <label className="field">
+              <span>5 小时限流</span>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={keyForm.rateLimit5h ?? ""}
+                onChange={(event) =>
+                  setKeyForm((prev) => ({ ...prev, rateLimit5h: parseOptionalNumberInput(event.target.value) }))
+                }
+                placeholder="0"
+              />
+            </label>
+            <label className="field">
+              <span>1 天限流</span>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={keyForm.rateLimit1d ?? ""}
+                onChange={(event) =>
+                  setKeyForm((prev) => ({ ...prev, rateLimit1d: parseOptionalNumberInput(event.target.value) }))
+                }
+                placeholder="0"
+              />
+            </label>
+            <label className="field">
+              <span>7 天限流</span>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={keyForm.rateLimit7d ?? ""}
+                onChange={(event) =>
+                  setKeyForm((prev) => ({ ...prev, rateLimit7d: parseOptionalNumberInput(event.target.value) }))
+                }
+                placeholder="0"
+              />
+            </label>
+          </div>
+        </Modal>
+      )}
+
       {loginModal && (
         <Modal
           title={loginModal.phase === "password" ? `登录 ${loginModal.account.label}` : `验证 ${loginModal.account.label}`}
@@ -2620,9 +3181,11 @@ function navTitle(key: NavKey) {
     case "overview":
       return "总览面板";
     case "sites":
-      return "设置";
+      return "站点账号配置";
     case "accounts":
-      return "设置";
+      return "站点账号配置";
+    case "serviceStatus":
+      return "服务状态";
     case "keys":
       return "密钥管理";
     case "usage":
@@ -2638,7 +3201,7 @@ function navTitle(key: NavKey) {
     case "alerts":
       return "告警中心";
     case "settings":
-      return "设置";
+      return "站点账号配置";
     case "systemSettings":
       return "系统设置";
   }
@@ -2654,15 +3217,19 @@ function MetricCard({
   value,
   hint,
   accent,
-  icon
+  icon,
+  detailTitle,
+  detail
 }: {
   label: string;
   value: string;
-  hint: string;
+  hint: ReactNode;
   accent: "emerald" | "sky" | "violet" | "amber" | "indigo" | "rose";
   icon: ReactNode;
+  detailTitle?: string;
+  detail?: ReactNode;
 }) {
-  return (
+  const body = (
     <article className="metric-card">
       <div className={`metric-icon ${accent}`}>{icon}</div>
       <div>
@@ -2672,6 +3239,10 @@ function MetricCard({
       </div>
     </article>
   );
+  if (!detail || !detailTitle) {
+    return body;
+  }
+  return <UsageDetailPopover title={detailTitle} trigger={body}>{detail}</UsageDetailPopover>;
 }
 
 function UsageDetailPopover({
@@ -2793,6 +3364,56 @@ function DetailItem({ label, value }: { label: string; value: string }) {
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
+  );
+}
+
+function renderUsageModelRequestDetails(models: UsageModelSummary[], loading = false) {
+  if (loading) {
+    return <DetailItem label="模型明细" value="正在统计模型明细..." />;
+  }
+  if (models.length === 0) {
+    return <DetailItem label="模型明细" value="当前没有可展示的模型请求数据" />;
+  }
+  return (
+    <>
+      {models.map((model) => (
+        <DetailItem
+          key={`requests-${model.model}`}
+          label={model.model}
+          value={`${model.requests.toLocaleString()} 次`}
+        />
+      ))}
+    </>
+  );
+}
+
+function renderUsageTokenMetricDetails(
+  models: UsageModelSummary[],
+  field: "input" | "output",
+  loading = false
+) {
+  if (loading) {
+    return <DetailItem label="模型明细" value="正在统计模型明细..." />;
+  }
+  if (models.length === 0) {
+    return <DetailItem label="模型明细" value="当前没有可展示的 Token 数据" />;
+  }
+  return (
+    <>
+      {models.map((model) => {
+        const tokenValue = field === "input" ? model.inputTokens : model.outputTokens;
+        const cacheLabel = field === "input"
+          ? `缓存读 ${compact(model.cacheReadTokens)} / 写 ${compact(model.cacheCreationTokens)}`
+          : `请求 ${model.requests.toLocaleString()} / 总 ${compact(model.totalTokens)}`;
+        return (
+          <DetailItem
+            key={`${field}-${model.model}`}
+            label={`${model.model} · ${cacheLabel}`}
+            value={compact(tokenValue)}
+          />
+        );
+      })}
+    </>
   );
 }
 
@@ -2919,6 +3540,37 @@ function compact(value: number) {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
   return value.toLocaleString();
+}
+
+function summarizeUsageRowsByModel(rows: UsageRow[]): UsageModelSummary[] {
+  const bucket = new Map<string, UsageModelSummary>();
+  for (const row of rows) {
+    const key = row.model || "unknown";
+    const current = bucket.get(key) ?? {
+      model: key,
+      requests: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      totalTokens: 0,
+      actualCost: 0
+    };
+    current.requests += 1;
+    current.inputTokens += row.inputTokens ?? 0;
+    current.outputTokens += row.outputTokens ?? 0;
+    current.cacheCreationTokens += row.cacheCreationTokens ?? 0;
+    current.cacheReadTokens += row.cacheReadTokens ?? 0;
+    current.totalTokens += row.totalTokens ?? 0;
+    current.actualCost += row.actualCost ?? 0;
+    bucket.set(key, current);
+  }
+  return Array.from(bucket.values()).sort((left, right) => {
+    if (right.requests !== left.requests) {
+      return right.requests - left.requests;
+    }
+    return right.totalTokens - left.totalTokens;
+  });
 }
 
 function formatTime(value: string) {
