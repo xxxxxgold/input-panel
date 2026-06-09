@@ -53,6 +53,7 @@ import {
   listManagedKeys,
   listUsageRecords,
   loginAccount,
+  persistAccountCredential,
   refreshAccount,
   refreshAllAccounts,
   removeAccount,
@@ -552,7 +553,8 @@ export default function App() {
   }
 
   async function submitAccountForm() {
-    setBusyText(editingAccount ? "正在更新账号..." : accountPassword.trim() ? "正在创建账号并自动登录..." : "正在创建账号...");
+    const password = accountPassword.trim();
+    setBusyText(editingAccount ? "正在更新账号..." : password ? "正在创建账号并自动登录..." : "正在创建账号...");
     setError(null);
     try {
       if (editingAccount) {
@@ -565,9 +567,9 @@ export default function App() {
         const created = await createAccount(accountForm);
         setSelectedAccountId(created.id);
         setSelectedSiteId(created.siteId);
-        if (accountPassword.trim()) {
+        if (password) {
           try {
-            const loginResult = await loginAccount(created.id, accountPassword.trim());
+            const loginResult = await loginAccount(created.id, password);
             if (loginResult.type === "success") {
               setSelectedAccountId(loginResult.account.id);
               setSelectedSiteId(loginResult.account.siteId);
@@ -575,7 +577,7 @@ export default function App() {
               setLoginModal({
                 account: created,
                 phase: "2fa",
-                password: accountPassword.trim(),
+                password,
                 code: "",
                 tempToken: loginResult.tempToken,
                 emailMasked: loginResult.emailMasked
@@ -1204,6 +1206,7 @@ export default function App() {
         profilePassword.oldPassword,
         profilePassword.newPassword
       );
+      await persistAccountCredential(selectedAccountId, profilePassword.newPassword);
       setProfilePassword({ oldPassword: "", newPassword: "" });
     } catch (cause) {
       setError((cause as Error).message);
@@ -3009,7 +3012,7 @@ export default function App() {
         >
           <div className="form-callout">
             {editingAccount ? (
-              <p>这里编辑的是账号资料，不改密码。若要重新登录，请在账号卡片点“登录”，密码不会被本地持久保存。</p>
+              <p>这里编辑的是账号资料，不改密码。若要重新登录，请在账号卡片点“登录”，本地会安全保存凭据用于自动续登。</p>
             ) : (
               <p>这里可以直接填密码。填写后会在创建账号后自动登录并拉取数据；留空则只创建账号。运行消息会显示在主工作区标题下方的提示横幅里。</p>
             )}
@@ -3080,7 +3083,7 @@ export default function App() {
                 onChange={(event) => setAccountPassword(event.target.value)}
                 placeholder="可选。填写后创建完成会自动登录"
               />
-              <p className="field-help">密码只用于当前登录请求，不会写入本地状态文件。</p>
+              <p className="field-help">密码仅保存在当前设备本地，用于自动续登与 token 失效后的自动重登。</p>
             </label>
           )}
           <label className="field">
@@ -3407,7 +3410,7 @@ export default function App() {
         >
           <p className="modal-hint">
             {loginModal.phase === "password"
-              ? "仅在本地后端保存会话，不会在前端长期保存密码。"
+              ? "密码会仅在当前设备本地安全保存，用于自动续登和 token 失效后的重登。"
               : "当前站点要求 2FA 验证。验证码通过后才会完成登录并拉取数据。"}
           </p>
           <label className="field">

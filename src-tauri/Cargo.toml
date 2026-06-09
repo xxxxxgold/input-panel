@@ -1,0 +1,32 @@
+[package]
+name = "app"
+version = "0.1.0"
+description = "A local Tauri workbench for managing Sub2API sites, accounts, keys, subscriptions, and usage."
+authors = ["xxxxxgold"]
+license = "GPL-3.0-only"
+repository = "https://github.com/xxxxxgold/input-panel"
+homepage = "https://github.com/xxxxxgold/input-panel"
+readme = "../README.md"
+edition = "2021"
+rust-version = "1.77.2"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.2", features = [] }
+
+[dependencies]
+anyhow = "1.0"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.11.2", features = [] }
+tauri-plugin-log = "2"
+uuid = { version = "1.11", features = ["v4", "serde"] }

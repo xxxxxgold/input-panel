@@ -492,6 +492,16 @@ export async function loginAccount(accountId: string, password: string): Promise
   throw new Error((data as { error?: string } | null)?.error ?? `Request failed: ${response.status}`);
 }
 
+export function persistAccountCredential(accountId: string, password: string) {
+  if (isTauriRuntime()) {
+    return invoke<boolean>("persist_account_credential", { accountId, password });
+  }
+  return request<{ ok: true }>(`/api/accounts/${accountId}/credential`, {
+    method: "POST",
+    body: JSON.stringify({ password })
+  });
+}
+
 export function completeAccount2fa(accountId: string, tempToken: string, code: string) {
   if (isTauriRuntime()) {
     return invoke<AccountRuntime>("login_account_2fa", { accountId, tempToken, code });
