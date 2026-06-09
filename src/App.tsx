@@ -14,12 +14,14 @@ import {
   MonitorDot,
   Plus,
   RefreshCcw,
+  Search,
   Server,
   Settings2,
   ShieldAlert,
+  X,
   UserRound
 } from "lucide-react";
-import { startTransition, useDeferredValue, useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
+import { startTransition, useDeferredValue, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   Area,
   AreaChart,
@@ -145,9 +147,60 @@ const USAGE_RANGE_PRESETS = [
 ] as const;
 
 const RAIL_EXPANDED_BREAKPOINT = 960;
+const KEY_EXPIRY_PRESET_DAYS = [7, 30, 90] as const;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+type KeyExpiryPreset = `${(typeof KEY_EXPIRY_PRESET_DAYS)[number]}d` | "custom";
 
 function isCompactRailViewport() {
   return typeof window !== "undefined" && window.innerWidth < RAIL_EXPANDED_BREAKPOINT;
+}
+
+function toDateTimeLocalValue(value: Date) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  const hours = String(value.getHours()).padStart(2, "0");
+  const minutes = String(value.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function buildKeyExpiryValue(days: number) {
+  const target = new Date();
+  target.setDate(target.getDate() + days);
+  target.setHours(23, 59, 0, 0);
+  return toDateTimeLocalValue(target);
+}
+
+function inferKeyExpiryPreset(expiresAt?: string | null): { enabled: boolean; preset: KeyExpiryPreset; value: string } {
+  if (!expiresAt) {
+    return {
+      enabled: true,
+      preset: "30d",
+      value: buildKeyExpiryValue(30)
+    };
+  }
+  const target = new Date(expiresAt);
+  if (Number.isNaN(target.getTime())) {
+    return {
+      enabled: true,
+      preset: "30d",
+      value: buildKeyExpiryValue(30)
+    };
+  }
+  const remainingDays = Math.max(1, Math.ceil((target.getTime() - Date.now()) / DAY_MS));
+  if (remainingDays === 7 || remainingDays === 30 || remainingDays === 90) {
+    return {
+      enabled: true,
+      preset: `${remainingDays}d`,
+      value: toDateTimeLocalValue(target)
+    };
+  }
+  return {
+    enabled: true,
+    preset: "custom",
+    value: toDateTimeLocalValue(target)
+  };
 }
 
 export default function App() {
@@ -198,6 +251,14 @@ export default function App() {
   const [managedKeys, setManagedKeys] = useState<PaginatedResult<ManagedKeyRecord> | null>(null);
   const [keyModalOpen, setKeyModalOpen] = useState(false);
   const [editingKey, setEditingKey] = useState<ManagedKeyRecord | null>(null);
+  const [keyGroupPickerOpen, setKeyGroupPickerOpen] = useState(false);
+  const [keyGroupSearch, setKeyGroupSearch] = useState("");
+  const [keyCustomKeyEnabled, setKeyCustomKeyEnabled] = useState(false);
+  const [keyIpLimitEnabled, setKeyIpLimitEnabled] = useState(true);
+  const [keyRateLimitEnabled, setKeyRateLimitEnabled] = useState(true);
+  const [keyExpiryEnabled, setKeyExpiryEnabled] = useState(true);
+  const [keyExpiryPreset, setKeyExpiryPreset] = useState<KeyExpiryPreset>("30d");
+  const [keyExpiryDateTime, setKeyExpiryDateTime] = useState(buildKeyExpiryValue(30));
   const [keysPage, setKeysPage] = useState(1);
   const [keyForm, setKeyForm] = useState<KeyMutationInput>({
     name: "",
@@ -351,6 +412,28 @@ export default function App() {
       : subscriptionCount > 0
         ? "查看配额与到期时间"
         : "暂无订阅数据";
+  const filteredKeyGroups = groups.filter((group) => {
+    if (!keyGroupSearch.trim()) {
+      return true;
+    }
+    const keyword = keyGroupSearch.trim().toLowerCase();
+    return (
+      group.name.toLowerCase().includes(keyword) ||
+      group.platform.toLowerCase().includes(keyword) ||
+      (group.subscriptionType ?? "").toLowerCase().includes(keyword)
+    );
+  });
+  const selectedKeyGroup =
+    groups.find((group) => group.id === keyForm.groupId) ??
+    (editingKey && keyForm.groupId != null
+      ? {
+          id: keyForm.groupId,
+          name: editingKey.groupName ?? `当前分组 #${keyForm.groupId}`,
+          platform: editingKey.platform ?? "unknown",
+          rateMultiplier: 1,
+          subscriptionType: "unknown"
+        }
+      : null);
   const shellClassName = [
     "app-shell",
     isRailExpanded ? "" : "rail-collapsed"
@@ -755,13 +838,21 @@ export default function App() {
       customKey: "",
       ipWhitelist: "",
       ipBlacklist: "",
-      quota: 0,
+      quota: null,
       expiresInDays: 30,
       status: "active",
       rateLimit5h: 0,
       rateLimit1d: 0,
       rateLimit7d: 0
     });
+    setKeyGroupPickerOpen(false);
+    setKeyGroupSearch("");
+    setKeyCustomKeyEnabled(false);
+    setKeyIpLimitEnabled(true);
+    setKeyRateLimitEnabled(true);
+    setKeyExpiryEnabled(true);
+    setKeyExpiryPreset("30d");
+    setKeyExpiryDateTime(buildKeyExpiryValue(30));
   }
 
   function parseOptionalNumberInput(value: string) {
@@ -803,12 +894,33 @@ export default function App() {
         rateLimit1d: key.rateLimit1d ?? 0,
         rateLimit7d: key.rateLimit7d ?? 0
       });
+      setKeyGroupPickerOpen(false);
+      setKeyGroupSearch("");
+      setKeyCustomKeyEnabled(Boolean(key.rawKey));
+      setKeyIpLimitEnabled(Boolean((key.ipWhitelist ?? "").trim() || (key.ipBlacklist ?? "").trim()));
+      setKeyRateLimitEnabled(Boolean((key.rateLimit5h ?? 0) || (key.rateLimit1d ?? 0) || (key.rateLimit7d ?? 0)));
+      const expiryState = inferKeyExpiryPreset(key.expiresAt);
+      setKeyExpiryEnabled(expiryState.enabled);
+      setKeyExpiryPreset(expiryState.preset);
+      setKeyExpiryDateTime(expiryState.value);
       setKeyModalOpen(true);
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
       setBusyText(null);
     }
+  }
+
+  function handleKeyExpiryPresetSelect(nextPreset: KeyExpiryPreset) {
+    setKeyExpiryPreset(nextPreset);
+    if (nextPreset === "custom") {
+      if (!keyExpiryDateTime) {
+        setKeyExpiryDateTime(buildKeyExpiryValue(30));
+      }
+      return;
+    }
+    const nextDays = Number(nextPreset.replace("d", ""));
+    setKeyExpiryDateTime(buildKeyExpiryValue(nextDays));
   }
 
   async function refreshManagedKeys() {
@@ -830,15 +942,38 @@ export default function App() {
       setError("请选择一个可用分组。");
       return;
     }
+    if (keyCustomKeyEnabled) {
+      const customKey = keyForm.customKey?.trim() || "";
+      if (customKey.length < 16) {
+        setError("自定义密钥至少需要 16 个字符。");
+        return;
+      }
+    }
+    if (keyExpiryEnabled && (!keyExpiryDateTime || Number.isNaN(new Date(keyExpiryDateTime).getTime()))) {
+      setError("请选择有效的过期时间。");
+      return;
+    }
     setBusyText(editingKey ? "正在更新密钥..." : "正在创建密钥...");
     setError(null);
     try {
+      const normalizedCustomKey = keyCustomKeyEnabled ? keyForm.customKey?.trim() || "" : undefined;
+      const normalizedIpWhitelist = keyIpLimitEnabled ? keyForm.ipWhitelist?.trim() || "" : "";
+      const normalizedIpBlacklist = keyIpLimitEnabled ? keyForm.ipBlacklist?.trim() || "" : "";
+      const normalizedExpiryDays = keyExpiryEnabled
+        ? (keyExpiryPreset === "custom"
+            ? Math.max(1, Math.ceil((new Date(keyExpiryDateTime).getTime() - Date.now()) / DAY_MS))
+            : Number(keyExpiryPreset.replace("d", "")))
+        : null;
       const payload: KeyMutationInput = {
         ...keyForm,
         name: keyForm.name.trim(),
-        customKey: keyForm.customKey?.trim() || "",
-        ipWhitelist: keyForm.ipWhitelist?.trim() || "",
-        ipBlacklist: keyForm.ipBlacklist?.trim() || ""
+        customKey: normalizedCustomKey,
+        ipWhitelist: normalizedIpWhitelist,
+        ipBlacklist: normalizedIpBlacklist,
+        expiresInDays: normalizedExpiryDays,
+        rateLimit5h: keyRateLimitEnabled ? keyForm.rateLimit5h : 0,
+        rateLimit1d: keyRateLimitEnabled ? keyForm.rateLimit1d : 0,
+        rateLimit7d: keyRateLimitEnabled ? keyForm.rateLimit7d : 0
       };
       if (editingKey) {
         await updateManagedKey(selectedAccountId, editingKey.id, payload);
@@ -2963,161 +3098,302 @@ export default function App() {
 
       {keyModalOpen && (
         <Modal
-          title={editingKey ? "编辑密钥" : "新增密钥"}
+          title={editingKey ? "编辑密钥" : "创建密钥"}
           onClose={() => setKeyModalOpen(false)}
           onSubmit={() => void submitKeyForm()}
           submitText={editingKey ? "更新密钥" : "创建密钥"}
           size="wide"
+          className="key-modal"
+          bodyClassName="key-modal-body"
+          footerClassName="key-modal-footer"
+          headerClassName="key-modal-header"
+          closeText={null}
         >
-          <p className="modal-hint">
-            {editingKey
-              ? "这里编辑的是当前密钥的展示名、额度、限流和访问限制。留空字段会按现有站点兼容逻辑提交。"
-              : "这里会直接调用当前账号的真实创建接口。若自定义密钥留空，则按站点默认方式生成。"}
-          </p>
-          <label className="field">
-            <span>所属分组</span>
-            <select
-              value={keyForm.groupId ?? ""}
-              onChange={(event) =>
-                setKeyForm((prev) => ({
-                  ...prev,
-                  groupId: event.target.value ? Number(event.target.value) : null
-                }))
-              }
-            >
-              <option value="">{groups.length === 0 ? "当前没有可用分组" : "请选择分组"}</option>
-              {keyForm.groupId != null && !groups.some((group) => group.id === keyForm.groupId) && (
-                <option value={keyForm.groupId}>
-                  {editingKey?.groupName ? `${editingKey.groupName} (当前分组)` : `当前分组 #${keyForm.groupId}`}
-                </option>
-              )}
-              {groups.map((group) => (
-                <option key={group.id} value={group.id}>
-                  {group.name} / {group.platform}
-                </option>
-              ))}
-            </select>
-            {groups.length === 0 && (
-              <p className="field-help">当前账号没有返回可用分组，先刷新账号后再创建密钥。</p>
-            )}
-          </label>
-          <label className="field">
-            <span>密钥名称</span>
-            <input
-              value={keyForm.name}
-              onChange={(event) => setKeyForm((prev) => ({ ...prev, name: event.target.value }))}
-              placeholder="例如: Claude 标准额度"
-            />
-          </label>
-          <label className="field">
-            <span>自定义密钥</span>
-            <input
-              value={keyForm.customKey ?? ""}
-              onChange={(event) => setKeyForm((prev) => ({ ...prev, customKey: event.target.value }))}
-              placeholder={editingKey ? "可留空，表示不主动覆盖当前 key" : "可选。留空则由站点自动生成"}
-            />
-            <p className="field-help">创建时可直接填已有 key；编辑时留空可避免误覆盖真实密钥。</p>
-          </label>
-          <label className="field">
-            <span>额度 (USD)</span>
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              value={keyForm.quota ?? ""}
-              onChange={(event) =>
-                setKeyForm((prev) => ({ ...prev, quota: parseOptionalNumberInput(event.target.value) }))
-              }
-              placeholder="0"
-            />
-          </label>
-          <label className="field">
-            <span>有效天数</span>
-            <input
-              type="number"
-              min="1"
-              step="1"
-              value={keyForm.expiresInDays ?? ""}
-              onChange={(event) =>
-                setKeyForm((prev) => ({ ...prev, expiresInDays: parseOptionalNumberInput(event.target.value) }))
-              }
-              placeholder={editingKey ? "留空则不重设有效期" : "默认 30"}
-            />
-            <p className="field-help">{editingKey ? "编辑时留空表示不额外重置有效期。" : "默认 30 天，可按需调整。"}</p>
-          </label>
-          <label className="field">
-            <span>状态</span>
-            <select
-              value={keyForm.status ?? "active"}
-              onChange={(event) => setKeyForm((prev) => ({ ...prev, status: event.target.value }))}
-            >
-              {keyForm.status &&
-                !["active", "inactive"].includes(keyForm.status) && (
-                  <option value={keyForm.status}>保持当前状态 ({keyForm.status})</option>
+          <div className="key-modal-shell">
+            <section className="key-modal-section">
+              <label className="field key-modal-field">
+                <span>名称</span>
+                <input
+                  value={keyForm.name}
+                  onChange={(event) => setKeyForm((prev) => ({ ...prev, name: event.target.value }))}
+                  placeholder="我的 API 密钥"
+                />
+              </label>
+              <div className="field key-modal-field">
+                <span>分组</span>
+                <div className="key-group-picker">
+                  <button
+                    type="button"
+                    className={`key-group-trigger ${keyGroupPickerOpen ? "open" : ""}`}
+                    onClick={() => {
+                      if (groups.length === 0) return;
+                      setKeyGroupPickerOpen((prev) => !prev);
+                    }}
+                    disabled={groups.length === 0}
+                    aria-expanded={keyGroupPickerOpen}
+                    aria-label="选择分组"
+                  >
+                    <div className="key-group-trigger-copy">
+                      <strong>{selectedKeyGroup?.name ?? "选择分组"}</strong>
+                      <span>{selectedKeyGroup ? `${selectedKeyGroup.platform} / x${selectedKeyGroup.rateMultiplier.toFixed(1)}` : "请选择分组"}</span>
+                    </div>
+                    <ChevronDown size={18} className={`site-picker-icon ${keyGroupPickerOpen ? "open" : ""}`} />
+                  </button>
+                  {keyGroupPickerOpen && groups.length > 0 && (
+                    <div className="key-group-dropdown">
+                      <label className="key-group-search">
+                        <Search size={16} />
+                        <input
+                          value={keyGroupSearch}
+                          onChange={(event) => setKeyGroupSearch(event.target.value)}
+                          placeholder="搜索分组..."
+                        />
+                      </label>
+                      <div className="key-group-list">
+                        {filteredKeyGroups.map((group) => (
+                          <button
+                            key={group.id}
+                            type="button"
+                            className={`key-group-option ${group.id === keyForm.groupId ? "selected" : ""}`}
+                            onClick={() => {
+                              setKeyForm((prev) => ({ ...prev, groupId: group.id }));
+                              setKeyGroupPickerOpen(false);
+                              setKeyGroupSearch("");
+                            }}
+                          >
+                            <div className="key-group-option-main">
+                              <span className={`key-group-platform ${group.platform}`}>{group.platform}</span>
+                              <strong>{group.name}</strong>
+                            </div>
+                            <span className="key-group-rate">{`${group.rateMultiplier.toFixed(group.rateMultiplier < 1 ? 1 : 0)}x 倍率`}</span>
+                          </button>
+                        ))}
+                        {filteredKeyGroups.length === 0 && (
+                          <div className="key-group-empty">没有匹配的分组</div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {groups.length === 0 && (
+                  <p className="field-help">当前账号没有返回可用分组，先刷新账号后再创建密钥。</p>
                 )}
-              <option value="active">启用</option>
-              <option value="inactive">停用</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>IP 白名单</span>
-            <input
-              value={keyForm.ipWhitelist ?? ""}
-              onChange={(event) => setKeyForm((prev) => ({ ...prev, ipWhitelist: event.target.value }))}
-              placeholder="多个 IP 用逗号分隔"
-            />
-          </label>
-          <label className="field">
-            <span>IP 黑名单</span>
-            <input
-              value={keyForm.ipBlacklist ?? ""}
-              onChange={(event) => setKeyForm((prev) => ({ ...prev, ipBlacklist: event.target.value }))}
-              placeholder="多个 IP 用逗号分隔"
-            />
-          </label>
-          <div className="form-callout">
-            <p>限流窗口填 0 或留空都表示不主动提高额度上限，按站点当前兼容策略处理。</p>
-          </div>
-          <div className="stack-list">
-            <label className="field">
-              <span>5 小时限流</span>
-              <input
-                type="number"
-                min="0"
-                step="1"
-                value={keyForm.rateLimit5h ?? ""}
-                onChange={(event) =>
-                  setKeyForm((prev) => ({ ...prev, rateLimit5h: parseOptionalNumberInput(event.target.value) }))
-                }
-                placeholder="0"
-              />
-            </label>
-            <label className="field">
-              <span>1 天限流</span>
-              <input
-                type="number"
-                min="0"
-                step="1"
-                value={keyForm.rateLimit1d ?? ""}
-                onChange={(event) =>
-                  setKeyForm((prev) => ({ ...prev, rateLimit1d: parseOptionalNumberInput(event.target.value) }))
-                }
-                placeholder="0"
-              />
-            </label>
-            <label className="field">
-              <span>7 天限流</span>
-              <input
-                type="number"
-                min="0"
-                step="1"
-                value={keyForm.rateLimit7d ?? ""}
-                onChange={(event) =>
-                  setKeyForm((prev) => ({ ...prev, rateLimit7d: parseOptionalNumberInput(event.target.value) }))
-                }
-                placeholder="0"
-              />
-            </label>
+              </div>
+            </section>
+
+            <section className="key-modal-section">
+              <div className="key-switch-row">
+                <div>
+                  <strong>自定义密钥</strong>
+                  <p>仅允许字母、数字、下划线和连字符，最少16个字符。</p>
+                </div>
+                <button
+                  type="button"
+                  className={`switch-pill ${keyCustomKeyEnabled ? "on" : ""}`}
+                  onClick={() => setKeyCustomKeyEnabled((prev) => !prev)}
+                  aria-pressed={keyCustomKeyEnabled}
+                >
+                  <span />
+                </button>
+              </div>
+              {keyCustomKeyEnabled && (
+                <label className="field key-modal-field">
+                  <span>自定义密钥</span>
+                  <input
+                    value={keyForm.customKey ?? ""}
+                    onChange={(event) => setKeyForm((prev) => ({ ...prev, customKey: event.target.value }))}
+                    placeholder="输入自定义密钥 (至少16个字符)"
+                  />
+                  <p className="field-help">仅允许字母、数字、下划线和连字符，最少16个字符。</p>
+                </label>
+              )}
+            </section>
+
+            <section className="key-modal-section">
+              <div className="key-switch-row">
+                <div>
+                  <strong>IP 限制</strong>
+                </div>
+                <button
+                  type="button"
+                  className={`switch-pill ${keyIpLimitEnabled ? "on" : ""}`}
+                  onClick={() => setKeyIpLimitEnabled((prev) => !prev)}
+                  aria-pressed={keyIpLimitEnabled}
+                >
+                  <span />
+                </button>
+              </div>
+              {keyIpLimitEnabled && (
+                <>
+                  <label className="field key-modal-field">
+                    <span>IP 白名单</span>
+                    <textarea
+                      value={keyForm.ipWhitelist ?? ""}
+                      onChange={(event) => setKeyForm((prev) => ({ ...prev, ipWhitelist: event.target.value }))}
+                      placeholder={"192.168.1.100\n10.0.0.0/8"}
+                      rows={4}
+                    />
+                    <p className="field-help">每行一个 IP 或 CIDR。设置后仅允许这些 IP 使用此密钥</p>
+                  </label>
+                  <label className="field key-modal-field">
+                    <span>IP 黑名单</span>
+                    <textarea
+                      value={keyForm.ipBlacklist ?? ""}
+                      onChange={(event) => setKeyForm((prev) => ({ ...prev, ipBlacklist: event.target.value }))}
+                      placeholder={"1.2.3.4\n5.6.0.0/16"}
+                      rows={4}
+                    />
+                    <p className="field-help">每行一个 IP 或 CIDR。这些 IP 将被禁止使用此密钥</p>
+                  </label>
+                </>
+              )}
+            </section>
+
+            <section className="key-modal-section">
+              <label className="field key-modal-field">
+                <span>额度限制</span>
+                <div className="money-input">
+                  <span>$</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={keyForm.quota ?? ""}
+                    onChange={(event) =>
+                      setKeyForm((prev) => ({ ...prev, quota: parseOptionalNumberInput(event.target.value) }))
+                    }
+                    placeholder="输入 USD 额度限制"
+                  />
+                </div>
+                <p className="field-help">设置此密钥可消耗的最大金额。0 = 无限制。</p>
+              </label>
+            </section>
+
+            <section className="key-modal-section">
+              <div className="key-switch-row">
+                <div>
+                  <strong>速率限制</strong>
+                  <p>设置此密钥在指定时间窗口内的最大消费额。0 = 无限制。</p>
+                </div>
+                <button
+                  type="button"
+                  className={`switch-pill ${keyRateLimitEnabled ? "on" : ""}`}
+                  onClick={() => setKeyRateLimitEnabled((prev) => !prev)}
+                  aria-pressed={keyRateLimitEnabled}
+                >
+                  <span />
+                </button>
+              </div>
+              {keyRateLimitEnabled && (
+                <div className="key-rate-grid">
+                  <label className="field key-modal-field">
+                    <span>5小时限额 (USD)</span>
+                    <div className="money-input">
+                      <span>$</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={keyForm.rateLimit5h ?? ""}
+                        onChange={(event) =>
+                          setKeyForm((prev) => ({ ...prev, rateLimit5h: parseOptionalNumberInput(event.target.value) }))
+                        }
+                        placeholder="0"
+                      />
+                    </div>
+                  </label>
+                  <label className="field key-modal-field">
+                    <span>日限额 (USD)</span>
+                    <div className="money-input">
+                      <span>$</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={keyForm.rateLimit1d ?? ""}
+                        onChange={(event) =>
+                          setKeyForm((prev) => ({ ...prev, rateLimit1d: parseOptionalNumberInput(event.target.value) }))
+                        }
+                        placeholder="0"
+                      />
+                    </div>
+                  </label>
+                  <label className="field key-modal-field">
+                    <span>7天限额 (USD)</span>
+                    <div className="money-input">
+                      <span>$</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={keyForm.rateLimit7d ?? ""}
+                        onChange={(event) =>
+                          setKeyForm((prev) => ({ ...prev, rateLimit7d: parseOptionalNumberInput(event.target.value) }))
+                        }
+                        placeholder="0"
+                      />
+                    </div>
+                  </label>
+                </div>
+              )}
+            </section>
+
+            <section className="key-modal-section">
+              <div className="key-switch-row">
+                <div>
+                  <strong>密钥有效期</strong>
+                </div>
+                <button
+                  type="button"
+                  className={`switch-pill ${keyExpiryEnabled ? "on" : ""}`}
+                  onClick={() => setKeyExpiryEnabled((prev) => !prev)}
+                  aria-pressed={keyExpiryEnabled}
+                >
+                  <span />
+                </button>
+              </div>
+              {keyExpiryEnabled && (
+                <>
+                  <div className="expiry-preset-row">
+                    {KEY_EXPIRY_PRESET_DAYS.map((days) => {
+                      const presetKey = `${days}d` as KeyExpiryPreset;
+                      return (
+                        <button
+                          key={days}
+                          type="button"
+                          className={`expiry-pill ${keyExpiryPreset === presetKey ? "active" : ""}`}
+                          onClick={() => handleKeyExpiryPresetSelect(presetKey)}
+                        >
+                          {days}天
+                        </button>
+                      );
+                    })}
+                    <button
+                      type="button"
+                      className={`expiry-pill ${keyExpiryPreset === "custom" ? "active" : ""}`}
+                      onClick={() => handleKeyExpiryPresetSelect("custom")}
+                    >
+                      自定义
+                    </button>
+                  </div>
+                  <label className="field key-modal-field">
+                    <span>过期时间</span>
+                    <div className="date-input-shell">
+                      <input
+                        type="datetime-local"
+                        value={keyExpiryDateTime}
+                        onChange={(event) => {
+                          setKeyExpiryDateTime(event.target.value);
+                          setKeyExpiryPreset("custom");
+                        }}
+                      />
+                      <CalendarDays size={18} />
+                    </div>
+                    <p className="field-help">选择此 API 密钥的过期时间。</p>
+                  </label>
+                </>
+              )}
+            </section>
           </div>
         </Modal>
       )}
@@ -3299,7 +3575,12 @@ function Modal({
   onSubmit,
   submitText,
   footer,
-  size = "default"
+  size = "default",
+  className,
+  bodyClassName,
+  footerClassName,
+  headerClassName,
+  closeText = "关闭"
 }: {
   title: string;
   children: ReactNode;
@@ -3308,19 +3589,30 @@ function Modal({
   submitText?: string;
   footer?: ReactNode;
   size?: "default" | "wide";
+  className?: string;
+  bodyClassName?: string;
+  footerClassName?: string;
+  headerClassName?: string;
+  closeText?: string | null;
 }) {
   return (
     <div className="modal-backdrop">
-      <div className={`modal-card ${size === "wide" ? "wide" : ""}`}>
-        <header className="modal-header">
+      <div className={`modal-card ${size === "wide" ? "wide" : ""} ${className ?? ""}`.trim()}>
+        <header className={`modal-header ${headerClassName ?? ""}`.trim()}>
           <h3>{title}</h3>
-          <button className="inline-text-button" onClick={onClose}>
-            关闭
-          </button>
+          {closeText === null ? (
+            <button className="modal-close-button" onClick={onClose} aria-label="关闭">
+              <X size={18} />
+            </button>
+          ) : (
+            <button className="inline-text-button" onClick={onClose}>
+              {closeText}
+            </button>
+          )}
         </header>
-        <div className="modal-body">{children}</div>
+        <div className={`modal-body ${bodyClassName ?? ""}`.trim()}>{children}</div>
         {(footer || onSubmit) && (
-          <footer className="modal-footer">
+          <footer className={`modal-footer ${footerClassName ?? ""}`.trim()}>
             {footer ?? (
               <>
                 <button className="ghost-button" onClick={onClose}>

@@ -280,7 +280,8 @@ html.deep-blue {
 
 .search-input,
 .field input,
-.field select {
+.field select,
+.field textarea {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -288,6 +289,13 @@ html.deep-blue {
   color: var(--text-strong);
   padding: 12px 14px;
   box-sizing: border-box;
+}
+
+.field textarea {
+  resize: vertical;
+  min-height: 116px;
+  line-height: 1.65;
+  font-family: inherit;
 }
 
 .field {
@@ -1729,11 +1737,333 @@ html.deep-blue {
   border-bottom: 1px solid var(--border);
 }
 
+.modal-header h3 {
+  font-size: 16px;
+  font-weight: 700;
+}
+
 .modal-body {
   padding: 18px 22px;
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.modal-close-button {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-subtle);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: 160ms ease;
+}
+
+.modal-close-button:hover {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-soft));
+  color: var(--text-strong);
+}
+
+.key-modal {
+  width: min(560px, 100%);
+  max-height: min(96vh, 1150px);
+  border-radius: 22px;
+  box-shadow: 0 28px 80px rgba(4, 12, 24, 0.34);
+  overflow: hidden;
+}
+
+.key-modal-header,
+.key-modal-footer {
+  padding-inline: 24px;
+}
+
+.key-modal-header {
+  min-height: 64px;
+}
+
+.key-modal-body {
+  padding: 0;
+  max-height: calc(min(96vh, 1150px) - 136px);
+  overflow-y: auto;
+  background: #ffffff;
+}
+
+.key-modal-footer {
+  border-top: 1px solid var(--border);
+  justify-content: flex-end;
+  background: #ffffff;
+}
+
+.key-modal-shell {
+  display: flex;
+  flex-direction: column;
+}
+
+.key-modal-section {
+  padding: 18px 24px 0;
+}
+
+.key-modal-section:last-child {
+  padding-bottom: 24px;
+}
+
+.key-modal-field {
+  gap: 10px;
+}
+
+.key-modal-field > span,
+.key-switch-row strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.key-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 12px;
+}
+
+.key-switch-row p {
+  margin: 8px 0 0;
+  color: var(--text-subtle);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.switch-pill {
+  width: 40px;
+  height: 22px;
+  border: 0;
+  border-radius: 999px;
+  background: #d7dee8;
+  padding: 2px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  transition: 160ms ease;
+  flex: 0 0 auto;
+}
+
+.switch-pill span {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
+  transition: transform 160ms ease;
+}
+
+.switch-pill.on {
+  background: #19b3a4;
+}
+
+.switch-pill.on span {
+  transform: translateX(18px);
+}
+
+.key-group-picker {
+  position: relative;
+}
+
+.key-group-trigger {
+  width: 100%;
+  min-height: 56px;
+  border: 1px solid #cfe4e1;
+  border-radius: 16px;
+  background: #ffffff;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  transition: 160ms ease;
+}
+
+.key-group-trigger:hover,
+.key-group-trigger.open {
+  border-color: #8ed9cf;
+  box-shadow: 0 0 0 2px rgba(25, 179, 164, 0.08);
+}
+
+.key-group-trigger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.key-group-trigger-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  text-align: left;
+}
+
+.key-group-trigger-copy strong {
+  font-size: 15px;
+  font-weight: 500;
+  color: #111827;
+}
+
+.key-group-trigger-copy span {
+  font-size: 12px;
+  color: var(--text-subtle);
+}
+
+.key-group-dropdown {
+  position: absolute;
+  inset: calc(100% + 8px) 0 auto;
+  z-index: 20;
+  border: 1px solid #d9e3ee;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 20px 48px rgba(15, 23, 42, 0.12);
+  overflow: hidden;
+}
+
+.key-group-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #edf2f7;
+  color: var(--text-subtle);
+}
+
+.key-group-search input {
+  border: 0;
+  padding: 0;
+  outline: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.key-group-list {
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.key-group-option {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  transition: 160ms ease;
+}
+
+.key-group-option:hover,
+.key-group-option.selected {
+  background: #f3f5f7;
+}
+
+.key-group-option-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.key-group-option-main strong {
+  font-size: 15px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.key-group-platform,
+.key-group-rate {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.key-group-platform.openai,
+.key-group-rate {
+  background: #ecfdf3;
+  color: #0b9d68;
+}
+
+.key-group-platform.anthropic {
+  background: #fff4e5;
+  color: #cb6a00;
+}
+
+.key-group-empty {
+  padding: 18px 16px;
+  color: var(--text-subtle);
+  font-size: 13px;
+  text-align: center;
+}
+
+.money-input,
+.date-input-shell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: #ffffff;
+  padding: 0 14px;
+}
+
+.money-input span,
+.date-input-shell svg {
+  color: var(--text-subtle);
+  flex: 0 0 auto;
+}
+
+.money-input input,
+.date-input-shell input {
+  border: 0;
+  padding-inline: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.key-rate-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.expiry-preset-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.expiry-pill {
+  border: 0;
+  border-radius: 12px;
+  background: #f2f4f7;
+  color: #334155;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: 160ms ease;
+}
+
+.expiry-pill.active {
+  background: #c9f3ee;
+  color: #0f766e;
 }
 
 .field {
