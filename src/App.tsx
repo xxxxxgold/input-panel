@@ -842,6 +842,17 @@ export default function App() {
 
   async function loadAccountScopedData(accountId: string, startDate: string, endDate: string) {
     try {
+      const loadOptional = async <T,>(loader: () => Promise<T>, fallback: T) => {
+        try {
+          return await loader();
+        } catch (cause) {
+          if (isOptionalEndpointUnavailable(cause)) {
+            return fallback;
+          }
+          throw cause;
+        }
+      };
+
       const [
         nextGroups,
         nextKeys,
@@ -852,14 +863,27 @@ export default function App() {
         nextPlatformQuotas,
         nextSubscriptionSummary
       ] = await Promise.all([
-        getAvailableGroups(accountId),
+        loadOptional(() => getAvailableGroups(accountId), []),
         listManagedKeys(accountId, keysPage, 100),
-        getUsageStats(accountId, { period: "today" }),
-        getDashboardTrend(accountId, 7),
-        getDashboardModels(accountId, 7),
+        loadOptional(() => getUsageStats(accountId, { period: "today" }), {
+          totalRequests: 0,
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          totalCacheTokens: 0,
+          totalCacheCreationTokens: 0,
+          totalCacheReadTokens: 0,
+          totalTokens: 0,
+          totalCost: 0,
+          totalActualCost: 0,
+          averageDurationMs: 0,
+          rpm: 0,
+          tpm: 0
+        }),
+        loadOptional(() => getDashboardTrend(accountId, 7), null),
+        loadOptional(() => getDashboardModels(accountId, 7), null),
         getProfileRecord(accountId),
-        getPlatformQuotas(accountId),
-        getSubscriptionSummary(accountId)
+        loadOptional(() => getPlatformQuotas(accountId), null),
+        loadOptional(() => getSubscriptionSummary(accountId), null)
       ]);
       setGroups(nextGroups);
       setManagedKeys(nextKeys);
@@ -885,10 +909,18 @@ export default function App() {
       if (initialKeyId) {
         const daily = await getApiKeyDailyUsage(accountId, initialKeyId, 30);
         setKeyUsageRows(daily);
+      } else {
+        setKeyUsageRows([]);
       }
+      setError(null);
     } catch (cause) {
       setError((cause as Error).message);
     }
+  }
+
+  function isOptionalEndpointUnavailable(cause: unknown) {
+    const message = (cause as Error)?.message ?? "";
+    return message.includes("未找到可用的接口路径") || message.includes("404");
   }
 
   async function loadUsageRecordsForFilters(
@@ -916,7 +948,7 @@ export default function App() {
   ) {
     setUsageModelSummariesLoading(true);
     try {
-      const pageSize = 100;
+      const pageSize = 20;
       const firstPage = await listUsageRecords(accountId, {
         page: 1,
         pageSize,
@@ -2841,10 +2873,10 @@ export default function App() {
                     </button>
                   </div>
                 </SectionCard>
-                <SectionCard title="当前实现说明" subtitle="本地 BFF 将承担登录、会话兼容与聚合">
+                <SectionCard title="当前实现说明" subtitle="单 Rust 后端负责登录、会话兼容与聚合">
                   <ul className="plain-list">
                     <li>前端只连接本地 `/api/*`，不直接跨域请求第三方站点。</li>
-                    <li>后端会保存站点、账号元数据与会话快照，用于刷新与聚合。</li>
+                    <li>Rust 后端会把站点、账号、密码、session 与快照统一保存到 `config/config.db`。</li>
                     <li>登录层会兼容多个候选 auth/profile 路径，降低 Sub2API 版本漂移风险。</li>
                   </ul>
                 </SectionCard>
