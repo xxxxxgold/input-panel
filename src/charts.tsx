@@ -1,0 +1,349 @@
+import { useEffect, useRef } from "react";
+import * as echarts from "echarts";
+
+export type ChartOption = Record<string, unknown>;
+
+export function EChartCard({ option }: { option: ChartOption | null }) {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const chartRef = useRef<echarts.ECharts | null>(null);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) {
+      return;
+    }
+
+    const chart = echarts.init(host);
+    chartRef.current = chart;
+
+    const observer = new ResizeObserver(() => {
+      chart.resize();
+    });
+    observer.observe(host);
+
+    return () => {
+      observer.disconnect();
+      chart.dispose();
+      chartRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!chartRef.current) {
+      return;
+    }
+    if (!option) {
+      chartRef.current.clear();
+      return;
+    }
+    chartRef.current.setOption(option as echarts.EChartsOption, { notMerge: true });
+    chartRef.current.resize();
+  }, [option]);
+
+  return (
+    <div className="echart-card-shell">
+      <div ref={hostRef} className="echart-host" />
+      {!option && <div className="echart-overlay">当前没有图表数据</div>}
+    </div>
+  );
+}
+
+export interface TrendChartPoint {
+  bucket: string;
+  actualCost: number;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  cacheHitRate: number;
+  totalTokens: number;
+}
+
+type TrendMetric =
+  | "actualCost"
+  | "requests"
+  | "totalTokens"
+  | "cacheCreationTokens"
+  | "cacheReadTokens"
+  | "cacheHitRate";
+
+export function normalizeTrendChartData(
+  points: Array<{
+    bucket?: string;
+    date?: string;
+    actualCost?: number | null;
+    requests?: number | null;
+    inputTokens?: number | null;
+    outputTokens?: number | null;
+    cacheCreationTokens?: number | null;
+    cacheReadTokens?: number | null;
+    totalTokens?: number | null;
+  }>
+): TrendChartPoint[] {
+  return points.map((point) => {
+    const inputTokens = point.inputTokens ?? 0;
+    const cacheReadTokens = point.cacheReadTokens ?? 0;
+    return {
+      bucket: point.bucket ?? point.date ?? "",
+      actualCost: point.actualCost ?? 0,
+      requests: point.requests ?? 0,
+      inputTokens,
+      outputTokens: point.outputTokens ?? 0,
+      cacheCreationTokens: point.cacheCreationTokens ?? 0,
+      cacheReadTokens,
+      cacheHitRate: computeCacheHitRate(inputTokens, cacheReadTokens),
+      totalTokens: point.totalTokens ?? 0
+    };
+  });
+}
+
+export function buildTrendAreaChartOption(input: {
+  data: TrendChartPoint[];
+  series: TrendMetric[];
+}): ChartOption | null {
+  if (input.data.length === 0 || input.series.length === 0) {
+    return null;
+  }
+
+  const palette = readChartPalette();
+  const seriesPalette: Record<TrendMetric, string> = {
+    actualCost: palette.accent,
+    requests: palette.secondary,
+    totalTokens: palette.indigo,
+    cacheCreationTokens: palette.warning,
+    cacheReadTokens: palette.sky,
+    cacheHitRate: palette.rose
+  };
+  const labels: Record<TrendMetric, string> = {
+    actualCost: "实际成本",
+    requests: "请求数",
+    totalTokens: "总 Tokens",
+    cacheCreationTokens: "缓存写入",
+    cacheReadTokens: "缓存读取",
+    cacheHitRate: "缓存率"
+  };
+  const metricByLabel = Object.fromEntries(
+    Object.entries(labels).map(([metric, label]) => [label, metric as TrendMetric])
+  ) as Record<string, TrendMetric>;
+
+  return {
+    backgroundColor: "transparent",
+    color: input.series.map((key) => seriesPalette[key]),
+    tooltip: {
+      trigger: "axis",
+      formatter: (params: unknown) => {
+        const rows = Array.isArray(params) ? params : [params];
+        const head = rows[0] && typeof rows[0] === "object" && rows[0] && "axisValueLabel" in rows[0]
+          ? String((rows[0] as { axisValueLabel?: unknown }).axisValueLabel ?? "")
+          : "";
+        const lines = rows.flatMap((row) => {
+          if (!row || typeof row !== "object") {
+            return [];
+          }
+          const seriesName = String((row as { seriesName?: unknown }).seriesName ?? "");
+          const metric = metricByLabel[seriesName];
+          const rawValue = (row as { value?: unknown; marker?: unknown }).value;
+          const value =
+            typeof rawValue === "number"
+              ? rawValue
+              : Array.isArray(rawValue)
+                ? Number(rawValue[rawValue.length - 1] ?? 0)
+                : Number(rawValue ?? 0);
+          return `${String((row as { marker?: unknown }).marker ?? "")}${seriesName} ${formatTrendMetricValue(metric, value)}`;
+        });
+        return [head, ...lines].filter(Boolean).join("<br/>");
+      }
+    },
+    legend: {
+      top: 0,
+      type: "scroll",
+      textStyle: { color: palette.textSoft }
+    },
+    grid: {
+      top: 50,
+      left: 52,
+      right: 78,
+      bottom: 24
+    },
+    xAxis: {
+      type: "category",
+      data: input.data.map((item) => item.bucket),
+      axisLabel: { color: palette.textSoft },
+      axisLine: { lineStyle: { color: palette.border } }
+    },
+    yAxis: [
+      {
+        type: "value",
+        name: "成本 / 请求",
+        axisLabel: { color: palette.textSoft },
+        splitLine: { lineStyle: { color: palette.grid } }
+      },
+      {
+        type: "value",
+        show: false,
+        splitLine: { show: false }
+      },
+      {
+        type: "value",
+        name: "缓存率",
+        position: "right",
+        min: 0,
+        max: 100,
+        offset: 8,
+        axisLabel: {
+          color: palette.textSoft,
+          formatter: (value: number) => `${value}%`
+        },
+        splitLine: { show: false }
+      }
+    ],
+    series: input.series.map((metric, index) => ({
+      name: labels[metric],
+      type: metric === "requests" ? "bar" : "line",
+      smooth: metric !== "requests",
+      yAxisIndex:
+        metric === "cacheHitRate"
+          ? 2
+          : metric === "actualCost" || metric === "requests"
+            ? 0
+            : 1,
+      barMaxWidth: 18,
+      areaStyle:
+        metric === "actualCost"
+          ? {
+              color: `color-mix(in srgb, ${seriesPalette[metric]} 22%, transparent)`
+            }
+          : undefined,
+      lineStyle: {
+        width: metric === "actualCost" ? 2.5 : 2,
+        type: metric === "cacheHitRate" ? "dashed" : "solid"
+      },
+      showSymbol: metric === "requests",
+      z: input.series.length - index,
+      data: input.data.map((item) => item[metric])
+    }))
+  };
+}
+
+export function buildPlatformDonutChartOption(
+  rows: Array<{ platform: string; totalActualCost: number }>
+): ChartOption | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  const palette = readChartPalette();
+  return {
+    color: [palette.accent, palette.secondary, palette.warning, palette.rose, palette.indigo, palette.sky],
+    tooltip: { trigger: "item" },
+    legend: {
+      orient: "vertical",
+      right: 8,
+      top: 12,
+      textStyle: { color: palette.textSoft }
+    },
+    series: [
+      {
+        type: "pie",
+        radius: ["45%", "72%"],
+        center: ["36%", "50%"],
+        label: { color: palette.textSoft },
+        data: rows.map((item) => ({
+          name: item.platform,
+          value: item.totalActualCost
+        }))
+      }
+    ]
+  };
+}
+
+export function buildPlatformBarChartOption(
+  rows: Array<{ platform: string; totalActualCost: number; totalTokens: number; totalRequests: number }>
+): ChartOption | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  const palette = readChartPalette();
+  return {
+    color: [palette.accent, palette.secondary, palette.warning],
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+    legend: {
+      top: 0,
+      textStyle: { color: palette.textSoft }
+    },
+    grid: {
+      top: 44,
+      left: 58,
+      right: 18,
+      bottom: 24
+    },
+    xAxis: {
+      type: "category",
+      data: rows.map((item) => item.platform),
+      axisLabel: { color: palette.textSoft }
+    },
+    yAxis: [
+      {
+        type: "value",
+        axisLabel: { color: palette.textSoft },
+        splitLine: { lineStyle: { color: palette.grid } }
+      },
+      {
+        type: "value",
+        axisLabel: { color: palette.textSoft },
+        splitLine: { show: false }
+      }
+    ],
+    series: [
+      { name: "实际成本", type: "bar", data: rows.map((item) => item.totalActualCost) },
+      { name: "请求数", type: "bar", data: rows.map((item) => item.totalRequests) },
+      { name: "总 Tokens", type: "line", yAxisIndex: 1, smooth: true, data: rows.map((item) => item.totalTokens) }
+    ]
+  };
+}
+
+function readChartPalette() {
+  if (typeof window === "undefined") {
+    return {
+      accent: "#68c4ba",
+      secondary: "#7aa2ff",
+      warning: "#eab308",
+      rose: "#d6455f",
+      indigo: "#7c3aed",
+      sky: "#0ea5e9",
+      textSoft: "#6a778d",
+      border: "rgba(16, 24, 38, 0.12)",
+      grid: "rgba(16, 24, 38, 0.08)"
+    };
+  }
+  const style = getComputedStyle(document.documentElement);
+  return {
+    accent: style.getPropertyValue("--accent").trim() || "#68c4ba",
+    secondary: "#7aa2ff",
+    warning: "#eab308",
+    rose: style.getPropertyValue("--danger").trim() || "#d6455f",
+    indigo: "#7c3aed",
+    sky: "#0ea5e9",
+    textSoft: style.getPropertyValue("--text-subtle").trim() || "#6a778d",
+    border: style.getPropertyValue("--border").trim() || "rgba(16, 24, 38, 0.12)",
+    grid: style.getPropertyValue("--border-strong").trim() || "rgba(16, 24, 38, 0.08)"
+  };
+}
+
+function computeCacheHitRate(inputTokens: number, cacheReadTokens: number) {
+  const denominator = inputTokens + cacheReadTokens;
+  if (denominator <= 0) {
+    return 0;
+  }
+  return Number(((cacheReadTokens / denominator) * 100).toFixed(2));
+}
+
+function formatTrendMetricValue(metric: TrendMetric | undefined, value: number) {
+  if (metric === "actualCost") {
+    return `$${value.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`;
+  }
+  if (metric === "cacheHitRate") {
+    return `${value.toFixed(2)}%`;
+  }
+  return Math.round(value).toLocaleString();
+}
