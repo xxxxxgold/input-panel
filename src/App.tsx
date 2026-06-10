@@ -3991,7 +3991,7 @@ function renderQuotaWindow(
       <div className="bar-track">
         <div className="bar-fill" style={{ width: `${percent}%` }} />
       </div>
-      {windowValue.windowStart && <p className="quota-hint">窗口起点: {formatTime(windowValue.windowStart)}</p>}
+      {windowValue.windowStart && <p className="quota-hint">{label}统计起点: {formatTime(windowValue.windowStart)}</p>}
     </div>
   );
 }
