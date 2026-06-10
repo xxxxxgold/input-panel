@@ -245,20 +245,27 @@ export function normalizeDailyUsageRows(items: Record<string, unknown>[]): Daily
 }
 
 export function normalizeSubscriptionSummary(raw: Record<string, unknown>): SubscriptionSummaryPayload {
+  const subscriptionItems = Array.isArray(raw.subscriptions)
+    ? normalizeItems(raw.subscriptions)
+    : normalizeItems(raw);
+  const subscriptions = subscriptionItems.map((item) => ({
+    id: pickNumber(item, ["id"], 0),
+    groupId: pickNumber(item, ["group_id"], 0),
+    groupName: pickString(item, ["group_name", "group.name", "name"], "") ?? "",
+    status: pickString(item, ["status"], "unknown") ?? "unknown",
+    dailyUsedUsd: pickNumber(item, ["daily_used_usd", "daily.current", "daily_usage_usd"], 0),
+    dailyLimitUsd: pickNumber(item, ["daily_limit_usd", "daily.limit", "group.daily_limit_usd"], 0),
+    weeklyUsedUsd: pickNumber(item, ["weekly_used_usd", "weekly.current"], 0),
+    monthlyUsedUsd: pickNumber(item, ["monthly_used_usd", "monthly.current"], 0),
+    expiresAt: pickString(item, ["expires_at"])
+  }));
+  const derivedActiveCount = subscriptions.filter((item) => item.status === "active").length;
+  const derivedTotalUsedUsd = subscriptions.reduce((sum, item) => sum + item.dailyUsedUsd, 0);
+
   return {
-    activeCount: pickNumber(raw, ["active_count"], 0),
-    totalUsedUsd: pickNumber(raw, ["total_used_usd"], 0),
-    subscriptions: normalizeItems(raw.subscriptions).map((item) => ({
-      id: pickNumber(item, ["id"], 0),
-      groupId: pickNumber(item, ["group_id"], 0),
-      groupName: pickString(item, ["group_name"], "") ?? "",
-      status: pickString(item, ["status"], "unknown") ?? "unknown",
-      dailyUsedUsd: pickNumber(item, ["daily_used_usd"], 0),
-      dailyLimitUsd: pickNumber(item, ["daily_limit_usd"], 0),
-      weeklyUsedUsd: pickNumber(item, ["weekly_used_usd"], 0),
-      monthlyUsedUsd: pickNumber(item, ["monthly_used_usd"], 0),
-      expiresAt: pickString(item, ["expires_at"])
-    }))
+    activeCount: pickNumber(raw, ["active_count"], derivedActiveCount),
+    totalUsedUsd: pickNumber(raw, ["total_used_usd"], derivedTotalUsedUsd),
+    subscriptions
   };
 }
 
