@@ -23,16 +23,11 @@ import {
 } from "lucide-react";
 import { startTransition, useDeferredValue, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
-  Area,
-  AreaChart,
-  CartesianGrid,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis
-} from "recharts";
+  buildPlatformDonutChartOption,
+  buildTrendAreaChartOption,
+  EChartCard,
+  normalizeTrendChartData
+} from "./charts";
 import {
   changeProfilePassword,
   completeAccount2fa,
@@ -68,6 +63,7 @@ import {
   verifyNotifyEmail,
   updateSite
 } from "./api";
+import { AnalyticsLab } from "./analytics-lab";
 import {
   DISABLED_BALANCE_WARNING,
   formatBalanceWarningSummary,
@@ -91,6 +87,7 @@ import type {
   ProfileUpdateInput,
   SiteInput,
   SiteRecord,
+  SnapshotAlert,
   SubscriptionSummaryPayload,
   SubscriptionRecord,
   UsageRow,
@@ -111,8 +108,7 @@ const NAV_ITEMS: Array<{
   { key: "usage", label: "用量", icon: ChartColumn },
   { key: "subscriptions", label: "订阅", icon: BadgeDollarSign },
   { key: "keyUsage", label: "单 Key", icon: MonitorDot },
-  { key: "trends", label: "趋势", icon: ChartColumn },
-  { key: "alerts", label: "告警", icon: ShieldAlert },
+  { key: "trends", label: "图表实验室", icon: ChartColumn },
   { key: "settings", label: "站点账号配置", icon: Server },
   { key: "systemSettings", label: "系统设置", icon: Settings2 }
 ];
@@ -296,6 +292,9 @@ export default function App() {
     useState<(typeof USAGE_RANGE_PRESETS)[number]["key"]>("today");
   const [usageDraftRange, setUsageDraftRange] = useState({ startDate: "", endDate: "" });
   const usageRangePickerRef = useRef<HTMLDivElement | null>(null);
+  const topbarAlertsRef = useRef<HTMLDivElement | null>(null);
+  const topbarSubscriptionsRef = useRef<HTMLDivElement | null>(null);
+  const topbarAccountMenuRef = useRef<HTMLDivElement | null>(null);
   const [keyUsageKeyId, setKeyUsageKeyId] = useState<string>("");
   const [keyUsageRows, setKeyUsageRows] = useState<DailyUsagePoint[]>([]);
   const [subscriptionSummary, setSubscriptionSummary] = useState<SubscriptionSummaryPayload | null>(null);
@@ -399,6 +398,42 @@ export default function App() {
     return () => window.removeEventListener("pointerdown", handlePointerDown);
   }, [usageRangePickerOpen]);
 
+  useEffect(() => {
+    if (!topbarAccountMenuOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      if (!topbarAccountMenuRef.current) {
+        return;
+      }
+      if (topbarAccountMenuRef.current.contains(event.target as Node)) {
+        return;
+      }
+      closeTopbarAccountMenu();
+    }
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
+  }, [topbarAccountMenuOpen]);
+
+  useEffect(() => {
+    if (!topbarAlertsExpanded && !topbarSubscriptionsExpanded) {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target as Node;
+      if (topbarAlertsRef.current?.contains(target) || topbarSubscriptionsRef.current?.contains(target)) {
+        return;
+      }
+      closeTopbarPeekPanels();
+    }
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
+  }, [topbarAlertsExpanded, topbarSubscriptionsExpanded]);
+
   const sites = overview?.sites ?? [];
   const accounts = overview?.accounts ?? [];
   const filteredSites = sites.filter((item) => {
@@ -444,6 +479,7 @@ export default function App() {
   const latestHistory = visibleHistory.filter((item) => item.isLatest);
   const usageRangeLabel = formatUsageRangeLabel(usageRangePreset, usageStartDate, usageEndDate);
   const alertCount = overview?.alerts.length ?? 0;
+  const topbarAlertPreview = overview?.alerts.slice(0, 3) ?? [];
   const subscriptionCount =
     subscriptionSummary?.activeCount ?? visibleSnapshot?.subscriptions.length ?? 0;
   const subscriptionSpend = subscriptionSummary?.totalUsedUsd ?? 0;
@@ -601,8 +637,18 @@ export default function App() {
   }
 
   function openProfileModal() {
-    setTopbarAccountMenuOpen(false);
+    closeTopbarAccountMenu();
     setProfileModalOpen(true);
+  }
+
+  function closeTopbarPeekPanels() {
+    setTopbarAlertsExpanded(false);
+    setTopbarSubscriptionsExpanded(false);
+  }
+
+  function closeTopbarAccountMenu() {
+    setTopbarAccountMenuOpen(false);
+    setTopbarAccountSearch("");
   }
 
   function closeProfileModal() {
@@ -682,8 +728,7 @@ export default function App() {
   function handleTopbarAccountSelect(account: AccountRuntime) {
     setSelectedSiteId(account.siteId);
     setSelectedAccountId(account.id);
-    setTopbarAccountSearch("");
-    setTopbarAccountMenuOpen(false);
+    closeTopbarAccountMenu();
   }
 
   async function handleLogin() {
@@ -1404,139 +1449,141 @@ export default function App() {
 
       <main className="workspace">
         <header className="global-topbar">
-          <div className="global-topbar-grid">
-            <div className="topbar-card topbar-context-card">
-              <div className="topbar-card-icon">
-                <Server size={18} />
-              </div>
-              <div className="topbar-card-copy">
-                <span className="topbar-card-label">当前上下文</span>
-                <strong className="topbar-select-value">{selectedSite?.name ?? "未选择站点"}</strong>
-                <p>
-                  {selectedAccount
-                    ? `${selectedAccount.label || maskEmail(selectedAccount.email)} · ${selectedAccountStatusLabel}`
-                    : "从右上角主账号入口切换账号"}
-                </p>
-              </div>
-              <span className="topbar-metric">{accounts.length} 个账号</span>
-            </div>
-
-            <div
-              className={`topbar-peek-card ${topbarAlertsExpanded ? "expanded" : ""}`}
-              onMouseEnter={() => setTopbarAlertsExpanded(true)}
-              onMouseLeave={() => setTopbarAlertsExpanded(false)}
-            >
-              <button
-                type="button"
-                className="topbar-peek-trigger"
-                onClick={() => {
-                  setTopbarAlertsExpanded((current) => !current);
-                  setTopbarSubscriptionsExpanded(false);
-                }}
-                aria-expanded={topbarAlertsExpanded}
-                aria-label="通知详情"
-              >
-                <Bell size={18} />
-              </button>
-              <div className="topbar-card topbar-peek-panel">
-                <div className="topbar-card-icon">
-                  <Bell size={18} />
-                </div>
-                <div className="topbar-card-copy">
-                  <span className="topbar-card-label">通知</span>
-                  <strong>{alertCount === 0 ? "全部正常" : `${alertCount} 条待处理`}</strong>
-                  <p>{alertCount === 0 ? "当前没有新的余额或订阅告警" : "点击进入告警中心查看详情"}</p>
-                </div>
-                <span className={`status-pill ${alertCount > 0 ? "critical" : "ready"}`}>
-                  {alertCount === 0 ? "静默" : "提醒"}
-                </span>
-                <button
-                  type="button"
-                  className="topbar-peek-action"
-                  onClick={() => {
-                    setTopbarAlertsExpanded(false);
-                    setNav("alerts");
-                  }}
-                >
-                  打开告警中心
-                </button>
-              </div>
-            </div>
-
-            <div
-              className={`topbar-peek-card ${topbarSubscriptionsExpanded ? "expanded" : ""}`}
-              onMouseEnter={() => setTopbarSubscriptionsExpanded(true)}
-              onMouseLeave={() => setTopbarSubscriptionsExpanded(false)}
-            >
-              <button
-                type="button"
-                className="topbar-peek-trigger"
-                onClick={() => {
-                  setTopbarSubscriptionsExpanded((current) => !current);
-                  setTopbarAlertsExpanded(false);
-                }}
-                aria-expanded={topbarSubscriptionsExpanded}
-                aria-label="订阅使用情况详情"
-              >
-                <Crown size={18} />
-              </button>
-              <div className="topbar-card topbar-peek-panel">
-                <div className="topbar-card-icon">
-                  <Crown size={18} />
-                </div>
-                <div className="topbar-card-copy">
-                  <span className="topbar-card-label">订阅使用情况</span>
-                  <strong>{usageStatusLabel}</strong>
-                  <p>{usageStatusHint}</p>
-                </div>
-                <span className="topbar-metric">
-                  {subscriptionSpend > 0 ? formatUsd(subscriptionSpend, 2) : subscriptionCount.toString()}
-                </span>
-                <button
-                  type="button"
-                  className="topbar-peek-action"
-                  onClick={() => {
-                    setTopbarSubscriptionsExpanded(false);
-                    setNav("subscriptions");
-                  }}
-                >
-                  打开订阅页
-                </button>
-              </div>
-            </div>
-          </div>
-
           <div className="header-actions global-topbar-actions">
-            {nav !== "systemSettings" && (
-              <button className="ghost-button" onClick={() => setNav("systemSettings")}>
-                <Settings2 size={16} />
-                系统设置
+            <div className="global-topbar-grid">
+              <button
+                type="button"
+                className="topbar-peek-trigger topbar-quick-action"
+                onClick={() => void loadOverview()}
+                aria-label="重新加载"
+                title="重新加载"
+              >
+                <RefreshCcw size={16} />
               </button>
-            )}
-            <button className="ghost-button" onClick={() => void loadOverview()}>
-              <RefreshCcw size={16} />
-              重新加载
-            </button>
+
+              <div
+                className={`topbar-peek-card peek-align-right ${topbarAlertsExpanded ? "expanded" : ""}`}
+                ref={topbarAlertsRef}
+              >
+                <button
+                  type="button"
+                  className="topbar-peek-trigger"
+                  onClick={() => {
+                    const nextOpen = !topbarAlertsExpanded;
+                    if (nextOpen) {
+                      closeTopbarAccountMenu();
+                    }
+                    setTopbarAlertsExpanded(nextOpen);
+                    setTopbarSubscriptionsExpanded(false);
+                  }}
+                  aria-expanded={topbarAlertsExpanded}
+                  aria-label="通知详情"
+                >
+                  <Bell size={18} />
+                </button>
+                <div className="topbar-card topbar-peek-panel topbar-alert-panel">
+                  <div className="topbar-alert-head">
+                    <div className="topbar-card-icon">
+                      <Bell size={18} />
+                    </div>
+                    <div className="topbar-card-copy">
+                      <span className="topbar-card-label">通知</span>
+                      <strong>{alertCount === 0 ? "全部正常" : `${alertCount} 条待处理`}</strong>
+                      <p>{alertCount === 0 ? "当前没有新的余额或订阅告警" : "以下是当前最需要处理的告警"}</p>
+                    </div>
+                    <span className={`status-pill ${alertCount > 0 ? "critical" : "ready"}`}>
+                      {alertCount === 0 ? "静默" : "提醒"}
+                    </span>
+                  </div>
+                  {topbarAlertPreview.length > 0 ? (
+                    <div className="topbar-alert-list">
+                      {topbarAlertPreview.map((alert) => (
+                        <div key={alert.id} className={`topbar-alert-item ${alert.severity}`}>
+                          <div className="topbar-alert-copy">
+                            <strong>{alert.title}</strong>
+                            <p>{alert.detail}</p>
+                          </div>
+                          <span className="topbar-alert-time">{formatTime(alert.createdAt)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="topbar-alert-empty">当前没有新的余额或订阅告警</p>
+                  )}
+                  <button
+                    type="button"
+                    className="topbar-peek-action"
+                    onClick={() => {
+                      closeTopbarPeekPanels();
+                      setNav("alerts");
+                    }}
+                  >
+                    打开告警中心
+                  </button>
+                </div>
+              </div>
+
+              <div
+                className={`topbar-peek-card peek-align-right ${topbarSubscriptionsExpanded ? "expanded" : ""}`}
+                ref={topbarSubscriptionsRef}
+              >
+                <button
+                  type="button"
+                  className="topbar-peek-trigger"
+                  onClick={() => {
+                    const nextOpen = !topbarSubscriptionsExpanded;
+                    if (nextOpen) {
+                      closeTopbarAccountMenu();
+                    }
+                    setTopbarSubscriptionsExpanded(nextOpen);
+                    setTopbarAlertsExpanded(false);
+                  }}
+                  aria-expanded={topbarSubscriptionsExpanded}
+                  aria-label="订阅使用情况详情"
+                >
+                  <Crown size={18} />
+                </button>
+                <div className="topbar-card topbar-peek-panel topbar-subscription-panel">
+                  <div className="topbar-card-icon">
+                    <Crown size={18} />
+                  </div>
+                  <div className="topbar-card-copy">
+                    <span className="topbar-card-label">订阅使用情况</span>
+                    <strong>{usageStatusLabel}</strong>
+                    <p>{usageStatusHint}</p>
+                  </div>
+                  <span className="topbar-metric">
+                    {subscriptionSpend > 0 ? formatUsd(subscriptionSpend, 2) : subscriptionCount.toString()}
+                  </span>
+                  <button
+                    type="button"
+                    className="topbar-peek-action"
+                    onClick={() => {
+                      closeTopbarPeekPanels();
+                      setNav("subscriptions");
+                    }}
+                  >
+                    打开订阅页
+                  </button>
+                </div>
+              </div>
+            </div>
             {selectedAccount && (
               <div
                 className={`topbar-account-menu ${topbarAccountMenuOpen ? "open" : ""}`}
-                onMouseLeave={() => {
-                  setTopbarAccountMenuOpen(false);
-                  setTopbarAccountSearch("");
-                }}
+                ref={topbarAccountMenuRef}
               >
                 <button
                   type="button"
                   className="topbar-account-trigger"
-                  onClick={() =>
-                    setTopbarAccountMenuOpen((current) => {
-                      const next = !current;
-                      if (!next) {
-                        setTopbarAccountSearch("");
-                      }
-                      return next;
-                    })
-                  }
+                  onClick={() => {
+                    if (topbarAccountMenuOpen) {
+                      closeTopbarAccountMenu();
+                      return;
+                    }
+                    closeTopbarPeekPanels();
+                    setTopbarAccountMenuOpen(true);
+                  }}
                   aria-expanded={topbarAccountMenuOpen}
                   aria-label="当前账号菜单"
                 >
@@ -1607,7 +1654,7 @@ export default function App() {
                       type="button"
                       className="topbar-account-item"
                       onClick={() => {
-                        setTopbarAccountMenuOpen(false);
+                        closeTopbarAccountMenu();
                         setNav("systemSettings");
                       }}
                     >
@@ -1618,7 +1665,7 @@ export default function App() {
                       type="button"
                       className="topbar-account-item"
                       onClick={() => {
-                        setTopbarAccountMenuOpen(false);
+                        closeTopbarAccountMenu();
                         setNav("settings");
                       }}
                     >
@@ -1629,7 +1676,7 @@ export default function App() {
                       type="button"
                       className="topbar-account-item"
                       onClick={() => {
-                        setTopbarAccountMenuOpen(false);
+                        closeTopbarAccountMenu();
                         void handleRefreshAccount(selectedAccount.id);
                       }}
                     >
@@ -1640,7 +1687,7 @@ export default function App() {
                       type="button"
                       className="topbar-account-item danger"
                       onClick={() => {
-                        setTopbarAccountMenuOpen(false);
+                        closeTopbarAccountMenu();
                         openPasswordLogin(selectedAccount);
                       }}
                     >
@@ -1701,86 +1748,77 @@ export default function App() {
                     value={`$${overview.totals.balance.toFixed(2)}`}
                     accent="emerald"
                     icon={<BadgeDollarSign size={18} />}
-                    hint="聚合所有已登录账号"
+                    hint="聚合所有已登录账号 · 悬浮查看账号"
+                    detailTitle="各账号余额"
+                    detail={renderOverviewMetricDetails(overview, "balance")}
                   />
                   <MetricCard
                     label="今日请求"
                     value={overview.totals.todayRequests.toLocaleString()}
                     accent="sky"
                     icon={<LayoutDashboard size={18} />}
-                    hint={`累计 ${overview.totals.totalRequests.toLocaleString()}`}
+                    hint={`累计 ${overview.totals.totalRequests.toLocaleString()} · 悬浮查看账号`}
+                    detailTitle="各账号今日请求"
+                    detail={renderOverviewMetricDetails(overview, "todayRequests")}
                   />
                   <MetricCard
                     label="今日实际成本"
                     value={`$${overview.totals.todayActualCost.toFixed(4)}`}
                     accent="violet"
                     icon={<ChartColumn size={18} />}
-                    hint={`累计 $${overview.totals.totalActualCost.toFixed(4)}`}
+                    hint={`累计 $${overview.totals.totalActualCost.toFixed(4)} · 悬浮查看账号`}
+                    detailTitle="各账号今日实际成本"
+                    detail={renderOverviewMetricDetails(overview, "todayActualCost")}
+                    detailPanelAlign="end"
                   />
                   <MetricCard
                     label="活跃 Keys"
                     value={`${overview.totals.activeApiKeys}`}
                     accent="amber"
                     icon={<KeyRound size={18} />}
-                    hint={`总数 ${overview.totals.totalApiKeys}`}
+                    hint={`总数 ${overview.totals.totalApiKeys} · 悬浮查看账号`}
+                    detailTitle="各账号 Key 状态"
+                    detail={renderOverviewMetricDetails(overview, "activeApiKeys")}
                   />
                   <MetricCard
                     label="今日 Tokens"
                     value={compact(overview.totals.todayTokens)}
                     accent="indigo"
                     icon={<MonitorDot size={18} />}
-                    hint={`累计 ${compact(overview.totals.totalTokens)}`}
+                    hint={`累计 ${compact(overview.totals.totalTokens)} · 悬浮查看账号`}
+                    detailTitle="各账号今日 Tokens"
+                    detail={renderOverviewMetricDetails(overview, "todayTokens")}
                   />
                   <MetricCard
                     label="异常数"
-                    value={String(overview.alerts.length)}
+                    value={String(alertCount)}
                     accent="rose"
                     icon={<ShieldAlert size={18} />}
-                    hint="低余额、会话失效、拉取失败"
+                    hint="低余额、会话失效、拉取失败 · 悬浮查看账号"
+                    detailTitle="各账号异常数"
+                    detail={renderOverviewMetricDetails(overview, "alerts")}
+                    detailPanelAlign="end"
                   />
                 </section>
 
                 <section className="content-grid">
                   <SectionCard
                     title="近 7 天趋势"
-                    subtitle="按全部账号聚合 actual cost / requests / tokens"
+                    subtitle="按全部账号聚合 actual cost / requests / cache"
                   >
                     <div className="chart-wrap tall">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={overview.trend}>
-                          <defs>
-                            <linearGradient id="trendCost" x1="0" x2="0" y1="0" y2="1">
-                              <stop offset="0%" stopColor="rgba(83, 205, 181, 0.75)" />
-                              <stop offset="100%" stopColor="rgba(83, 205, 181, 0.03)" />
-                            </linearGradient>
-                          </defs>
-                          <CartesianGrid strokeDasharray="3 3" stroke="var(--border-strong)" />
-                          <XAxis dataKey="bucket" stroke="var(--text-subtle)" tickLine={false} axisLine={false} />
-                          <YAxis stroke="var(--text-subtle)" tickLine={false} axisLine={false} />
-                          <Tooltip />
-                          <Area type="monotone" dataKey="actualCost" stroke="#53cdb5" fill="url(#trendCost)" strokeWidth={2} />
-                          <Area type="monotone" dataKey="requests" stroke="#7aa2ff" fill="transparent" strokeWidth={2} />
-                        </AreaChart>
-                      </ResponsiveContainer>
+                      <EChartCard
+                        option={buildTrendAreaChartOption({
+                          data: normalizeTrendChartData(overview.trend),
+                          series: ["actualCost", "requests", "cacheCreationTokens", "cacheReadTokens", "cacheHitRate"]
+                        })}
+                      />
                     </div>
                   </SectionCard>
 
                   <SectionCard title="平台分布" subtitle="按平台汇总实际成本与 tokens">
                     <div className="chart-wrap">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie
-                            data={overview.platformSeries}
-                            dataKey="totalActualCost"
-                            nameKey="platform"
-                            outerRadius={88}
-                            innerRadius={52}
-                            paddingAngle={2}
-                            fill="#7aa2ff"
-                          />
-                          <Tooltip />
-                        </PieChart>
-                      </ResponsiveContainer>
+                      <EChartCard option={buildPlatformDonutChartOption(overview.platformSeries)} />
                     </div>
                     <div className="legend-list">
                       {overview.platformSeries.map((item) => (
@@ -2619,26 +2657,15 @@ export default function App() {
                   )}
                 </SectionCard>
                 <div className="usage-insights-grid">
-                  <SectionCard title="趋势" subtitle="对齐 dashboard/trend 接口">
+                  <SectionCard title="趋势" subtitle="对齐 dashboard/trend 接口的成本、请求与缓存表现">
                     {usageTrend?.trend?.length ? (
                       <div className="chart-wrap tall">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <AreaChart
-                            data={usageTrend.trend.map((item) => ({
-                              bucket: item.date,
-                              actualCost: item.actualCost ?? 0,
-                              requests: item.requests,
-                              totalTokens: item.totalTokens ?? 0
-                            }))}
-                          >
-                            <CartesianGrid strokeDasharray="3 3" stroke="var(--border-strong)" />
-                            <XAxis dataKey="bucket" stroke="var(--text-subtle)" tickLine={false} axisLine={false} />
-                            <YAxis stroke="var(--text-subtle)" tickLine={false} axisLine={false} />
-                            <Tooltip />
-                            <Area type="monotone" dataKey="actualCost" stroke="#53cdb5" fill="rgba(83, 205, 181, 0.22)" strokeWidth={2} />
-                            <Area type="monotone" dataKey="requests" stroke="#7aa2ff" fill="transparent" strokeWidth={2} />
-                          </AreaChart>
-                        </ResponsiveContainer>
+                        <EChartCard
+                          option={buildTrendAreaChartOption({
+                            data: normalizeTrendChartData(usageTrend.trend),
+                            series: ["actualCost", "requests", "cacheCreationTokens", "cacheReadTokens", "cacheHitRate"]
+                          })}
+                        />
                       </div>
                     ) : (
                       <EmptyState title="当前没有趋势数据" detail="站点未返回 dashboard/trend 数据。" compact />
@@ -2753,65 +2780,28 @@ export default function App() {
             )}
 
             {nav === "trends" && (
-              <section className="content-grid">
-                <SectionCard title="当前账号趋势" subtitle="actual cost / requests / total tokens">
-                  {visibleSnapshot ? (
-                    <div className="chart-wrap tall">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={visibleSnapshot.trend}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="var(--border-strong)" />
-                          <XAxis dataKey="bucket" stroke="var(--text-subtle)" tickLine={false} axisLine={false} />
-                          <YAxis stroke="var(--text-subtle)" tickLine={false} axisLine={false} />
-                          <Tooltip />
-                          <Area type="monotone" dataKey="actualCost" stroke="#53cdb5" fill="rgba(83, 205, 181, 0.22)" strokeWidth={2} />
-                          <Area type="monotone" dataKey="totalTokens" stroke="#9e8bff" fill="transparent" strokeWidth={2} />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                    </div>
-                  ) : (
-                    <EmptyState title="还没有趋势数据" detail="先为账号完成登录并执行一次刷新。" compact />
-                  )}
-                </SectionCard>
-                <SectionCard title="当前账号平台分布" subtitle="按平台聚合成本">
-                  {visibleSnapshot ? (
-                    <>
-                      <div className="legend-list">
-                        {visibleSnapshot.stats.byPlatform.map((item) => (
-                          <div key={item.platform} className="legend-row">
-                            <span>{item.platform}</span>
-                            <strong>${item.totalActualCost.toFixed(4)}</strong>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="stack-list">
-                        {visibleSnapshot.stats.byPlatform.map((item) => (
-                          <div key={item.platform} className="bar-row">
-                            <div className="bar-label">
-                              <span>{item.platform}</span>
-                              <strong>{compact(item.totalTokens)} tokens</strong>
-                            </div>
-                            <div className="bar-track">
-                              <div
-                                className="bar-fill"
-                                style={{
-                                  width: `${Math.min(
-                                    100,
-                                    (item.totalActualCost /
-                                      Math.max(...visibleSnapshot.stats.byPlatform.map((value) => value.totalActualCost), 0.0001)) *
-                                      100
-                                  )}%`
-                                }}
-                              />
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </>
-                  ) : (
-                    <EmptyState title="没有可展示的平台分布" detail="当前账号尚未返回平台统计。" compact />
-                  )}
-                </SectionCard>
-              </section>
+              <AnalyticsLab
+                overview={overview}
+                selectedAccount={selectedAccount}
+                managedKeys={managedKeys}
+                usageStats={usageStats}
+                usageTrend={usageTrend}
+                usageModels={usageModels}
+                usageRecords={usageRecords}
+                subscriptionSummary={subscriptionSummary}
+                profileRecord={profileRecord}
+                platformQuotas={platformQuotas}
+                keyUsageRows={keyUsageRows}
+                keyUsageKeyId={keyUsageKeyId}
+                usageApiKeyFilter={usageApiKeyFilter}
+                usageStartDate={usageStartDate}
+                usageEndDate={usageEndDate}
+                onUsageApiKeyFilterChange={setUsageApiKeyFilter}
+                onUsageStartDateChange={setUsageStartDate}
+                onUsageEndDateChange={setUsageEndDate}
+                onUsageSearch={() => void handleUsageSearch()}
+                onKeyUsageSelect={(keyId) => void handleLoadKeyUsage(keyId)}
+              />
             )}
 
             {nav === "alerts" && (
@@ -3464,7 +3454,7 @@ function navTitle(key: NavKey) {
     case "keyUsage":
       return "单 Key 用量";
     case "trends":
-      return "趋势视图";
+      return "图表实验室";
     case "alerts":
       return "告警中心";
     case "settings":
@@ -3479,6 +3469,124 @@ function StatusBadge({ state }: { state: AccountRuntime["sessionState"] }) {
   return <span className={`status-pill ${state}`}>{label}</span>;
 }
 
+type OverviewMetricDetailKind =
+  | "balance"
+  | "todayRequests"
+  | "todayActualCost"
+  | "activeApiKeys"
+  | "todayTokens"
+  | "alerts";
+
+function formatOverviewAccountSource(account: AccountRuntime) {
+  return `${account.site?.name ?? account.snapshot?.siteName ?? "未命名站点"} / ${account.label}`;
+}
+
+function buildOverviewMetricDetails(
+  overview: OverviewPayload,
+  kind: OverviewMetricDetailKind
+) {
+  const alertsByAccount = overview.alerts.reduce<Map<string, SnapshotAlert[]>>((memo, alert) => {
+    const current = memo.get(alert.accountId) ?? [];
+    current.push(alert);
+    memo.set(alert.accountId, current);
+    return memo;
+  }, new Map());
+
+  return overview.accounts
+    .map((account) => {
+      const source = formatOverviewAccountSource(account);
+      const snapshot = account.snapshot;
+      const unavailableLabel = account.lastError ? "同步失败" : account.sessionState === "expired" ? "会话失效" : "未登录";
+
+      if (kind === "alerts") {
+        const accountAlerts = alertsByAccount.get(account.id) ?? [];
+        const latestAlert = accountAlerts[0] ?? null;
+        return {
+          accountId: account.id,
+          label: account.label,
+          value: accountAlerts.length.toLocaleString(),
+          description: latestAlert
+            ? `${source} · ${latestAlert.title} · ${formatTime(latestAlert.createdAt)}`
+            : `${source} · ${account.sessionState === "ready" ? "当前无异常" : unavailableLabel}`
+        };
+      }
+
+      if (!snapshot) {
+        return {
+          accountId: account.id,
+          label: account.label,
+          value: unavailableLabel,
+          description: `${source} · 当前没有可展示的聚合数据`
+        };
+      }
+
+      switch (kind) {
+        case "balance":
+          return {
+            accountId: account.id,
+            label: account.label,
+            value: formatUsd(snapshot.balance, 2),
+            description: `${source} · 更新时间 ${formatTime(snapshot.fetchedAt)}`
+          };
+        case "todayRequests":
+          return {
+            accountId: account.id,
+            label: account.label,
+            value: snapshot.stats.todayRequests.toLocaleString(),
+            description: `${source} · 累计 ${snapshot.stats.totalRequests.toLocaleString()} 请求`
+          };
+        case "todayActualCost":
+          return {
+            accountId: account.id,
+            label: account.label,
+            value: formatUsd(snapshot.stats.todayActualCost, 4),
+            description: `${source} · 累计 ${formatUsd(snapshot.stats.totalActualCost, 4)}`
+          };
+        case "activeApiKeys":
+          return {
+            accountId: account.id,
+            label: account.label,
+            value: String(snapshot.stats.activeApiKeys),
+            description: `${source} · 总数 ${snapshot.stats.totalApiKeys}`
+          };
+        case "todayTokens":
+          return {
+            accountId: account.id,
+            label: account.label,
+            value: compact(snapshot.stats.todayTokens),
+            description: `${source} · 累计 ${compact(snapshot.stats.totalTokens)} tokens`
+          };
+      }
+    })
+    .sort((left, right) => {
+      const leftNumeric = Number(left.value.replace(/[^\d.-]/g, ""));
+      const rightNumeric = Number(right.value.replace(/[^\d.-]/g, ""));
+      if (Number.isFinite(leftNumeric) && Number.isFinite(rightNumeric) && rightNumeric !== leftNumeric) {
+        return rightNumeric - leftNumeric;
+      }
+      return left.label.localeCompare(right.label, "zh-CN");
+    });
+}
+
+function renderOverviewMetricDetails(
+  overview: OverviewPayload,
+  kind: OverviewMetricDetailKind
+) {
+  const rows = buildOverviewMetricDetails(overview, kind);
+  return (
+    <>
+      {rows.map((row) => (
+        <UsageMetricDetailItem
+          key={`${kind}-${row.accountId}`}
+          label={row.label}
+          value={row.value}
+          description={row.description}
+        />
+      ))}
+    </>
+  );
+}
+
 function MetricCard({
   label,
   value,
@@ -3486,7 +3594,8 @@ function MetricCard({
   accent,
   icon,
   detailTitle,
-  detail
+  detail,
+  detailPanelAlign = "start"
 }: {
   label: string;
   value: string;
@@ -3495,6 +3604,7 @@ function MetricCard({
   icon: ReactNode;
   detailTitle?: string;
   detail?: ReactNode;
+  detailPanelAlign?: "start" | "end";
 }) {
   const body = (
     <article className="metric-card">
@@ -3509,24 +3619,30 @@ function MetricCard({
   if (!detail || !detailTitle) {
     return body;
   }
-  return <UsageDetailPopover title={detailTitle} trigger={body}>{detail}</UsageDetailPopover>;
+  return (
+    <UsageDetailPopover title={detailTitle} trigger={body} panelAlign={detailPanelAlign}>
+      {detail}
+    </UsageDetailPopover>
+  );
 }
 
 function UsageDetailPopover({
   title,
   trigger,
-  children
+  children,
+  panelAlign = "start"
 }: {
   title: string;
   trigger: ReactNode;
   children: ReactNode;
+  panelAlign?: "start" | "end";
 }) {
   return (
     <div className="usage-detail-popover">
       <div className="usage-detail-trigger" title={title}>
         {trigger}
       </div>
-      <div className="usage-detail-panel">
+      <div className={`usage-detail-panel ${panelAlign === "end" ? "align-end" : ""}`.trim()}>
         <div className="usage-detail-panel-title">{title}</div>
         <div className="usage-detail-grid">{children}</div>
       </div>

@@ -36,6 +36,7 @@ pub struct SubscriptionQuotaWindow {
 #[serde(rename_all = "camelCase")]
 pub struct SubscriptionRecord {
     pub id: String,
+    pub group_id: Option<i64>,
     pub name: String,
     pub status: String,
     pub group_name: Option<String>,
@@ -50,6 +51,7 @@ pub struct SubscriptionRecord {
 #[serde(rename_all = "camelCase")]
 pub struct KeyRecord {
     pub id: String,
+    pub group_id: Option<i64>,
     pub name: String,
     pub status: String,
     pub platform: Option<String>,
@@ -80,8 +82,12 @@ pub struct UsageRow {
     pub total_cost: f64,
     pub input_tokens: i64,
     pub output_tokens: i64,
+    pub input_cost: Option<f64>,
+    pub output_cost: Option<f64>,
     pub cache_creation_tokens: Option<i64>,
     pub cache_read_tokens: Option<i64>,
+    pub cache_creation_cost: Option<f64>,
+    pub cache_read_cost: Option<f64>,
     pub total_tokens: i64,
     pub first_token_ms: Option<i64>,
     pub duration_ms: Option<i64>,
@@ -89,17 +95,49 @@ pub struct UsageRow {
     pub request_type: Option<String>,
     pub stream: Option<bool>,
     pub billing_type: Option<i64>,
+    pub rate_multiplier: Option<f64>,
     pub user_agent: Option<String>,
     pub api_key_name: Option<String>,
     pub platform: Option<String>,
     pub subscription_name: Option<String>,
+    pub group_name: Option<String>,
+    pub subscription_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageHistoryRow {
-    #[serde(flatten)]
-    pub row: UsageRow,
+    pub id: String,
+    pub api_key_id: Option<i64>,
+    pub created_at: String,
+    pub model: String,
+    pub reasoning_effort: Option<String>,
+    pub endpoint: Option<String>,
+    pub upstream_endpoint: Option<String>,
+    pub actual_cost: f64,
+    pub total_cost: f64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub input_cost: Option<f64>,
+    pub output_cost: Option<f64>,
+    pub cache_creation_tokens: Option<i64>,
+    pub cache_read_tokens: Option<i64>,
+    pub cache_creation_cost: Option<f64>,
+    pub cache_read_cost: Option<f64>,
+    pub total_tokens: i64,
+    pub first_token_ms: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub billing_mode: Option<String>,
+    pub request_type: Option<String>,
+    pub stream: Option<bool>,
+    pub billing_type: Option<i64>,
+    pub rate_multiplier: Option<f64>,
+    pub user_agent: Option<String>,
+    pub api_key_name: Option<String>,
+    pub platform: Option<String>,
+    pub subscription_name: Option<String>,
+    pub group_name: Option<String>,
+    pub subscription_type: Option<String>,
     pub first_seen_at: String,
     pub last_seen_at: String,
     pub is_latest: bool,
@@ -112,6 +150,10 @@ pub struct TrendPoint {
     pub actual_cost: f64,
     pub total_cost: f64,
     pub requests: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub cache_read_tokens: i64,
     pub total_tokens: i64,
 }
 
@@ -203,6 +245,39 @@ pub struct AccountRuntime {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OverviewUsageRow {
+    #[serde(flatten)]
+    pub row: UsageRow,
+    pub account_id: String,
+    pub account_label: String,
+    pub site_id: String,
+    pub site_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverviewSubscriptionRecord {
+    #[serde(flatten)]
+    pub subscription: SubscriptionRecord,
+    pub account_id: String,
+    pub account_label: String,
+    pub site_id: String,
+    pub site_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverviewKeyRecord {
+    #[serde(flatten)]
+    pub key: KeyRecord,
+    pub account_id: String,
+    pub account_label: String,
+    pub site_id: String,
+    pub site_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OverviewTotals {
     pub balance: f64,
     pub total_sites: i64,
@@ -226,6 +301,9 @@ pub struct OverviewPayload {
     pub alerts: Vec<SnapshotAlert>,
     pub platform_series: Vec<PlatformPoint>,
     pub trend: Vec<TrendPoint>,
+    pub recent_usage: Vec<OverviewUsageRow>,
+    pub subscriptions: Vec<OverviewSubscriptionRecord>,
+    pub keys: Vec<OverviewKeyRecord>,
     pub generated_at: String,
 }
 
@@ -245,20 +323,23 @@ pub struct AccountInput {
     pub balance_warning: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredSession {
     pub saved_at: String,
     pub access_token: Option<String>,
     pub refresh_token: Option<String>,
+    pub token_type: Option<String>,
+    pub cookie_jar_json: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StoredCredentialMeta {
-    pub saved_at: String,
+pub struct StoredCredential {
+    pub account_id: String,
     pub email: String,
-    pub has_password: bool,
+    pub password: String,
+    pub saved_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -279,10 +360,11 @@ pub struct LoginChallenge {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", tag = "type")]
 pub enum LoginFlowResult {
+    #[serde(rename = "success")]
     Success { account: AccountRuntime },
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename = "2fa")]
     TwoFa {
         temp_token: String,
         email_masked: Option<String>,
