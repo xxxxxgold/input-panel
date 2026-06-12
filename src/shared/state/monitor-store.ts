@@ -1,6 +1,11 @@
 import { create } from "zustand";
 import { getOverview } from "../../api";
-import type { NavKey, OverviewPayload } from "../../types";
+import type {
+  AccountRuntime,
+  NavKey,
+  OverviewPayload,
+  SiteRecord
+} from "../../types";
 
 const INFO_TOAST_DURATION_MS = 2400;
 const ERROR_TOAST_DURATION_MS = 4200;
@@ -33,8 +38,6 @@ interface MonitorStore {
   activeBusyToastId: string | null;
   selectedSiteId: string | null;
   selectedAccountId: string | null;
-  siteSearch: string;
-  accountSearch: string;
   setNav: (nav: NavKey) => void;
   setTheme: (theme: "light" | "dark" | "deep-blue") => void;
   setBusyText: (text: string | null) => void;
@@ -43,10 +46,70 @@ interface MonitorStore {
   dismissToast: (toastId: string) => void;
   setSelectedSiteId: (siteId: string | null) => void;
   setSelectedAccountId: (accountId: string | null) => void;
-  setSiteSearch: (text: string) => void;
-  setAccountSearch: (text: string) => void;
   loadOverview: () => Promise<void>;
   replaceOverview: (overview: OverviewPayload) => void;
+}
+
+function isPreferredRuntimeAccount(account: AccountRuntime) {
+  return account.sessionState === "ready" || Boolean(account.snapshot);
+}
+
+export function resolveOverviewSelection({
+  accounts,
+  sites,
+  selectedAccountId,
+  selectedSiteId
+}: {
+  accounts: AccountRuntime[];
+  sites: SiteRecord[];
+  selectedAccountId: string | null;
+  selectedSiteId: string | null;
+}) {
+  const nextSiteId =
+    selectedSiteId && sites.some((site) => site.id === selectedSiteId) ? selectedSiteId : null;
+  const scopedAccounts = nextSiteId
+    ? accounts.filter((account) => account.siteId === nextSiteId)
+    : accounts;
+  const activeAccount =
+    accounts.find(
+      (account) =>
+        account.id === selectedAccountId && (!nextSiteId || account.siteId === nextSiteId)
+    ) ??
+    scopedAccounts.find(isPreferredRuntimeAccount) ??
+    scopedAccounts[0] ??
+    accounts.find(isPreferredRuntimeAccount) ??
+    accounts[0] ??
+    null;
+
+  return {
+    selectedAccountId: activeAccount?.id ?? null,
+    selectedSiteId: activeAccount?.siteId ?? nextSiteId ?? sites[0]?.id ?? null
+  };
+}
+
+export function appendToastDeduped(
+  toasts: MonitorToast[],
+  toast: Omit<MonitorToast, "id">,
+  createId: () => string = () => crypto.randomUUID()
+) {
+  const duplicate = toasts.find(
+    (item) =>
+      item.tone === toast.tone &&
+      item.message === toast.message &&
+      item.loading === toast.loading
+  );
+  if (duplicate) {
+    return {
+      toastId: duplicate.id,
+      toasts
+    };
+  }
+
+  const toastId = createId();
+  return {
+    toastId,
+    toasts: [...toasts, { ...toast, id: toastId }]
+  };
 }
 
 export const useMonitorStore = create<MonitorStore>((set, get) => ({
@@ -60,8 +123,6 @@ export const useMonitorStore = create<MonitorStore>((set, get) => ({
   activeBusyToastId: null,
   selectedSiteId: null,
   selectedAccountId: null,
-  siteSearch: "",
-  accountSearch: "",
   setNav: (nav) => set({ nav }),
   setTheme: (theme) => set({ theme }),
   setBusyText: (busyText) => {
@@ -101,12 +162,17 @@ export const useMonitorStore = create<MonitorStore>((set, get) => ({
     }
   },
   pushToast: ({ tone, message, durationMs, loading }) => {
-    const toastId = crypto.randomUUID();
     const resolvedDurationMs =
       durationMs ?? (tone === "error" ? ERROR_TOAST_DURATION_MS : INFO_TOAST_DURATION_MS);
-    set((state) => ({
-      toasts: [...state.toasts, { id: toastId, tone, message, durationMs: resolvedDurationMs, loading }]
-    }));
+    const nextToast = { tone, message, durationMs: resolvedDurationMs, loading };
+    let toastId = "";
+    set((state) => {
+      const next = appendToastDeduped(state.toasts, nextToast);
+      toastId = next.toastId;
+      return {
+        toasts: next.toasts
+      };
+    });
     return toastId;
   },
   dismissToast: (toastId) =>
@@ -115,19 +181,21 @@ export const useMonitorStore = create<MonitorStore>((set, get) => ({
     })),
   setSelectedSiteId: (selectedSiteId) => set({ selectedSiteId }),
   setSelectedAccountId: (selectedAccountId) => set({ selectedAccountId }),
-  setSiteSearch: (siteSearch) => set({ siteSearch }),
-  setAccountSearch: (accountSearch) => set({ accountSearch }),
   replaceOverview: (overview) => set({ overview }),
   loadOverview: async () => {
     set({ loading: true, error: null });
     try {
       const next = await getOverview();
-      const selectedSiteId = get().selectedSiteId ?? next.sites[0]?.id ?? null;
-      const selectedAccountId = get().selectedAccountId ?? next.accounts[0]?.id ?? null;
+      const selection = resolveOverviewSelection({
+        accounts: next.accounts,
+        sites: next.sites,
+        selectedAccountId: get().selectedAccountId,
+        selectedSiteId: get().selectedSiteId
+      });
       set({
         overview: next,
-        selectedSiteId,
-        selectedAccountId
+        selectedSiteId: selection.selectedSiteId,
+        selectedAccountId: selection.selectedAccountId
       });
     } catch (cause) {
       set({ error: (cause as Error).message });

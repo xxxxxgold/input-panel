@@ -13,6 +13,21 @@ pub struct SiteRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GroupRecord {
+    pub id: i64,
+    pub name: String,
+    pub description: Option<String>,
+    pub platform: String,
+    pub rate_multiplier: f64,
+    pub subscription_type: Option<String>,
+    pub daily_limit_usd: Option<f64>,
+    pub weekly_limit_usd: Option<f64>,
+    pub monthly_limit_usd: Option<f64>,
+    pub allow_messages_dispatch: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AccountRecord {
     pub id: String,
     pub site_id: String,
@@ -66,6 +81,20 @@ pub struct KeyRecord {
     pub usage5h: Option<f64>,
     pub usage1d: Option<f64>,
     pub usage7d: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedKeyRecord {
+    #[serde(flatten)]
+    pub key: KeyRecord,
+    pub raw_key: Option<String>,
+    pub user_id: Option<i64>,
+    pub ip_whitelist: Option<String>,
+    pub ip_blacklist: Option<String>,
+    pub window5h_start: Option<String>,
+    pub window1d_start: Option<String>,
+    pub window7d_start: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -309,6 +338,183 @@ pub struct OverviewPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PaginatedResult<T> {
+    pub items: Vec<T>,
+    pub page: i64,
+    pub page_size: i64,
+    pub total: i64,
+    pub pages: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageStatsRecord {
+    pub total_requests: i64,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_cache_tokens: Option<i64>,
+    pub total_cache_creation_tokens: Option<i64>,
+    pub total_cache_read_tokens: Option<i64>,
+    pub total_tokens: i64,
+    pub total_cost: f64,
+    pub total_actual_cost: f64,
+    pub average_duration_ms: f64,
+    pub rpm: Option<f64>,
+    pub tpm: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyUsagePoint {
+    pub date: String,
+    pub requests: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: Option<i64>,
+    pub cache_write_tokens: Option<i64>,
+    pub total_tokens: Option<i64>,
+    pub actual_cost: Option<f64>,
+    pub total_cost: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsagePoint {
+    pub model: String,
+    pub requests: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_creation_tokens: Option<i64>,
+    pub cache_read_tokens: Option<i64>,
+    pub total_tokens: i64,
+    pub cost: Option<f64>,
+    pub actual_cost: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageTrendPayload {
+    pub start_date: String,
+    pub end_date: String,
+    pub granularity: Option<String>,
+    pub trend: Vec<DailyUsagePoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardModelsPayload {
+    pub start_date: String,
+    pub end_date: String,
+    pub models: Vec<ModelUsagePoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentConfigRecord {
+    pub enabled: bool,
+    pub min_amount: f64,
+    pub max_amount: f64,
+    pub daily_limit: f64,
+    pub order_timeout_minutes: i64,
+    pub max_pending_orders: i64,
+    pub enabled_payment_types: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderRecord {
+    pub id: i64,
+    pub status: String,
+    pub amount: f64,
+    pub provider_instance_id: Option<i64>,
+    pub out_trade_no: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub paid_at: Option<String>,
+    pub refunded_at: Option<String>,
+    pub product_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserIdentityBinding {
+    pub provider: String,
+    pub bound: bool,
+    pub bound_count: i64,
+    pub display_name: Option<String>,
+    pub subject_hint: Option<String>,
+    pub provider_key: Option<String>,
+    pub verified_at: Option<String>,
+    pub can_bind: bool,
+    pub can_unbind: bool,
+    pub note: Option<String>,
+    pub note_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserProfileRecord {
+    pub id: i64,
+    pub email: String,
+    pub username: Option<String>,
+    pub avatar_url: Option<String>,
+    pub role: String,
+    pub balance: f64,
+    pub concurrency: i64,
+    pub status: String,
+    pub last_active_at: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub total_recharged: Option<f64>,
+    pub rpm_limit: Option<f64>,
+    pub balance_notify_enabled: Option<bool>,
+    pub balance_notify_threshold_type: Option<String>,
+    pub balance_notify_threshold: Option<f64>,
+    pub balance_notify_extra_emails: Option<Vec<String>>,
+    pub identities: HashMap<String, UserIdentityBinding>,
+    pub auth_bindings: HashMap<String, UserIdentityBinding>,
+    pub identity_bindings: HashMap<String, UserIdentityBinding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformQuotaRecord {
+    pub platform: Option<String>,
+    pub quota: Option<f64>,
+    pub used: Option<f64>,
+    pub remaining: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformQuotaPayload {
+    pub platform_quotas: Vec<PlatformQuotaRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionSummaryRecord {
+    pub id: i64,
+    pub group_id: i64,
+    pub group_name: String,
+    pub status: String,
+    pub daily_used_usd: f64,
+    pub daily_limit_usd: f64,
+    pub weekly_used_usd: f64,
+    pub monthly_used_usd: f64,
+    pub expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionSummaryPayload {
+    pub active_count: i64,
+    pub total_used_usd: f64,
+    pub subscriptions: Vec<SubscriptionSummaryRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SiteInput {
     pub name: String,
     pub base_url: String,
@@ -321,6 +527,34 @@ pub struct AccountInput {
     pub label: String,
     pub email: String,
     pub balance_warning: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyMutationInput {
+    pub name: String,
+    pub group_id: Option<i64>,
+    pub custom_key: Option<String>,
+    pub ip_whitelist: Option<String>,
+    pub ip_blacklist: Option<String>,
+    pub quota: Option<f64>,
+    pub expires_in_days: Option<i64>,
+    pub status: Option<String>,
+    pub rate_limit5h: Option<f64>,
+    pub rate_limit1d: Option<f64>,
+    pub rate_limit7d: Option<f64>,
+    pub reset_quota: Option<bool>,
+    pub reset_rate_limit_usage: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileUpdateInput {
+    pub email: Option<String>,
+    pub username: Option<String>,
+    pub balance_notify_enabled: Option<bool>,
+    pub balance_notify_threshold_type: Option<String>,
+    pub balance_notify_threshold: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

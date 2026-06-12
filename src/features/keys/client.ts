@@ -1,43 +1,41 @@
 import type { KeyMutationInput } from "../../generated/contracts";
-import { accountProxyRequest } from "../../shared/transport/runtime";
-import {
-  normalizeGroupRecord,
-  normalizeItems,
-  normalizeManagedKeyRecord,
-  normalizePaginated
-} from "../../shared/transport/normalizers";
+import type { GroupRecord, ManagedKeyRecord, PaginatedResult } from "../../types";
+import { desktopOrHttp } from "../../shared/transport/runtime";
 
 export function getAvailableGroups(accountId: string) {
-  return accountProxyRequest<Record<string, unknown>[]>(accountId, "/api/v1/groups/available").then((items) =>
-    items.map(normalizeGroupRecord)
-  );
+  return desktopOrHttp<GroupRecord[]>({
+    command: "get_available_groups",
+    args: { accountId },
+    url: `/api/accounts/${accountId}/groups`
+  });
 }
 
 export function listManagedKeys(accountId: string, page = 1, pageSize = 20) {
-  return accountProxyRequest<Record<string, unknown>>(
-    accountId,
-    `/api/v1/keys?page=${page}&page_size=${pageSize}`
-  ).then((raw) => normalizePaginated(raw, normalizeItems(raw).map(normalizeManagedKeyRecord), page, pageSize));
+  return desktopOrHttp<PaginatedResult<ManagedKeyRecord>>({
+    command: "list_managed_keys",
+    args: { accountId, page, pageSize },
+    url: `/api/accounts/${accountId}/keys?page=${page}&page_size=${pageSize}`
+  });
 }
 
 export function getManagedKey(accountId: string, keyId: string | number) {
-  return accountProxyRequest<Record<string, unknown>>(accountId, `/api/v1/keys/${keyId}`).then(normalizeManagedKeyRecord);
+  return desktopOrHttp<ManagedKeyRecord>({
+    command: "get_managed_key",
+    args: { accountId, keyId: String(keyId) },
+    url: `/api/accounts/${accountId}/keys/${keyId}`
+  });
 }
 
 export function createManagedKey(accountId: string, payload: KeyMutationInput) {
-  return accountProxyRequest<Record<string, unknown>>(accountId, "/api/v1/keys", "POST", {
-    name: payload.name,
-    group_id: payload.groupId,
-    custom_key: payload.customKey,
-    ip_whitelist: payload.ipWhitelist,
-    ip_blacklist: payload.ipBlacklist,
-    quota: payload.quota,
-    expires_in_days: payload.expiresInDays,
-    status: payload.status,
-    rate_limit_5h: payload.rateLimit5h,
-    rate_limit_1d: payload.rateLimit1d,
-    rate_limit_7d: payload.rateLimit7d
-  }).then(normalizeManagedKeyRecord);
+  return desktopOrHttp<ManagedKeyRecord>({
+    command: "create_managed_key",
+    args: { accountId, payload },
+    url: `/api/accounts/${accountId}/keys`,
+    init: {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  });
 }
 
 export function updateManagedKey(
@@ -45,23 +43,24 @@ export function updateManagedKey(
   keyId: string | number,
   payload: Partial<KeyMutationInput> & { resetQuota?: boolean; resetRateLimitUsage?: boolean }
 ) {
-  return accountProxyRequest<Record<string, unknown>>(accountId, `/api/v1/keys/${keyId}`, "PUT", {
-    name: payload.name,
-    group_id: payload.groupId,
-    custom_key: payload.customKey,
-    ip_whitelist: payload.ipWhitelist,
-    ip_blacklist: payload.ipBlacklist,
-    quota: payload.quota,
-    expires_in_days: payload.expiresInDays,
-    status: payload.status,
-    rate_limit_5h: payload.rateLimit5h,
-    rate_limit_1d: payload.rateLimit1d,
-    rate_limit_7d: payload.rateLimit7d,
-    reset_quota: payload.resetQuota,
-    reset_rate_limit_usage: payload.resetRateLimitUsage
-  }).then(normalizeManagedKeyRecord);
+  return desktopOrHttp<ManagedKeyRecord>({
+    command: "update_managed_key",
+    args: { accountId, keyId: String(keyId), payload },
+    url: `/api/accounts/${accountId}/keys/${keyId}`,
+    init: {
+      method: "PUT",
+      body: JSON.stringify(payload)
+    }
+  });
 }
 
 export function deleteManagedKey(accountId: string, keyId: string | number) {
-  return accountProxyRequest<{ success?: boolean }>(accountId, `/api/v1/keys/${keyId}`, "DELETE");
+  return desktopOrHttp<boolean>({
+    command: "delete_managed_key",
+    args: { accountId, keyId: String(keyId) },
+    url: `/api/accounts/${accountId}/keys/${keyId}`,
+    init: {
+      method: "DELETE"
+    }
+  });
 }

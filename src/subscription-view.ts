@@ -2,7 +2,9 @@ import type {
   OverviewSubscriptionRecord,
   SubscriptionRecord,
   SubscriptionSummaryPayload,
-  SubscriptionSummaryRecord
+  SubscriptionSummaryRecord,
+  UsageHistoryRow,
+  UsageRow
 } from "./types";
 
 export type SubscriptionStatusTone = "ready" | "critical" | "neutral";
@@ -42,6 +44,30 @@ export interface TopbarSubscriptionPreviewRecord {
   quota: SubscriptionQuotaPreview | null;
 }
 
+export interface SubscriptionUsageInsightsRow {
+  id: string;
+  name: string;
+  status: string;
+  expiresAt: string | null;
+  dailyUsedUsd: number;
+  dailyLimitUsd: number;
+  weeklyUsedUsd: number;
+  monthlyUsedUsd: number;
+  attributedRequests: number;
+  attributedTokens: number;
+  attributedInputTokens: number;
+  attributedOutputTokens: number;
+  attributedActualCost: number;
+}
+
+export interface SubscriptionUsageInsights {
+  rows: SubscriptionUsageInsightsRow[];
+  totalAttributedRequests: number;
+  totalAttributedTokens: number;
+  totalAttributedActualCost: number;
+  sourceLabel: string;
+}
+
 type SubscriptionStatusPresentation = {
   label: string;
   tone: SubscriptionStatusTone;
@@ -54,6 +80,20 @@ type TopbarSubscriptionSourceRecord = Pick<
   accountLabel?: string | null;
   siteName?: string | null;
 };
+
+type AttributedUsageRow = Pick<
+  UsageRow,
+  "subscriptionName" | "groupName" | "actualCost" | "totalTokens" | "inputTokens" | "outputTokens"
+>;
+
+type SubscriptionAttributionMetrics = Pick<
+  SubscriptionUsageInsightsRow,
+  | "attributedRequests"
+  | "attributedTokens"
+  | "attributedInputTokens"
+  | "attributedOutputTokens"
+  | "attributedActualCost"
+>;
 
 export function mergeSubscriptionRecords(
   snapshotSubscriptions: SubscriptionRecord[],
@@ -163,6 +203,48 @@ export function buildTopbarSubscriptionPreviewRecords(input: {
   }));
 }
 
+export function buildSubscriptionUsageInsights(input: {
+  summary: SubscriptionSummaryPayload | null;
+  snapshotSubscriptions: SubscriptionRecord[];
+  requestHistory: UsageHistoryRow[];
+  recentUsage: UsageRow[];
+}): SubscriptionUsageInsights {
+  const attributionSource = input.requestHistory.length > 0 ? input.requestHistory : input.recentUsage;
+  const attributionMap = buildSubscriptionAttributionMap(attributionSource);
+  const rows = input.summary?.subscriptions.length
+    ? input.summary.subscriptions.map((summaryRecord) =>
+        buildUsageInsightsRowFromSummary(summaryRecord, attributionMap.get(normalizeSubscriptionKey(summaryRecord.groupName)))
+      )
+    : input.snapshotSubscriptions.map((subscriptionRecord) =>
+        buildUsageInsightsRowFromSnapshot(
+          subscriptionRecord,
+          attributionMap.get(normalizeSubscriptionKey(subscriptionRecord.groupName ?? subscriptionRecord.name))
+        )
+      );
+  const totals = rows.reduce(
+    (accumulator, row) => ({
+      totalAttributedRequests: accumulator.totalAttributedRequests + row.attributedRequests,
+      totalAttributedTokens: accumulator.totalAttributedTokens + row.attributedTokens,
+      totalAttributedActualCost: accumulator.totalAttributedActualCost + row.attributedActualCost
+    }),
+    {
+      totalAttributedRequests: 0,
+      totalAttributedTokens: 0,
+      totalAttributedActualCost: 0
+    }
+  );
+
+  return {
+    rows,
+    ...totals,
+    sourceLabel: input.requestHistory.length > 0
+      ? "按已采集历史 usage 聚合"
+      : input.recentUsage.length > 0
+        ? "按最近 usage 样本聚合"
+        : "暂无可归因的 usage 数据"
+  };
+}
+
 function matchesSummaryRecord(
   snapshotRecord: SubscriptionRecord,
   summaryRecord: SubscriptionSummaryRecord
@@ -215,6 +297,73 @@ function buildSummaryRecordId(summaryRecord: SubscriptionSummaryRecord) {
     return `summary-group-${summaryRecord.groupId}`;
   }
   return `summary-${normalizeSubscriptionKey(summaryRecord.groupName) || "subscription"}`;
+}
+
+function buildUsageInsightsRowFromSummary(
+  summaryRecord: SubscriptionSummaryRecord,
+  metrics: SubscriptionAttributionMetrics | undefined
+): SubscriptionUsageInsightsRow {
+  return {
+    id: buildSummaryRecordId(summaryRecord),
+    name: summaryRecord.groupName,
+    status: summaryRecord.status,
+    expiresAt: summaryRecord.expiresAt ?? null,
+    dailyUsedUsd: summaryRecord.dailyUsedUsd,
+    dailyLimitUsd: summaryRecord.dailyLimitUsd,
+    weeklyUsedUsd: summaryRecord.weeklyUsedUsd,
+    monthlyUsedUsd: summaryRecord.monthlyUsedUsd,
+    ...withDefaultAttributionMetrics(metrics)
+  };
+}
+
+function buildUsageInsightsRowFromSnapshot(
+  subscriptionRecord: SubscriptionRecord,
+  metrics: SubscriptionAttributionMetrics | undefined
+): SubscriptionUsageInsightsRow {
+  return {
+    id: subscriptionRecord.id,
+    name: subscriptionRecord.groupName ?? subscriptionRecord.name,
+    status: subscriptionRecord.status,
+    expiresAt: subscriptionRecord.expiresAt ?? null,
+    dailyUsedUsd: subscriptionRecord.daily?.current ?? 0,
+    dailyLimitUsd: subscriptionRecord.daily?.limit ?? 0,
+    weeklyUsedUsd: subscriptionRecord.weekly?.current ?? 0,
+    monthlyUsedUsd: subscriptionRecord.monthly?.current ?? 0,
+    ...withDefaultAttributionMetrics(metrics)
+  };
+}
+
+function buildSubscriptionAttributionMap(rows: AttributedUsageRow[]) {
+  const metricsBySubscription = new Map<string, SubscriptionAttributionMetrics>();
+
+  for (const row of rows) {
+    const key = normalizeSubscriptionKey(row.subscriptionName ?? row.groupName);
+    if (!key) {
+      continue;
+    }
+
+    const current = metricsBySubscription.get(key) ?? withDefaultAttributionMetrics();
+    current.attributedRequests += 1;
+    current.attributedTokens += row.totalTokens;
+    current.attributedInputTokens += row.inputTokens;
+    current.attributedOutputTokens += row.outputTokens;
+    current.attributedActualCost += row.actualCost;
+    metricsBySubscription.set(key, current);
+  }
+
+  return metricsBySubscription;
+}
+
+function withDefaultAttributionMetrics(
+  metrics?: Partial<SubscriptionAttributionMetrics>
+): SubscriptionAttributionMetrics {
+  return {
+    attributedRequests: metrics?.attributedRequests ?? 0,
+    attributedTokens: metrics?.attributedTokens ?? 0,
+    attributedInputTokens: metrics?.attributedInputTokens ?? 0,
+    attributedOutputTokens: metrics?.attributedOutputTokens ?? 0,
+    attributedActualCost: metrics?.attributedActualCost ?? 0
+  };
 }
 
 function normalizeSubscriptionKey(value?: string | null) {

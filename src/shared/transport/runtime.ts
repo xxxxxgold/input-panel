@@ -21,26 +21,14 @@ export async function request<T>(input: RequestInfo, init?: RequestInit): Promis
   return (await response.json()) as T;
 }
 
-export async function accountProxyRequest<T>(
-  accountId: string,
-  path: string,
-  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" = "GET",
-  payload?: unknown
-) {
+export async function desktopOrHttp<T>(options: {
+  command: string;
+  args?: Record<string, unknown>;
+  url: string;
+  init?: RequestInit;
+}) {
   if (isTauriRuntime()) {
-    return invoke<T>("account_proxy_request", {
-      accountId,
-      path,
-      method,
-      payload
-    });
+    return invoke<T>(options.command, options.args);
   }
-  return request<T>(`/api/accounts/${accountId}/proxy`, {
-    method: "POST",
-    body: JSON.stringify({
-      path,
-      method,
-      payload
-    })
-  });
+  return request<T>(options.url, options.init);
 }
