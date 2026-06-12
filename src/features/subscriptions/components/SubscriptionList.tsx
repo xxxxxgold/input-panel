@@ -1,5 +1,6 @@
 import { formatTime } from "../../../shared/lib/formatters";
 import { EmptyState } from "../../../shared/ui/EmptyState";
+import { getSubscriptionQuotaProgressMeta } from "../../../subscription-view";
 import type { SubscriptionRecord } from "../../../types";
 
 export function SubscriptionList({ subscriptions }: { subscriptions: SubscriptionRecord[] }) {
@@ -45,7 +46,7 @@ function renderQuotaWindow(
     | undefined
 ) {
   if (!windowValue) return null;
-  const percent = Math.min(100, (windowValue.current / Math.max(windowValue.limit, 0.0001)) * 100);
+  const progressMeta = getSubscriptionQuotaProgressMeta(windowValue.current, windowValue.limit);
   return (
     <div className="quota-row">
       <div className="bar-label">
@@ -55,7 +56,7 @@ function renderQuotaWindow(
         </strong>
       </div>
       <div className="bar-track">
-        <div className="bar-fill" style={{ width: `${percent}%` }} />
+        <div className={`bar-fill ${progressMeta.tone}`} style={{ width: `${progressMeta.percent}%` }} />
       </div>
       {windowValue.windowStart && <p className="quota-hint">{label}统计起点: {formatTime(windowValue.windowStart)}</p>}
     </div>
