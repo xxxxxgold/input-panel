@@ -1,4 +1,4 @@
-import { AlertTriangle, LoaderCircle } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import type { ReactNode } from "react";
 
 export function WorkspaceFrame({
@@ -6,8 +6,6 @@ export function WorkspaceFrame({
   title,
   subtitle,
   summary,
-  error,
-  busyText,
   loading,
   ready,
   children
@@ -16,8 +14,6 @@ export function WorkspaceFrame({
   title: string;
   subtitle: string;
   summary: ReactNode;
-  error: string | null;
-  busyText: string | null;
   loading: boolean;
   ready: boolean;
   children: ReactNode;
@@ -33,19 +29,6 @@ export function WorkspaceFrame({
         </div>
         <div className="workspace-header-summary">{summary}</div>
       </header>
-
-      {error && (
-        <div className="inline-banner error">
-          <AlertTriangle size={16} />
-          <span>{error}</span>
-        </div>
-      )}
-      {busyText && (
-        <div className="inline-banner info">
-          <LoaderCircle size={16} className="spin" />
-          <span>{busyText}</span>
-        </div>
-      )}
 
       {loading && !ready ? (
         <div className="loading-state">

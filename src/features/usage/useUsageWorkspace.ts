@@ -4,6 +4,7 @@ import { toDateValue } from "../../shared/lib/formatters";
 import type {
   DailyUsagePoint,
   DashboardModelsPayload,
+  NavKey,
   ManagedKeyRecord,
   PaginatedResult,
   UsageRow,
@@ -17,7 +18,10 @@ import {
   getUsageStats,
   listUsageRecords
 } from "./client";
-import { summarizeUsageRowsByModel, type UsageModelSummary } from "./model-summary";
+import {
+  summarizeDashboardModels,
+  type UsageModelSummary
+} from "./model-summary";
 
 const USAGE_RANGE_PRESETS = [
   { key: "today", label: "今天" },
@@ -33,11 +37,13 @@ const USAGE_RANGE_PRESETS = [
 type UsageRangePreset = (typeof USAGE_RANGE_PRESETS)[number]["key"];
 
 export function useUsageWorkspace({
+  nav,
   selectedAccountId,
   managedKeys,
   setBusyText,
   setError
 }: {
+  nav: NavKey;
   selectedAccountId: string | null;
   managedKeys: PaginatedResult<ManagedKeyRecord> | null;
   setBusyText: (value: string | null) => void;
@@ -59,6 +65,8 @@ export function useUsageWorkspace({
   const usageRangePickerRef = useRef<HTMLDivElement | null>(null);
   const [keyUsageKeyId, setKeyUsageKeyId] = useState<string>("");
   const [keyUsageRows, setKeyUsageRows] = useState<DailyUsagePoint[]>([]);
+  const usageFeaturesActive = nav === "usage" || nav === "trends" || nav === "keyUsage";
+  const keyUsageActive = nav === "keyUsage" || nav === "trends";
 
   useEffect(() => {
     if (!selectedAccountId) {
@@ -69,6 +77,9 @@ export function useUsageWorkspace({
       setUsageModelSummaries([]);
       setUsageModelSummariesLoading(false);
       setKeyUsageRows([]);
+      return;
+    }
+    if (!usageFeaturesActive) {
       return;
     }
 
@@ -88,7 +99,7 @@ export function useUsageWorkspace({
     }));
 
     void loadUsageWorkspace(selectedAccountId, effectiveStart, effectiveEnd);
-  }, [selectedAccountId]);
+  }, [selectedAccountId, usageFeaturesActive]);
 
   useEffect(() => {
     if (!usageRangePickerOpen) {
@@ -113,6 +124,9 @@ export function useUsageWorkspace({
     if (!selectedAccountId) {
       return;
     }
+    if (!keyUsageActive) {
+      return;
+    }
 
     const keys = managedKeys?.items ?? [];
     if (keys.length === 0) {
@@ -130,11 +144,12 @@ export function useUsageWorkspace({
     }
 
     void loadKeyUsage(nextKeyId, false);
-  }, [selectedAccountId, managedKeys]);
+  }, [selectedAccountId, managedKeys, keyUsageActive]);
 
   const usageRangeLabel = formatUsageRangeLabel(usageRangePreset, usageStartDate, usageEndDate);
 
   async function loadUsageWorkspace(accountId: string, startDate: string, endDate: string) {
+    setUsageModelSummariesLoading(true);
     try {
       const loadOptional = async <T,>(loader: () => Promise<T>, fallback: T) => {
         try {
@@ -169,14 +184,14 @@ export function useUsageWorkspace({
       setUsageStats(nextUsageStats);
       setUsageTrend(nextUsageTrend);
       setUsageModels(nextUsageModels);
+      setUsageModelSummaries(summarizeDashboardModels(nextUsageModels));
 
-      await Promise.all([
-        loadUsageRecordsForFilters(accountId, startDate, endDate, usageApiKeyFilter, usagePage),
-        loadUsageModelSummaries(accountId, startDate, endDate, usageApiKeyFilter)
-      ]);
+      await loadUsageRecordsForFilters(accountId, startDate, endDate, usageApiKeyFilter, usagePage);
       setError(null);
     } catch (cause) {
       setError((cause as Error).message);
+    } finally {
+      setUsageModelSummariesLoading(false);
     }
   }
 
@@ -197,43 +212,6 @@ export function useUsageWorkspace({
     setUsageRecords(next);
   }
 
-  async function loadUsageModelSummaries(
-    accountId: string,
-    startDate: string,
-    endDate: string,
-    apiKeyId: string
-  ) {
-    setUsageModelSummariesLoading(true);
-    try {
-      const pageSize = 20;
-      const firstPage = await listUsageRecords(accountId, {
-        page: 1,
-        pageSize,
-        apiKeyId,
-        startDate,
-        endDate
-      });
-      const remainingPages = Array.from({ length: Math.max(firstPage.pages - 1, 0) }, (_, index) => index + 2);
-      const pageResults = remainingPages.length
-        ? await Promise.all(
-            remainingPages.map((page) =>
-              listUsageRecords(accountId, {
-                page,
-                pageSize,
-                apiKeyId,
-                startDate,
-                endDate
-              })
-            )
-          )
-        : [];
-      const allItems = [...firstPage.items, ...pageResults.flatMap((page) => page.items)];
-      setUsageModelSummaries(summarizeUsageRowsByModel(allItems));
-    } finally {
-      setUsageModelSummariesLoading(false);
-    }
-  }
-
   async function handleUsageSearch() {
     if (!selectedAccountId) {
       return;
@@ -241,21 +219,37 @@ export function useUsageWorkspace({
 
     setBusyText("正在刷新用量明细...");
     setError(null);
+    setUsageModelSummariesLoading(true);
     try {
       setUsagePage(1);
-      const [stats] = await Promise.all([
+      const [stats, , trend, models] = await Promise.all([
         getUsageStats(selectedAccountId, {
           startDate: usageStartDate,
           endDate: usageEndDate,
           apiKeyId: usageApiKeyFilter || null
         }),
         loadUsageRecordsForFilters(selectedAccountId, usageStartDate, usageEndDate, usageApiKeyFilter, 1),
-        loadUsageModelSummaries(selectedAccountId, usageStartDate, usageEndDate, usageApiKeyFilter)
+        getDashboardTrend(selectedAccountId, 7).catch((cause) => {
+          if (isOptionalEndpointUnavailable(cause)) {
+            return null;
+          }
+          throw cause;
+        }),
+        getDashboardModels(selectedAccountId, 7).catch((cause) => {
+          if (isOptionalEndpointUnavailable(cause)) {
+            return null;
+          }
+          throw cause;
+        })
       ]);
       setUsageStats(stats);
+      setUsageTrend(trend);
+      setUsageModels(models);
+      setUsageModelSummaries(summarizeDashboardModels(models));
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
+      setUsageModelSummariesLoading(false);
       setBusyText(null);
     }
   }
@@ -315,20 +309,36 @@ export function useUsageWorkspace({
     setUsageRangePickerOpen(false);
     setBusyText("正在应用时间范围...");
     setError(null);
+    setUsageModelSummariesLoading(true);
     try {
-      const [stats] = await Promise.all([
+      const [stats, , trend, models] = await Promise.all([
         getUsageStats(selectedAccountId, {
           startDate: nextStart,
           endDate: nextEnd,
           apiKeyId: usageApiKeyFilter || null
         }),
         loadUsageRecordsForFilters(selectedAccountId, nextStart, nextEnd, usageApiKeyFilter, 1),
-        loadUsageModelSummaries(selectedAccountId, nextStart, nextEnd, usageApiKeyFilter)
+        getDashboardTrend(selectedAccountId, 7).catch((cause) => {
+          if (isOptionalEndpointUnavailable(cause)) {
+            return null;
+          }
+          throw cause;
+        }),
+        getDashboardModels(selectedAccountId, 7).catch((cause) => {
+          if (isOptionalEndpointUnavailable(cause)) {
+            return null;
+          }
+          throw cause;
+        })
       ]);
       setUsageStats(stats);
+      setUsageTrend(trend);
+      setUsageModels(models);
+      setUsageModelSummaries(summarizeDashboardModels(models));
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
+      setUsageModelSummariesLoading(false);
       setBusyText(null);
     }
   }

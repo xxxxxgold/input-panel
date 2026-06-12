@@ -19,6 +19,10 @@ import {
   formatUsd
 } from "./shared/lib/formatters";
 import { resolveAccountAvatarUrl } from "./shared/lib/account-avatar";
+import {
+  buildTopbarSubscriptionPreviewRecords,
+  mergeSubscriptionRecords
+} from "./subscription-view";
 import { AnalyticsLab } from "./analytics-lab";
 import projectLogo from "./assets/project-logo.webp";
 import { AlertsPage } from "./pages/AlertsPage";
@@ -110,6 +114,7 @@ export default function App() {
     usageEndDate,
     setUsageEndDate
   } = useUsageWorkspace({
+    nav,
     selectedAccountId,
     managedKeys: accountScopedWorkspace.managedKeys,
     setBusyText,
@@ -160,6 +165,15 @@ export default function App() {
   const subscriptionCount =
     accountScopedWorkspace.subscriptionSummary?.activeCount ?? visibleSnapshot?.subscriptions.length ?? 0;
   const subscriptionSpend = accountScopedWorkspace.subscriptionSummary?.totalUsedUsd ?? 0;
+  const mergedTopbarSubscriptions = buildTopbarSubscriptionPreviewRecords({
+    overviewSubscriptions: [],
+    fallbackSubscriptions: mergeSubscriptionRecords(
+      visibleSnapshot?.subscriptions ?? [],
+      accountScopedWorkspace.subscriptionSummary
+    ),
+    fallbackAccountLabel: selectedAccount?.label ?? null,
+    fallbackSiteName: selectedSite?.name ?? null
+  });
   const usageStatusLabel = accountScopedWorkspace.subscriptionSummary
     ? `${subscriptionCount} 个有效订阅`
     : visibleSnapshot?.activeSubscription?.status ?? (subscriptionCount > 0 ? "已同步订阅" : "等待同步");
@@ -178,7 +192,6 @@ export default function App() {
         : "未登录"
     : "未选择账号";
   const selectedAccountAvatarUrl = resolveAccountAvatarUrl({
-    accountEmail: selectedAccount?.email ?? null,
     profileRecord: accountScopedWorkspace.profileRecord
   });
 
@@ -374,6 +387,7 @@ export default function App() {
               usageStatusHint={usageStatusHint}
               subscriptionSpend={subscriptionSpend}
               subscriptionCount={subscriptionCount}
+              subscriptionPreviewRecords={mergedTopbarSubscriptions}
               closeTopbarPeekPanels={shellWorkspace.closeTopbarPeekPanels}
               onOpenAlerts={() => {
                 shellWorkspace.closeTopbarPeekPanels();
@@ -421,8 +435,6 @@ export default function App() {
           title={workspaceNavTitle(nav)}
           subtitle={workspaceSubtitle}
           summary={workspaceSummary}
-          error={error}
-          busyText={busyText}
           loading={loading}
           ready={Boolean(overview)}
         >

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { getOverview } from "../../api";
+import { formatAppErrorMessage } from "../lib/error-display";
 import type {
   AccountRuntime,
   NavKey,
@@ -152,11 +153,12 @@ export const useMonitorStore = create<MonitorStore>((set, get) => ({
     }
   },
   setError: (error) => {
-    set({ error });
-    if (error) {
+    const nextError = error ? formatAppErrorMessage(error) : null;
+    set({ error: nextError });
+    if (nextError) {
       get().pushToast({
         tone: "error",
-        message: error,
+        message: nextError,
         durationMs: ERROR_TOAST_DURATION_MS
       });
     }
@@ -198,7 +200,7 @@ export const useMonitorStore = create<MonitorStore>((set, get) => ({
         selectedAccountId: selection.selectedAccountId
       });
     } catch (cause) {
-      set({ error: (cause as Error).message });
+      get().setError((cause as Error).message);
     } finally {
       set({ loading: false });
     }
