@@ -3,6 +3,7 @@ import { useEffect, useState, type MutableRefObject } from "react";
 
 import type { AccountRuntime, SiteRecord, SnapshotAlert } from "../types";
 import { formatTime, formatUsd, maskEmail } from "../shared/lib/formatters";
+import type { TopbarSubscriptionPreviewRecord } from "../subscription-view";
 import { StatusBadge } from "../shared/ui/StatusBadge";
 
 export function Topbar({
@@ -20,6 +21,7 @@ export function Topbar({
   usageStatusHint,
   subscriptionSpend,
   subscriptionCount,
+  subscriptionPreviewRecords,
   closeTopbarPeekPanels,
   onOpenAlerts,
   onOpenSubscriptions,
@@ -55,6 +57,7 @@ export function Topbar({
   usageStatusHint: string;
   subscriptionSpend: number;
   subscriptionCount: number;
+  subscriptionPreviewRecords: TopbarSubscriptionPreviewRecord[];
   closeTopbarPeekPanels: () => void;
   onOpenAlerts: () => void;
   onOpenSubscriptions: () => void;
@@ -154,6 +157,12 @@ export function Topbar({
           <div
             className={`topbar-peek-card peek-align-right ${topbarSubscriptionsExpanded ? "expanded" : ""}`}
             ref={topbarSubscriptionsRef}
+            onMouseEnter={() => {
+              closeTopbarAccountMenu();
+              setTopbarAlertsExpanded(false);
+              setTopbarSubscriptionsExpanded(true);
+            }}
+            onMouseLeave={() => setTopbarSubscriptionsExpanded(false)}
           >
             <button
               type="button"
@@ -170,19 +179,66 @@ export function Topbar({
               aria-label="订阅使用情况详情"
             >
               <Crown size={18} />
+              {subscriptionPreviewRecords.length > 0 && (
+                <span className="topbar-subscription-dots" aria-hidden="true">
+                  {subscriptionPreviewRecords.map((subscription) => (
+                    <span
+                      key={subscription.id}
+                      className={`topbar-subscription-dot ${subscription.indicatorTone}`}
+                    />
+                  ))}
+                </span>
+              )}
             </button>
             <div className="topbar-card topbar-peek-panel topbar-subscription-panel">
-              <div className="topbar-card-icon">
-                <Crown size={18} />
+              <div className="topbar-subscription-head">
+                <div className="topbar-card-icon">
+                  <Crown size={18} />
+                </div>
+                <div className="topbar-card-copy">
+                  <span className="topbar-card-label">订阅使用情况</span>
+                  <strong>{usageStatusLabel}</strong>
+                  <p>{usageStatusHint}</p>
+                </div>
+                <span className="topbar-metric">
+                  {subscriptionSpend > 0 ? formatUsd(subscriptionSpend, 2) : subscriptionCount.toString()}
+                </span>
               </div>
-              <div className="topbar-card-copy">
-                <span className="topbar-card-label">订阅使用情况</span>
-                <strong>{usageStatusLabel}</strong>
-                <p>{usageStatusHint}</p>
-              </div>
-              <span className="topbar-metric">
-                {subscriptionSpend > 0 ? formatUsd(subscriptionSpend, 2) : subscriptionCount.toString()}
-              </span>
+              {subscriptionPreviewRecords.length > 0 ? (
+                <div className="topbar-subscription-list">
+                  {subscriptionPreviewRecords.map((subscription) => (
+                    <div key={subscription.id} className="topbar-subscription-item">
+                      <div className="topbar-subscription-item-head">
+                        <div className="topbar-subscription-item-copy">
+                          <strong>{subscription.name}</strong>
+                          <p>{subscription.remainingDaysLabel}</p>
+                        </div>
+                        <span className={`status-pill ${subscription.quotaProgress ? "ready" : subscription.indicatorTone.replace("subscription-dot-", "")}`}>
+                          {subscription.quota ? subscription.quota.label : subscription.statusLabel}
+                        </span>
+                      </div>
+                      {subscription.quota && subscription.quotaProgress ? (
+                        <>
+                          <div className="topbar-subscription-amounts">
+                            <span>{subscription.quota.label}</span>
+                            <strong>{formatUsd(subscription.quota.used, 2)} / {formatUsd(subscription.quota.limit, 2)}</strong>
+                          </div>
+                          <div className="topbar-subscription-bar-track">
+                            <div
+                              className={`topbar-subscription-bar-fill ${subscription.quotaProgress.tone}`}
+                              style={{ width: `${subscription.quotaProgress.percent}%` }}
+                            />
+                          </div>
+                        </>
+                      ) : (
+                        <p className="topbar-subscription-status-note">{subscription.statusLabel}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="topbar-alert-empty">当前没有订阅数据</p>
+              )}
               <button type="button" className="topbar-peek-action" onClick={onOpenSubscriptions}>
                 打开订阅页
               </button>
