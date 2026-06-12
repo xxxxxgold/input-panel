@@ -10,7 +10,7 @@
     "dev:server": "cargo run --manifest-path src-tauri/Cargo.toml --example dev_api",
     "build:web": "tsc -p tsconfig.json --noEmit && vite build",
     "build": "pnpm build:web",
-    "build:desktop": "pnpm build:web && pnpm tauri build --debug --no-bundle",
+    "build:desktop": "pwsh -NoLogo -NoProfile -File ./scripts/prepare-desktop-build.ps1 && pnpm build:web && pnpm tauri build --debug --no-bundle",
     "preview": "vite preview",
     "start": "pnpm tauri dev",
     "test": "vitest run",
