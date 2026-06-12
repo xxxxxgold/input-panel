@@ -2,16 +2,18 @@ import type {
   OverviewSubscriptionRecord,
   SubscriptionRecord,
   SubscriptionSummaryPayload,
-  SubscriptionSummaryRecord,
-  UsageHistoryRow,
-  UsageRow
+  SubscriptionSummaryRecord
 } from "./types";
 
 export type SubscriptionStatusTone = "ready" | "critical" | "neutral";
 export type SubscriptionQuotaProgressTone =
+  | "quota-tier-10"
   | "quota-tier-20"
+  | "quota-tier-30"
   | "quota-tier-40"
+  | "quota-tier-50"
   | "quota-tier-60"
+  | "quota-tier-70"
   | "quota-tier-80"
   | "quota-tier-90"
   | "quota-tier-100"
@@ -53,19 +55,10 @@ export interface SubscriptionUsageInsightsRow {
   dailyLimitUsd: number;
   weeklyUsedUsd: number;
   monthlyUsedUsd: number;
-  attributedRequests: number;
-  attributedTokens: number;
-  attributedInputTokens: number;
-  attributedOutputTokens: number;
-  attributedActualCost: number;
 }
 
 export interface SubscriptionUsageInsights {
   rows: SubscriptionUsageInsightsRow[];
-  totalAttributedRequests: number;
-  totalAttributedTokens: number;
-  totalAttributedActualCost: number;
-  sourceLabel: string;
 }
 
 type SubscriptionStatusPresentation = {
@@ -80,20 +73,6 @@ type TopbarSubscriptionSourceRecord = Pick<
   accountLabel?: string | null;
   siteName?: string | null;
 };
-
-type AttributedUsageRow = Pick<
-  UsageRow,
-  "subscriptionName" | "groupName" | "actualCost" | "totalTokens" | "inputTokens" | "outputTokens"
->;
-
-type SubscriptionAttributionMetrics = Pick<
-  SubscriptionUsageInsightsRow,
-  | "attributedRequests"
-  | "attributedTokens"
-  | "attributedInputTokens"
-  | "attributedOutputTokens"
-  | "attributedActualCost"
->;
 
 export function mergeSubscriptionRecords(
   snapshotSubscriptions: SubscriptionRecord[],
@@ -140,14 +119,26 @@ export function getSubscriptionQuotaProgressMeta(
   const rawPercent = (safeCurrent / safeLimit) * 100;
   const percent = Math.min(100, rawPercent);
 
+  if (rawPercent < 10) {
+    return { percent, rawPercent, tone: "quota-tier-10" };
+  }
   if (rawPercent < 20) {
     return { percent, rawPercent, tone: "quota-tier-20" };
+  }
+  if (rawPercent < 30) {
+    return { percent, rawPercent, tone: "quota-tier-30" };
   }
   if (rawPercent < 40) {
     return { percent, rawPercent, tone: "quota-tier-40" };
   }
+  if (rawPercent < 50) {
+    return { percent, rawPercent, tone: "quota-tier-50" };
+  }
   if (rawPercent < 60) {
     return { percent, rawPercent, tone: "quota-tier-60" };
+  }
+  if (rawPercent < 70) {
+    return { percent, rawPercent, tone: "quota-tier-70" };
   }
   if (rawPercent < 80) {
     return { percent, rawPercent, tone: "quota-tier-80" };
@@ -206,42 +197,17 @@ export function buildTopbarSubscriptionPreviewRecords(input: {
 export function buildSubscriptionUsageInsights(input: {
   summary: SubscriptionSummaryPayload | null;
   snapshotSubscriptions: SubscriptionRecord[];
-  requestHistory: UsageHistoryRow[];
-  recentUsage: UsageRow[];
 }): SubscriptionUsageInsights {
-  const attributionSource = input.requestHistory.length > 0 ? input.requestHistory : input.recentUsage;
-  const attributionMap = buildSubscriptionAttributionMap(attributionSource);
   const rows = input.summary?.subscriptions.length
     ? input.summary.subscriptions.map((summaryRecord) =>
-        buildUsageInsightsRowFromSummary(summaryRecord, attributionMap.get(normalizeSubscriptionKey(summaryRecord.groupName)))
+        buildUsageInsightsRowFromSummary(summaryRecord)
       )
     : input.snapshotSubscriptions.map((subscriptionRecord) =>
-        buildUsageInsightsRowFromSnapshot(
-          subscriptionRecord,
-          attributionMap.get(normalizeSubscriptionKey(subscriptionRecord.groupName ?? subscriptionRecord.name))
-        )
+        buildUsageInsightsRowFromSnapshot(subscriptionRecord)
       );
-  const totals = rows.reduce(
-    (accumulator, row) => ({
-      totalAttributedRequests: accumulator.totalAttributedRequests + row.attributedRequests,
-      totalAttributedTokens: accumulator.totalAttributedTokens + row.attributedTokens,
-      totalAttributedActualCost: accumulator.totalAttributedActualCost + row.attributedActualCost
-    }),
-    {
-      totalAttributedRequests: 0,
-      totalAttributedTokens: 0,
-      totalAttributedActualCost: 0
-    }
-  );
 
   return {
-    rows,
-    ...totals,
-    sourceLabel: input.requestHistory.length > 0
-      ? "按已采集历史 usage 聚合"
-      : input.recentUsage.length > 0
-        ? "按最近 usage 样本聚合"
-        : "暂无可归因的 usage 数据"
+    rows
   };
 }
 
@@ -300,8 +266,7 @@ function buildSummaryRecordId(summaryRecord: SubscriptionSummaryRecord) {
 }
 
 function buildUsageInsightsRowFromSummary(
-  summaryRecord: SubscriptionSummaryRecord,
-  metrics: SubscriptionAttributionMetrics | undefined
+  summaryRecord: SubscriptionSummaryRecord
 ): SubscriptionUsageInsightsRow {
   return {
     id: buildSummaryRecordId(summaryRecord),
@@ -311,14 +276,12 @@ function buildUsageInsightsRowFromSummary(
     dailyUsedUsd: summaryRecord.dailyUsedUsd,
     dailyLimitUsd: summaryRecord.dailyLimitUsd,
     weeklyUsedUsd: summaryRecord.weeklyUsedUsd,
-    monthlyUsedUsd: summaryRecord.monthlyUsedUsd,
-    ...withDefaultAttributionMetrics(metrics)
+    monthlyUsedUsd: summaryRecord.monthlyUsedUsd
   };
 }
 
 function buildUsageInsightsRowFromSnapshot(
-  subscriptionRecord: SubscriptionRecord,
-  metrics: SubscriptionAttributionMetrics | undefined
+  subscriptionRecord: SubscriptionRecord
 ): SubscriptionUsageInsightsRow {
   return {
     id: subscriptionRecord.id,
@@ -328,41 +291,7 @@ function buildUsageInsightsRowFromSnapshot(
     dailyUsedUsd: subscriptionRecord.daily?.current ?? 0,
     dailyLimitUsd: subscriptionRecord.daily?.limit ?? 0,
     weeklyUsedUsd: subscriptionRecord.weekly?.current ?? 0,
-    monthlyUsedUsd: subscriptionRecord.monthly?.current ?? 0,
-    ...withDefaultAttributionMetrics(metrics)
-  };
-}
-
-function buildSubscriptionAttributionMap(rows: AttributedUsageRow[]) {
-  const metricsBySubscription = new Map<string, SubscriptionAttributionMetrics>();
-
-  for (const row of rows) {
-    const key = normalizeSubscriptionKey(row.subscriptionName ?? row.groupName);
-    if (!key) {
-      continue;
-    }
-
-    const current = metricsBySubscription.get(key) ?? withDefaultAttributionMetrics();
-    current.attributedRequests += 1;
-    current.attributedTokens += row.totalTokens;
-    current.attributedInputTokens += row.inputTokens;
-    current.attributedOutputTokens += row.outputTokens;
-    current.attributedActualCost += row.actualCost;
-    metricsBySubscription.set(key, current);
-  }
-
-  return metricsBySubscription;
-}
-
-function withDefaultAttributionMetrics(
-  metrics?: Partial<SubscriptionAttributionMetrics>
-): SubscriptionAttributionMetrics {
-  return {
-    attributedRequests: metrics?.attributedRequests ?? 0,
-    attributedTokens: metrics?.attributedTokens ?? 0,
-    attributedInputTokens: metrics?.attributedInputTokens ?? 0,
-    attributedOutputTokens: metrics?.attributedOutputTokens ?? 0,
-    attributedActualCost: metrics?.attributedActualCost ?? 0
+    monthlyUsedUsd: subscriptionRecord.monthly?.current ?? 0
   };
 }
 

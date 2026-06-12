@@ -10,9 +10,7 @@ import {
 import type {
   OverviewSubscriptionRecord,
   SubscriptionRecord,
-  SubscriptionSummaryPayload,
-  UsageHistoryRow,
-  UsageRow
+  SubscriptionSummaryPayload
 } from "../src/types";
 
 describe("mergeSubscriptionRecords", () => {
@@ -259,20 +257,36 @@ describe("buildTopbarSubscriptionPreviewRecords", () => {
 
 describe("getSubscriptionQuotaProgressMeta", () => {
   it("maps quota usage into the configured threshold buckets", () => {
+    expect(getSubscriptionQuotaProgressMeta(9, 100)).toMatchObject({
+      percent: 9,
+      tone: "quota-tier-10"
+    });
     expect(getSubscriptionQuotaProgressMeta(19, 100)).toMatchObject({
       percent: 19,
       tone: "quota-tier-20"
     });
     expect(getSubscriptionQuotaProgressMeta(20, 100)).toMatchObject({
       percent: 20,
+      tone: "quota-tier-30"
+    });
+    expect(getSubscriptionQuotaProgressMeta(30, 100)).toMatchObject({
+      percent: 30,
       tone: "quota-tier-40"
     });
     expect(getSubscriptionQuotaProgressMeta(40, 100)).toMatchObject({
       percent: 40,
+      tone: "quota-tier-50"
+    });
+    expect(getSubscriptionQuotaProgressMeta(50, 100)).toMatchObject({
+      percent: 50,
       tone: "quota-tier-60"
     });
     expect(getSubscriptionQuotaProgressMeta(60, 100)).toMatchObject({
       percent: 60,
+      tone: "quota-tier-70"
+    });
+    expect(getSubscriptionQuotaProgressMeta(70, 100)).toMatchObject({
+      percent: 70,
       tone: "quota-tier-80"
     });
     expect(getSubscriptionQuotaProgressMeta(80, 100)).toMatchObject({
@@ -292,7 +306,7 @@ describe("getSubscriptionQuotaProgressMeta", () => {
   it("guards against zero or missing quota limits", () => {
     expect(getSubscriptionQuotaProgressMeta(0, 0)).toMatchObject({
       percent: 0,
-      tone: "quota-tier-20"
+      tone: "quota-tier-10"
     });
     expect(getSubscriptionQuotaProgressMeta(15, null)).toMatchObject({
       percent: 100,
@@ -308,11 +322,11 @@ describe("getTopbarSubscriptionIndicatorTone", () => {
         status: "active",
         quota: {
           label: "每日",
-          used: 450,
+          used: 350,
           limit: 500
         }
       })
-    ).toBe("quota-tier-100");
+    ).toBe("quota-tier-80");
   });
 
   it("falls back to status dots when quota data is unavailable", () => {
@@ -326,7 +340,7 @@ describe("getTopbarSubscriptionIndicatorTone", () => {
 });
 
 describe("buildSubscriptionUsageInsights", () => {
-  it("aggregates attributed requests, tokens and cost by summary subscription name", () => {
+  it("builds stable subscription summary rows from summary payload", () => {
     const summary: SubscriptionSummaryPayload = {
       activeCount: 1,
       totalUsedUsd: 76.63,
@@ -344,106 +358,22 @@ describe("buildSubscriptionUsageInsights", () => {
         }
       ]
     };
-    const requestHistory: UsageHistoryRow[] = [
-      {
-        id: "usage-1",
-        apiKeyId: 1,
-        createdAt: "2026-06-10T08:00:00.000Z",
-        model: "gpt-4.1",
-        reasoningEffort: null,
-        endpoint: "/responses",
-        upstreamEndpoint: null,
-        actualCost: 1.2,
-        totalCost: 1.2,
-        inputTokens: 300,
-        outputTokens: 700,
-        inputCost: null,
-        outputCost: null,
-        cacheCreationTokens: 0,
-        cacheReadTokens: 0,
-        cacheCreationCost: null,
-        cacheReadCost: null,
-        totalTokens: 1000,
-        firstTokenMs: null,
-        durationMs: null,
-        billingMode: null,
-        requestType: null,
-        stream: null,
-        billingType: null,
-        rateMultiplier: null,
-        userAgent: null,
-        apiKeyName: "Main",
-        platform: "openai",
-        subscriptionName: "CodeX Plus 月度",
-        groupName: "CodeX Plus 月度",
-        subscriptionType: null,
-        firstSeenAt: "2026-06-10T08:00:01.000Z",
-        lastSeenAt: "2026-06-10T08:00:01.000Z",
-        isLatest: true
-      },
-      {
-        id: "usage-2",
-        apiKeyId: 1,
-        createdAt: "2026-06-10T08:05:00.000Z",
-        model: "gpt-4.1-mini",
-        reasoningEffort: null,
-        endpoint: "/responses",
-        upstreamEndpoint: null,
-        actualCost: 0.8,
-        totalCost: 0.8,
-        inputTokens: 200,
-        outputTokens: 300,
-        inputCost: null,
-        outputCost: null,
-        cacheCreationTokens: 0,
-        cacheReadTokens: 0,
-        cacheCreationCost: null,
-        cacheReadCost: null,
-        totalTokens: 500,
-        firstTokenMs: null,
-        durationMs: null,
-        billingMode: null,
-        requestType: null,
-        stream: null,
-        billingType: null,
-        rateMultiplier: null,
-        userAgent: null,
-        apiKeyName: "Main",
-        platform: "openai",
-        subscriptionName: "CodeX Plus 月度",
-        groupName: "CodeX Plus 月度",
-        subscriptionType: null,
-        firstSeenAt: "2026-06-10T08:05:01.000Z",
-        lastSeenAt: "2026-06-10T08:05:01.000Z",
-        isLatest: true
-      }
-    ];
 
     const result = buildSubscriptionUsageInsights({
       summary,
-      snapshotSubscriptions: [],
-      requestHistory,
-      recentUsage: []
+      snapshotSubscriptions: []
     });
 
-    expect(result.sourceLabel).toBe("按已采集历史 usage 聚合");
-    expect(result.totalAttributedRequests).toBe(2);
-    expect(result.totalAttributedTokens).toBe(1500);
-    expect(result.totalAttributedActualCost).toBeCloseTo(2.0);
+    expect(result.rows).toHaveLength(1);
     expect(result.rows[0]).toMatchObject({
       name: "CodeX Plus 月度",
       dailyUsedUsd: 76.63,
       weeklyUsedUsd: 90.12,
-      monthlyUsedUsd: 120.45,
-      attributedRequests: 2,
-      attributedTokens: 1500,
-      attributedInputTokens: 500,
-      attributedOutputTokens: 1000,
-      attributedActualCost: 2.0
+      monthlyUsedUsd: 120.45
     });
   });
 
-  it("falls back to snapshot subscriptions and recent usage when summary is unavailable", () => {
+  it("falls back to snapshot subscriptions when summary is unavailable", () => {
     const snapshotSubscriptions: SubscriptionRecord[] = [
       {
         id: "sub-current",
@@ -466,58 +396,18 @@ describe("buildSubscriptionUsageInsights", () => {
         }
       }
     ];
-    const recentUsage: UsageRow[] = [
-      {
-        id: "usage-3",
-        apiKeyId: 1,
-        createdAt: "2026-06-10T09:00:00.000Z",
-        model: "gpt-4.1",
-        reasoningEffort: null,
-        endpoint: "/responses",
-        upstreamEndpoint: null,
-        actualCost: 0.5,
-        totalCost: 0.5,
-        inputTokens: 150,
-        outputTokens: 250,
-        inputCost: null,
-        outputCost: null,
-        cacheCreationTokens: 0,
-        cacheReadTokens: 0,
-        cacheCreationCost: null,
-        cacheReadCost: null,
-        totalTokens: 400,
-        firstTokenMs: null,
-        durationMs: null,
-        billingMode: null,
-        requestType: null,
-        stream: null,
-        billingType: null,
-        rateMultiplier: null,
-        userAgent: null,
-        apiKeyName: "Starter Key",
-        platform: "openai",
-        subscriptionName: "Starter",
-        groupName: "Starter",
-        subscriptionType: null
-      }
-    ];
 
     const result = buildSubscriptionUsageInsights({
       summary: null,
-      snapshotSubscriptions,
-      requestHistory: [],
-      recentUsage
+      snapshotSubscriptions
     });
 
-    expect(result.sourceLabel).toBe("按最近 usage 样本聚合");
+    expect(result.rows).toHaveLength(1);
     expect(result.rows[0]).toMatchObject({
       name: "Starter",
       dailyUsedUsd: 8,
       dailyLimitUsd: 50,
-      monthlyUsedUsd: 88,
-      attributedRequests: 1,
-      attributedTokens: 400,
-      attributedActualCost: 0.5
+      monthlyUsedUsd: 88
     });
   });
 });
