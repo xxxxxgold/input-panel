@@ -46,4 +46,32 @@ describe("KeysPage available group summary", () => {
     expect(html).toContain("$120 / $480 / $42.50");
     expect(html).not.toContain("日 / 周 / 月额度");
   });
+
+  it("falls back to zero balance when profile data is unavailable", () => {
+    const group: GroupRecord = {
+      id: 8,
+      name: "Codex 备用",
+      platform: "openai",
+      rateMultiplier: 1,
+      subscriptionType: "standard",
+      dailyLimitUsd: 50,
+      weeklyLimitUsd: 200,
+      monthlyLimitUsd: 800,
+      allowMessagesDispatch: false
+    };
+
+    const html = renderToStaticMarkup(
+      createElement(KeysPage, {
+        managedKeys: null,
+        groups: [group],
+        profileRecord: null,
+        selectedAccountId: "account-2",
+        onRefresh: () => {},
+        onError: () => {},
+        onBusy: () => {}
+      })
+    );
+
+    expect(html).toContain("$50 / $200 / $0.00");
+  });
 });
