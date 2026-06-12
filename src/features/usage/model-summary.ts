@@ -1,4 +1,4 @@
-import type { UsageRow } from "../../types";
+import type { DashboardModelsPayload, UsageRow } from "../../types";
 
 export interface UsageModelSummary {
   model: string;
@@ -43,4 +43,28 @@ export function summarizeUsageRowsByModel(rows: UsageRow[]): UsageModelSummary[]
     }
     return right.totalTokens - left.totalTokens;
   });
+}
+
+export function summarizeDashboardModels(modelsPayload: DashboardModelsPayload | null): UsageModelSummary[] {
+  if (!modelsPayload?.models.length) {
+    return [];
+  }
+
+  return [...modelsPayload.models]
+    .map((model) => ({
+      model: model.model || "unknown",
+      requests: model.requests ?? 0,
+      inputTokens: model.inputTokens ?? 0,
+      outputTokens: model.outputTokens ?? 0,
+      cacheCreationTokens: model.cacheCreationTokens ?? 0,
+      cacheReadTokens: model.cacheReadTokens ?? 0,
+      totalTokens: model.totalTokens ?? 0,
+      actualCost: model.actualCost ?? 0
+    }))
+    .sort((left, right) => {
+      if (right.requests !== left.requests) {
+        return right.requests - left.requests;
+      }
+      return right.totalTokens - left.totalTokens;
+    });
 }
