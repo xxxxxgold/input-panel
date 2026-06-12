@@ -88,6 +88,7 @@ pub struct KeyRecord {
 pub struct ManagedKeyRecord {
     #[serde(flatten)]
     pub key: KeyRecord,
+    pub api_key_id: Option<i64>,
     pub raw_key: Option<String>,
     pub user_id: Option<i64>,
     pub ip_whitelist: Option<String>,
@@ -591,6 +592,58 @@ pub struct LoginChallenge {
     pub requires2fa: bool,
     pub temp_token: Option<String>,
     pub email_masked: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AppLaunchMode {
+    Main,
+    Floating,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseBehavior {
+    Ask,
+    SwitchToFloating,
+    ExitApp,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopUiPrefs {
+    pub version: i64,
+    pub launch_mode: AppLaunchMode,
+    pub open_floating_in_main_mode: bool,
+    pub close_behavior: CloseBehavior,
+    pub theme: String,
+}
+
+impl Default for DesktopUiPrefs {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            launch_mode: AppLaunchMode::Main,
+            open_floating_in_main_mode: true,
+            close_behavior: CloseBehavior::Ask,
+            theme: "light".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopUiPrefsPatch {
+    pub launch_mode: Option<AppLaunchMode>,
+    pub open_floating_in_main_mode: Option<bool>,
+    pub close_behavior: Option<CloseBehavior>,
+    pub theme: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenMainWindowPayload {
+    pub nav: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

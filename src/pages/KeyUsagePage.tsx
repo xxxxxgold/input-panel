@@ -47,7 +47,15 @@ export function KeyUsagePage({
             </div>
           ))}
           {keyUsageRows.length === 0 && (
-            <EmptyState title="当前没有单 Key 用量" detail="选择一个密钥后会查询最近 30 天的每日用量。" compact />
+            <EmptyState
+              title={selectedKey ? "当前 Key 最近 30 天没有 daily usage" : "当前没有单 Key 用量"}
+              detail={
+                selectedKey
+                  ? "这个 Key 已经选中, 但上游接口暂时没有返回最近 30 天的每日用量。"
+                  : "选择一个密钥后会查询最近 30 天的每日用量。"
+              }
+              compact
+            />
           )}
         </div>
       </SectionCard>
