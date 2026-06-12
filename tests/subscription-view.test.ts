@@ -242,14 +242,22 @@ describe("buildTopbarSubscriptionPreviewRecords", () => {
         id: "sub-current",
         name: "Starter",
         status: "pending",
+        statusLabel: "待生效",
         expiresAt: null,
+        remainingDaysLabel: "暂无到期时间",
         accountLabel: "主账号",
         siteName: "AI INPUT",
         quota: {
           label: "每月",
           used: 88,
           limit: 300
-        }
+        },
+        quotaProgress: {
+          percent: 29.333333333333332,
+          rawPercent: 29.333333333333332,
+          tone: "quota-tier-40"
+        },
+        indicatorTone: "quota-tier-40"
       }
     ]);
   });
@@ -257,36 +265,20 @@ describe("buildTopbarSubscriptionPreviewRecords", () => {
 
 describe("getSubscriptionQuotaProgressMeta", () => {
   it("maps quota usage into the configured threshold buckets", () => {
-    expect(getSubscriptionQuotaProgressMeta(9, 100)).toMatchObject({
-      percent: 9,
-      tone: "quota-tier-10"
-    });
     expect(getSubscriptionQuotaProgressMeta(19, 100)).toMatchObject({
       percent: 19,
       tone: "quota-tier-20"
     });
     expect(getSubscriptionQuotaProgressMeta(20, 100)).toMatchObject({
       percent: 20,
-      tone: "quota-tier-30"
-    });
-    expect(getSubscriptionQuotaProgressMeta(30, 100)).toMatchObject({
-      percent: 30,
       tone: "quota-tier-40"
     });
     expect(getSubscriptionQuotaProgressMeta(40, 100)).toMatchObject({
       percent: 40,
-      tone: "quota-tier-50"
-    });
-    expect(getSubscriptionQuotaProgressMeta(50, 100)).toMatchObject({
-      percent: 50,
       tone: "quota-tier-60"
     });
     expect(getSubscriptionQuotaProgressMeta(60, 100)).toMatchObject({
       percent: 60,
-      tone: "quota-tier-70"
-    });
-    expect(getSubscriptionQuotaProgressMeta(70, 100)).toMatchObject({
-      percent: 70,
       tone: "quota-tier-80"
     });
     expect(getSubscriptionQuotaProgressMeta(80, 100)).toMatchObject({
@@ -306,7 +298,7 @@ describe("getSubscriptionQuotaProgressMeta", () => {
   it("guards against zero or missing quota limits", () => {
     expect(getSubscriptionQuotaProgressMeta(0, 0)).toMatchObject({
       percent: 0,
-      tone: "quota-tier-10"
+      tone: "quota-tier-20"
     });
     expect(getSubscriptionQuotaProgressMeta(15, null)).toMatchObject({
       percent: 100,
@@ -322,11 +314,11 @@ describe("getTopbarSubscriptionIndicatorTone", () => {
         status: "active",
         quota: {
           label: "每日",
-          used: 350,
+          used: 450,
           limit: 500
         }
       })
-    ).toBe("quota-tier-80");
+    ).toBe("quota-tier-100");
   });
 
   it("falls back to status dots when quota data is unavailable", () => {

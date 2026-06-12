@@ -4,16 +4,13 @@ import type {
   SubscriptionSummaryPayload,
   SubscriptionSummaryRecord
 } from "./types";
+import { formatRemainingDaysLabel } from "./shared/lib/formatters";
 
 export type SubscriptionStatusTone = "ready" | "critical" | "neutral";
 export type SubscriptionQuotaProgressTone =
-  | "quota-tier-10"
   | "quota-tier-20"
-  | "quota-tier-30"
   | "quota-tier-40"
-  | "quota-tier-50"
   | "quota-tier-60"
-  | "quota-tier-70"
   | "quota-tier-80"
   | "quota-tier-90"
   | "quota-tier-100"
@@ -40,10 +37,14 @@ export interface TopbarSubscriptionPreviewRecord {
   id: string;
   name: string;
   status: string;
+  statusLabel: string;
   expiresAt: string | null;
+  remainingDaysLabel: string;
   accountLabel: string | null;
   siteName: string | null;
   quota: SubscriptionQuotaPreview | null;
+  quotaProgress: SubscriptionQuotaProgressMeta | null;
+  indicatorTone: SubscriptionIndicatorTone;
 }
 
 export interface SubscriptionUsageInsightsRow {
@@ -119,26 +120,14 @@ export function getSubscriptionQuotaProgressMeta(
   const rawPercent = (safeCurrent / safeLimit) * 100;
   const percent = Math.min(100, rawPercent);
 
-  if (rawPercent < 10) {
-    return { percent, rawPercent, tone: "quota-tier-10" };
-  }
   if (rawPercent < 20) {
     return { percent, rawPercent, tone: "quota-tier-20" };
-  }
-  if (rawPercent < 30) {
-    return { percent, rawPercent, tone: "quota-tier-30" };
   }
   if (rawPercent < 40) {
     return { percent, rawPercent, tone: "quota-tier-40" };
   }
-  if (rawPercent < 50) {
-    return { percent, rawPercent, tone: "quota-tier-50" };
-  }
   if (rawPercent < 60) {
     return { percent, rawPercent, tone: "quota-tier-60" };
-  }
-  if (rawPercent < 70) {
-    return { percent, rawPercent, tone: "quota-tier-70" };
   }
   if (rawPercent < 80) {
     return { percent, rawPercent, tone: "quota-tier-80" };
@@ -183,15 +172,32 @@ export function buildTopbarSubscriptionPreviewRecords(input: {
         siteName: input.fallbackSiteName ?? null
       }));
 
-  return sourceRecords.map((record) => ({
-    id: record.id,
-    name: record.groupName || record.name || "当前订阅",
-    status: record.status || "unknown",
-    expiresAt: record.expiresAt ?? null,
-    accountLabel: record.accountLabel ?? null,
-    siteName: record.siteName ?? null,
-    quota: resolveTopbarSubscriptionQuota(record)
-  }));
+  return sourceRecords.map((record) => {
+    const quota = resolveTopbarSubscriptionQuota(record);
+    const quotaProgress = quota ? getSubscriptionQuotaProgressMeta(quota.used, quota.limit) : null;
+    const statusPresentation = getSubscriptionStatusPresentation(record.status);
+    const indicatorTone = quotaProgress
+      ? quotaProgress.tone
+      : statusPresentation.tone === "ready"
+        ? "subscription-dot-ready"
+        : statusPresentation.tone === "critical"
+          ? "subscription-dot-critical"
+          : "subscription-dot-neutral";
+
+    return {
+      id: record.id,
+      name: record.groupName || record.name || "当前订阅",
+      status: record.status || "unknown",
+      statusLabel: statusPresentation.label,
+      expiresAt: record.expiresAt ?? null,
+      remainingDaysLabel: formatRemainingDaysLabel(record.expiresAt ?? null),
+      accountLabel: record.accountLabel ?? null,
+      siteName: record.siteName ?? null,
+      quota,
+      quotaProgress,
+      indicatorTone
+    };
+  });
 }
 
 export function buildSubscriptionUsageInsights(input: {

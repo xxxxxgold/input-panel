@@ -373,7 +373,12 @@ export default function App() {
         <WorkspaceFrame
           topbar={
             <Topbar
-              onReload={() => void loadOverview()}
+              onReload={() =>
+                void loadOverview({
+                  busyText: "正在刷新总览...",
+                  successMessage: "总览已刷新"
+                })
+              }
               alertCount={alertCount}
               topbarAlertsExpanded={shellWorkspace.topbarAlertsExpanded}
               setTopbarAlertsExpanded={shellWorkspace.setTopbarAlertsExpanded}
