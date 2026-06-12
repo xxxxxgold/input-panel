@@ -222,6 +222,7 @@ export interface OrderRecord {
 }
 
 export interface ManagedKeyRecord extends KeyRecord {
+  apiKeyId?: number | null;
   rawKey?: string | null;
   userId?: number | null;
   ipWhitelist?: string | null;
@@ -459,3 +460,26 @@ export interface LoginSuccess {
 }
 
 export type LoginFlowResult = LoginSuccess | Login2faChallenge;
+
+export type AppLaunchMode = "main" | "floating";
+
+export type CloseBehavior = "ask" | "switch_to_floating" | "exit_app";
+
+export interface DesktopUiPrefs {
+  version: number;
+  launchMode: AppLaunchMode;
+  openFloatingInMainMode: boolean;
+  closeBehavior: CloseBehavior;
+  theme: "light" | "dark" | "deep-blue" | string;
+}
+
+export interface DesktopUiPrefsPatch {
+  launchMode?: AppLaunchMode;
+  openFloatingInMainMode?: boolean;
+  closeBehavior?: CloseBehavior;
+  theme?: "light" | "dark" | "deep-blue" | string;
+}
+
+export interface OpenMainWindowPayload {
+  nav?: string | null;
+}

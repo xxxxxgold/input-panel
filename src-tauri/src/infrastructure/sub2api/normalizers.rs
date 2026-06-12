@@ -16,11 +16,13 @@ pub fn pick_value<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
 pub fn pick_string(value: &Value, keys: &[&str], fallback: Option<&str>) -> Option<String> {
     keys.iter()
         .find_map(|key| {
-            pick_value(value, key)
-                .and_then(Value::as_str)
+            let node = pick_value(value, key)?;
+            node.as_str()
                 .map(str::trim)
                 .filter(|item| !item.is_empty())
                 .map(ToString::to_string)
+                .or_else(|| node.as_i64().map(|item| item.to_string()))
+                .or_else(|| node.as_u64().map(|item| item.to_string()))
         })
         .or_else(|| fallback.map(ToString::to_string))
 }
@@ -99,6 +101,7 @@ pub fn normalize_managed_key_record(item: &Value) -> ManagedKeyRecord {
             usage1d: pick_optional_number(item, &["usage_1d"]),
             usage7d: pick_optional_number(item, &["usage_7d"]),
         },
+        api_key_id: pick_optional_number(item, &["api_key_id", "id"]).map(|item| item as i64),
         raw_key: pick_string(item, &["key"], None),
         user_id: pick_optional_number(item, &["user_id"]).map(|item| item as i64),
         ip_whitelist: pick_string(item, &["ip_whitelist"], None),
@@ -469,7 +472,7 @@ pub fn profile_update_payload(payload: &ProfileUpdateInput) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_subscription_summary;
+    use super::{normalize_managed_key_record, normalize_subscription_summary};
     use serde_json::json;
 
     #[test]
@@ -525,5 +528,17 @@ mod tests {
         assert_eq!(subscription.group_name, "Mock Annual");
         assert_eq!(subscription.daily_used_usd, 1.5);
         assert_eq!(subscription.daily_limit_usd, 50.0);
+    }
+
+    #[test]
+    fn normalizes_numeric_key_id_as_string() {
+        let result = normalize_managed_key_record(&json!({
+            "id": 3641,
+            "name": "codex",
+            "status": "active"
+        }));
+
+        assert_eq!(result.key.id, "3641");
+        assert_eq!(result.api_key_id, Some(3641));
     }
 }

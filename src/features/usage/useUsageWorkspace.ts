@@ -76,6 +76,9 @@ export function useUsageWorkspace({
       setUsageModels(null);
       setUsageModelSummaries([]);
       setUsageModelSummariesLoading(false);
+      setUsageApiKeyFilter("");
+      setUsagePage(1);
+      setKeyUsageKeyId("");
       setKeyUsageRows([]);
       return;
     }
@@ -121,6 +124,17 @@ export function useUsageWorkspace({
   }, [usageRangePickerOpen]);
 
   useEffect(() => {
+    const keys = managedKeys?.items ?? [];
+    if (!usageApiKeyFilter) {
+      return;
+    }
+    if (keys.some((item) => item.apiKeyId !== null && item.apiKeyId !== undefined && String(item.apiKeyId) === usageApiKeyFilter)) {
+      return;
+    }
+    setUsageApiKeyFilter("");
+  }, [managedKeys, usageApiKeyFilter]);
+
+  useEffect(() => {
     if (!selectedAccountId) {
       return;
     }
@@ -130,11 +144,16 @@ export function useUsageWorkspace({
 
     const keys = managedKeys?.items ?? [];
     if (keys.length === 0) {
+      if (keyUsageKeyId) {
+        setKeyUsageKeyId("");
+      }
       setKeyUsageRows([]);
       return;
     }
 
-    const nextKeyId = keys.find((item) => item.id === keyUsageKeyId)?.id ?? keys[0]?.id ?? "";
+    const nextKeyId =
+      keys.find((item) => item.id === keyUsageKeyId)?.id ??
+      pickDefaultKeyUsageKeyId(keys);
     if (!nextKeyId) {
       setKeyUsageRows([]);
       return;
@@ -144,7 +163,7 @@ export function useUsageWorkspace({
     }
 
     void loadKeyUsage(nextKeyId, false);
-  }, [selectedAccountId, managedKeys, keyUsageActive]);
+  }, [selectedAccountId, managedKeys, keyUsageActive, keyUsageKeyId, keyUsageRows.length, usageApiKeyFilter]);
 
   const usageRangeLabel = formatUsageRangeLabel(usageRangePreset, usageStartDate, usageEndDate);
 
@@ -448,4 +467,13 @@ function formatUsageRangeLabel(preset: UsageRangePreset, startDate: string, endD
     return `${startDate} - ${endDate}`;
   }
   return "选择时间范围";
+}
+
+function pickDefaultKeyUsageKeyId(keys: ManagedKeyRecord[]) {
+  const sorted = [...keys].sort((left, right) => {
+    const leftTime = left.lastUsedAt ? Date.parse(left.lastUsedAt) : Number.NEGATIVE_INFINITY;
+    const rightTime = right.lastUsedAt ? Date.parse(right.lastUsedAt) : Number.NEGATIVE_INFINITY;
+    return rightTime - leftTime;
+  });
+  return sorted[0]?.id ?? "";
 }

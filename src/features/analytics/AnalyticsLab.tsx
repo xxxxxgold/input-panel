@@ -260,7 +260,14 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
           title="单 Key 每日趋势"
           subtitle={selectedKey ? `${selectedKey.name} · 近 30 天 daily usage` : "请选择一个 Key 以查看最近 30 天趋势"}
           option={buildKeyDailyTrendOption(keyUsageRows, palette)}
-          footer={selectedKey ? <AnalyticsFootnote>状态 {selectedKey.status} · 最近使用 {selectedKey.lastUsedAt ? formatDateTimeFull(selectedKey.lastUsedAt) : "暂无"}</AnalyticsFootnote> : null}
+          footer={
+            selectedKey ? (
+              <AnalyticsFootnote>
+                状态 {selectedKey.status} · 最近使用 {selectedKey.lastUsedAt ? formatDateTimeFull(selectedKey.lastUsedAt) : "暂无"}
+                {keyUsageRows.length === 0 ? " · 当前接口未返回 daily usage 数据" : ""}
+              </AnalyticsFootnote>
+            ) : null
+          }
         />
         <AnalyticsChartCard
           title="订阅额度使用"

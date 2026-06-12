@@ -114,8 +114,12 @@ export function UsagePage({
             <select value={usageApiKeyFilter} onChange={(event) => setUsageApiKeyFilter(event.target.value)}>
               <option value="">全部</option>
               {(managedKeys?.items ?? []).map((key) => (
-                <option key={key.id} value={key.id}>
-                  {key.name}
+                <option
+                  key={key.id || String(key.apiKeyId ?? key.name)}
+                  value={key.apiKeyId !== null && key.apiKeyId !== undefined ? String(key.apiKeyId) : ""}
+                  disabled={key.apiKeyId === null || key.apiKeyId === undefined}
+                >
+                  {key.apiKeyId === null || key.apiKeyId === undefined ? `${key.name} (无可筛选 ID)` : key.name}
                 </option>
               ))}
             </select>
