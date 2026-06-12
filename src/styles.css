@@ -521,8 +521,8 @@ html.deep-blue {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 18px;
-  padding: 18px 20px;
+  gap: 14px;
+  padding: 12px 18px;
   border-radius: 24px;
   border: 1px solid var(--border);
   background:
@@ -532,11 +532,11 @@ html.deep-blue {
 }
 
 .global-topbar-grid {
-  flex: 1 1 auto;
-  display: grid;
-  grid-template-columns: minmax(260px, 1.6fr) 44px 44px;
+  flex: 0 0 auto;
+  display: inline-flex;
   align-items: center;
-  gap: 12px;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .topbar-card {
@@ -565,22 +565,22 @@ html.deep-blue {
 }
 
 .topbar-context-card {
-  min-height: 44px;
-  padding-block: 8px;
-  gap: 14px;
+  min-height: 40px;
+  padding-block: 6px;
+  gap: 12px;
 }
 
 .topbar-peek-card {
   position: relative;
-  width: 44px;
-  min-width: 44px;
+  width: 40px;
+  min-width: 40px;
 }
 
 .topbar-peek-trigger {
-  width: 44px;
-  height: 44px;
+  width: 40px;
+  height: 40px;
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 12px;
   display: grid;
   place-items: center;
   background: color-mix(in srgb, var(--bg-card) 78%, transparent);
@@ -664,8 +664,8 @@ html.deep-blue {
 
 .topbar-select-trigger {
   width: 100%;
-  min-height: 44px;
-  padding-block: 8px;
+  min-height: 40px;
+  padding-block: 6px;
   justify-content: flex-start;
   gap: 10px;
   padding-inline: 18px 16px;
@@ -802,7 +802,9 @@ html.deep-blue {
 
 .global-topbar-actions {
   flex: 0 0 auto;
-  align-self: stretch;
+  align-self: flex-start;
+  margin-left: auto;
+  max-width: 100%;
   justify-content: flex-end;
   flex-wrap: wrap;
 }
@@ -812,8 +814,8 @@ html.deep-blue {
 }
 
 .topbar-account-trigger {
-  min-height: 44px;
-  padding: 8px 12px;
+  min-height: 40px;
+  padding: 6px 12px;
   border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--border));
   border-radius: 16px;
   background: color-mix(in srgb, var(--bg-card) 78%, transparent);
@@ -854,11 +856,23 @@ html.deep-blue {
   border-radius: 999px;
   display: grid;
   place-items: center;
+  overflow: hidden;
   background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 48%, transparent), color-mix(in srgb, var(--accent-strong) 22%, transparent));
   color: var(--text-strong);
   font-size: 12px;
   font-weight: 700;
   flex: 0 0 auto;
+}
+
+.topbar-account-avatar.has-image {
+  background: color-mix(in srgb, var(--bg-soft) 84%, transparent);
+}
+
+.topbar-account-avatar img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
 }
 
 .topbar-account-dropdown {
@@ -1090,8 +1104,12 @@ html.deep-blue {
 
 .management-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(300px, 1fr);
   gap: 18px;
+}
+
+.settings-site-overview-grid {
+  align-content: start;
 }
 
 .metric-card,
@@ -1561,6 +1579,10 @@ html.deep-blue {
   grid-template-columns: minmax(0, 1.2fr) 190px 220px;
 }
 
+.table-list.wide .table-row.key-row {
+  grid-template-columns: minmax(0, 1fr) 240px;
+}
+
 .wrap-actions {
   flex-wrap: wrap;
   justify-content: flex-end;
@@ -1815,6 +1837,103 @@ html.deep-blue {
   min-width: 0;
 }
 
+.key-row-main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.key-secret-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.key-context-name {
+  font-size: 15px;
+  color: var(--text-normal);
+}
+
+.key-platform-pill,
+.key-copy-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.key-platform-pill {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-soft));
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent-strong);
+}
+
+.key-platform-pill.openai {
+  background: rgba(87, 214, 159, 0.12);
+  border-color: rgba(16, 185, 129, 0.24);
+  color: #0f9f67;
+}
+
+.key-platform-pill.anthropic {
+  background: rgba(251, 191, 36, 0.12);
+  border-color: rgba(217, 119, 6, 0.22);
+  color: #b45309;
+}
+
+.key-platform-pill.unknown {
+  background: var(--bg-soft);
+  border-color: var(--border);
+  color: var(--text-subtle);
+}
+
+.key-secret-text {
+  margin: 0;
+  color: var(--text-subtle);
+  line-height: 1.5;
+}
+
+.key-copy-button {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.22);
+  color: #0f9f67;
+  cursor: pointer;
+  transition: 160ms ease;
+}
+
+.key-copy-button:hover:not(:disabled) {
+  background: rgba(16, 185, 129, 0.16);
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.key-copy-button.copied {
+  background: rgba(104, 196, 186, 0.18);
+  border-color: rgba(104, 196, 186, 0.28);
+  color: var(--accent-strong);
+}
+
+.key-copy-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.key-row-meta {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+}
+
+.key-row-meta span {
+  white-space: nowrap;
+}
+
 .loading-state {
   display: inline-flex;
   align-items: center;
@@ -1938,6 +2057,39 @@ html.deep-blue {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.modal-site-overview {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-card));
+}
+
+.modal-site-copy {
+  min-width: 0;
+}
+
+.modal-site-copy strong {
+  display: block;
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.modal-site-copy p {
+  margin: 6px 0 0;
+  color: var(--text-subtle);
+  word-break: break-all;
+}
+
+.modal-site-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .modal-close-button {
@@ -2340,8 +2492,8 @@ html.deep-blue {
     flex-direction: column;
   }
 
-  .global-topbar-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .global-topbar-actions {
+    width: 100%;
   }
 
   .metric-grid,
@@ -2391,14 +2543,13 @@ html.deep-blue {
     padding: 18px;
   }
 
-  .global-topbar-grid {
-    grid-template-columns: 1fr;
-  }
-
   .global-topbar-actions,
   .workspace-header-summary {
     width: 100%;
-    justify-content: flex-start;
+  }
+
+  .global-topbar-actions {
+    justify-content: flex-end;
   }
 
   .usage-pagination {
@@ -2408,6 +2559,14 @@ html.deep-blue {
 }
 
 @media (max-width: 640px) {
+  .modal-site-overview {
+    flex-direction: column;
+  }
+
+  .modal-site-summary {
+    grid-template-columns: 1fr;
+  }
+
   .usage-insights-grid,
   .compact-metrics,
   .filter-grid {

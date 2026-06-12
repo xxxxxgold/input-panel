@@ -281,6 +281,7 @@ export interface UserProfileRecord {
   id: number;
   email: string;
   username?: string | null;
+  avatarUrl?: string | null;
   role: string;
   balance: number;
   concurrency: number;

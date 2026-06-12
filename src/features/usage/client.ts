@@ -1,13 +1,12 @@
-import { accountProxyRequest } from "../../shared/transport/runtime";
-import {
-  normalizeDailyUsageRows,
-  normalizeItems,
-  normalizeModelsPayload,
-  normalizePaginated,
-  normalizeTrendPayload,
-  normalizeUsageRow,
-  normalizeUsageStats
-} from "../../shared/transport/normalizers";
+import type {
+  DailyUsagePoint,
+  DashboardModelsPayload,
+  PaginatedResult,
+  UsageRow,
+  UsageStatsRecord,
+  UsageTrendPayload
+} from "../../types";
+import { desktopOrHttp } from "../../shared/transport/runtime";
 
 export function listUsageRecords(
   accountId: string,
@@ -31,9 +30,18 @@ export function listUsageRecords(
   if (query.endDate) {
     params.set("end_date", query.endDate);
   }
-  return accountProxyRequest<Record<string, unknown>>(accountId, `/api/v1/usage?${params.toString()}`).then((raw) =>
-    normalizePaginated(raw, normalizeItems(raw).map(normalizeUsageRow), query.page ?? 1, query.pageSize ?? 20)
-  );
+  return desktopOrHttp<PaginatedResult<UsageRow>>({
+    command: "list_usage_records",
+    args: {
+      accountId,
+      page: query.page ?? 1,
+      pageSize: query.pageSize ?? 20,
+      apiKeyId: query.apiKeyId === null || query.apiKeyId === undefined || query.apiKeyId === "" ? null : String(query.apiKeyId),
+      startDate: query.startDate ?? null,
+      endDate: query.endDate ?? null
+    },
+    url: `/api/accounts/${accountId}/usage?${params.toString()}`
+  });
 }
 
 export function getUsageStats(
@@ -58,26 +66,40 @@ export function getUsageStats(
   if (query.endDate) {
     params.set("end_date", query.endDate);
   }
-  return accountProxyRequest<Record<string, unknown>>(accountId, `/api/v1/usage/stats?${params.toString()}`).then(normalizeUsageStats);
+  const suffix = params.toString();
+  return desktopOrHttp<UsageStatsRecord>({
+    command: "get_usage_stats",
+    args: {
+      accountId,
+      period: query.period ?? null,
+      apiKeyId: query.apiKeyId === null || query.apiKeyId === undefined || query.apiKeyId === "" ? null : String(query.apiKeyId),
+      startDate: query.startDate ?? null,
+      endDate: query.endDate ?? null
+    },
+    url: suffix ? `/api/accounts/${accountId}/usage/stats?${suffix}` : `/api/accounts/${accountId}/usage/stats`
+  });
 }
 
 export function getDashboardModels(accountId: string, days = 7) {
-  return accountProxyRequest<Record<string, unknown>>(
-    accountId,
-    `/api/v1/usage/dashboard/models?days=${days}`
-  ).then(normalizeModelsPayload);
+  return desktopOrHttp<DashboardModelsPayload>({
+    command: "get_dashboard_models",
+    args: { accountId, days },
+    url: `/api/accounts/${accountId}/usage/models?days=${days}`
+  });
 }
 
 export function getDashboardTrend(accountId: string, days = 7) {
-  return accountProxyRequest<Record<string, unknown>>(
-    accountId,
-    `/api/v1/usage/dashboard/trend?days=${days}`
-  ).then(normalizeTrendPayload);
+  return desktopOrHttp<UsageTrendPayload>({
+    command: "get_dashboard_trend",
+    args: { accountId, days },
+    url: `/api/accounts/${accountId}/usage/trend?days=${days}`
+  });
 }
 
 export function getApiKeyDailyUsage(accountId: string, keyId: string | number, days = 30) {
-  return accountProxyRequest<Record<string, unknown>[]>(
-    accountId,
-    `/api/v1/user/api-keys/${keyId}/usage/daily?days=${days}`
-  ).then((raw) => normalizeDailyUsageRows(normalizeItems(raw)));
+  return desktopOrHttp<DailyUsagePoint[]>({
+    command: "get_key_daily_usage",
+    args: { accountId, keyId: String(keyId), days },
+    url: `/api/accounts/${accountId}/keys/${keyId}/daily-usage?days=${days}`
+  });
 }

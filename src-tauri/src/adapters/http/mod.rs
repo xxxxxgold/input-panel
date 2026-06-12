@@ -2,17 +2,18 @@ use std::net::SocketAddr;
 
 use anyhow::Result;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, patch, post},
+    routing::{get, patch, post, put},
     Json, Router,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::application::{
-    account_service, auth_service, dashboard_service, proxy_service, site_service, AppContext,
+    account_service, auth_service, dashboard_service, keys_service, profile_service, proxy_service,
+    site_service, usage_service, AppContext,
 };
 
 #[derive(Debug, Deserialize)]
@@ -57,6 +58,61 @@ struct ProxyBody {
     payload: Option<Value>,
 }
 
+#[derive(Debug, Deserialize)]
+struct PaginationQuery {
+    page: Option<i64>,
+    page_size: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UsageListQueryParams {
+    page: Option<i64>,
+    page_size: Option<i64>,
+    api_key_id: Option<String>,
+    start_date: Option<String>,
+    end_date: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UsageStatsQueryParams {
+    period: Option<String>,
+    api_key_id: Option<String>,
+    start_date: Option<String>,
+    end_date: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DaysQuery {
+    days: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PasswordChangeBody {
+    old_password: String,
+    new_password: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NotifyEmailBody {
+    email: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NotifyEmailVerifyBody {
+    email: String,
+    code: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ToggleNotifyEmailBody {
+    email: String,
+    disabled: bool,
+}
+
 pub async fn serve(ctx: AppContext, addr: SocketAddr) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, router(ctx)).await?;
@@ -76,6 +132,53 @@ pub fn router(ctx: AppContext) -> Router {
         .route("/api/accounts/:account_id/credential", post(persist_account_credential))
         .route("/api/accounts/:account_id/refresh", post(refresh_account))
         .route("/api/accounts/refresh-all", post(refresh_all_accounts))
+        .route("/api/accounts/:account_id/groups", get(get_available_groups))
+        .route("/api/accounts/:account_id/keys", get(list_managed_keys).post(create_managed_key))
+        .route(
+            "/api/accounts/:account_id/keys/:key_id",
+            get(get_managed_key).put(update_managed_key).delete(delete_managed_key),
+        )
+        .route("/api/accounts/:account_id/keys/:key_id/daily-usage", get(get_key_daily_usage))
+        .route("/api/accounts/:account_id/usage", get(list_usage_records))
+        .route("/api/accounts/:account_id/usage/stats", get(get_usage_stats))
+        .route("/api/accounts/:account_id/usage/trend", get(get_dashboard_trend))
+        .route("/api/accounts/:account_id/usage/models", get(get_dashboard_models))
+        .route(
+            "/api/accounts/:account_id/profile",
+            get(get_profile_record).put(update_profile_record),
+        )
+        .route("/api/accounts/:account_id/profile/password", put(change_profile_password))
+        .route(
+            "/api/accounts/:account_id/profile/platform-quotas",
+            get(get_platform_quotas),
+        )
+        .route(
+            "/api/accounts/:account_id/subscriptions/summary",
+            get(get_subscription_summary),
+        )
+        .route("/api/accounts/:account_id/payment/config", get(get_payment_config))
+        .route("/api/accounts/:account_id/orders", get(list_orders))
+        .route(
+            "/api/accounts/:account_id/notify-email/send-code",
+            post(send_notify_email_code),
+        )
+        .route(
+            "/api/accounts/:account_id/notify-email/verify",
+            post(verify_notify_email),
+        )
+        .route(
+            "/api/accounts/:account_id/notify-email",
+            patch(toggle_notify_email).delete(remove_notify_email),
+        )
+        .route(
+            "/api/accounts/:account_id/identity-bindings/email/send-code",
+            post(send_email_binding_code),
+        )
+        .route("/api/accounts/:account_id/identity-bindings/email", post(bind_email_identity))
+        .route(
+            "/api/accounts/:account_id/identity-bindings/:provider",
+            axum::routing::delete(unbind_auth_identity),
+        )
         .route("/api/accounts/:account_id/proxy", post(account_proxy_request))
         .with_state(ctx)
 }
@@ -195,6 +298,265 @@ async fn refresh_account(
 
 async fn refresh_all_accounts(State(ctx): State<AppContext>) -> impl IntoResponse {
     map_async_json_result(auth_service::refresh_all_accounts(&ctx).await)
+}
+
+async fn get_available_groups(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+) -> impl IntoResponse {
+    map_async_json_result(keys_service::get_available_groups(&ctx, &account_id).await)
+}
+
+async fn list_managed_keys(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+    Query(query): Query<PaginationQuery>,
+) -> impl IntoResponse {
+    map_async_json_result(
+        keys_service::list_managed_keys(
+            &ctx,
+            &account_id,
+            query.page.unwrap_or(1),
+            query.page_size.unwrap_or(20),
+        )
+        .await,
+    )
+}
+
+async fn get_managed_key(
+    State(ctx): State<AppContext>,
+    Path((account_id, key_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    map_async_json_result(keys_service::get_managed_key(&ctx, &account_id, &key_id).await)
+}
+
+async fn create_managed_key(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+    Json(payload): Json<crate::contracts::KeyMutationInput>,
+) -> impl IntoResponse {
+    map_async_json_result(keys_service::create_managed_key(&ctx, &account_id, payload).await)
+}
+
+async fn update_managed_key(
+    State(ctx): State<AppContext>,
+    Path((account_id, key_id)): Path<(String, String)>,
+    Json(payload): Json<crate::contracts::KeyMutationInput>,
+) -> impl IntoResponse {
+    map_async_json_result(
+        keys_service::update_managed_key(&ctx, &account_id, &key_id, payload).await,
+    )
+}
+
+async fn delete_managed_key(
+    State(ctx): State<AppContext>,
+    Path((account_id, key_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    map_async_json_result(keys_service::delete_managed_key(&ctx, &account_id, &key_id).await)
+}
+
+async fn list_usage_records(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+    Query(query): Query<UsageListQueryParams>,
+) -> impl IntoResponse {
+    map_async_json_result(
+        usage_service::list_usage_records(
+            &ctx,
+            &account_id,
+            usage_service::UsageListQuery {
+                page: query.page.unwrap_or(1),
+                page_size: query.page_size.unwrap_or(20),
+                api_key_id: query.api_key_id,
+                start_date: query.start_date,
+                end_date: query.end_date,
+            },
+        )
+        .await,
+    )
+}
+
+async fn get_usage_stats(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+    Query(query): Query<UsageStatsQueryParams>,
+) -> impl IntoResponse {
+    map_async_json_result(
+        usage_service::get_usage_stats(
+            &ctx,
+            &account_id,
+            usage_service::UsageStatsQuery {
+                period: query.period,
+                api_key_id: query.api_key_id,
+                start_date: query.start_date,
+                end_date: query.end_date,
+            },
+        )
+        .await,
+    )
+}
+
+async fn get_dashboard_trend(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+    Query(query): Query<DaysQuery>,
+) -> impl IntoResponse {
+    map_async_json_result(
+        usage_service::get_dashboard_trend(&ctx, &account_id, query.days.unwrap_or(7)).await,
+    )
+}
+
+async fn get_dashboard_models(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+    Query(query): Query<DaysQuery>,
+) -> impl IntoResponse {
+    map_async_json_result(
+        usage_service::get_dashboard_models(&ctx, &account_id, query.days.unwrap_or(7)).await,
+    )
+}
+
+async fn get_key_daily_usage(
+    State(ctx): State<AppContext>,
+    Path((account_id, key_id)): Path<(String, String)>,
+    Query(query): Query<DaysQuery>,
+) -> impl IntoResponse {
+    map_async_json_result(
+        usage_service::get_key_daily_usage(&ctx, &account_id, &key_id, query.days.unwrap_or(30))
+            .await,
+    )
+}
+
+async fn get_profile_record(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+) -> impl IntoResponse {
+    map_async_json_result(profile_service::get_profile_record(&ctx, &account_id).await)
+}
+
+async fn update_profile_record(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+    Json(payload): Json<crate::contracts::ProfileUpdateInput>,
+) -> impl IntoResponse {
+    map_async_json_result(profile_service::update_profile_record(&ctx, &account_id, payload).await)
+}
+
+async fn change_profile_password(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+    Json(payload): Json<PasswordChangeBody>,
+) -> impl IntoResponse {
+    map_async_json_result(
+        profile_service::change_profile_password(
+            &ctx,
+            &account_id,
+            &payload.old_password,
+            &payload.new_password,
+        )
+        .await,
+    )
+}
+
+async fn get_platform_quotas(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+) -> impl IntoResponse {
+    map_async_json_result(profile_service::get_platform_quotas(&ctx, &account_id).await)
+}
+
+async fn get_subscription_summary(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+) -> impl IntoResponse {
+    map_async_json_result(profile_service::get_subscription_summary(&ctx, &account_id).await)
+}
+
+async fn get_payment_config(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+) -> impl IntoResponse {
+    map_async_json_result(profile_service::get_payment_config(&ctx, &account_id).await)
+}
+
+async fn list_orders(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+    Query(query): Query<PaginationQuery>,
+) -> impl IntoResponse {
+    map_async_json_result(
+        profile_service::list_orders(
+            &ctx,
+            &account_id,
+            query.page.unwrap_or(1),
+            query.page_size.unwrap_or(20),
+        )
+        .await,
+    )
+}
+
+async fn send_notify_email_code(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+    Json(payload): Json<NotifyEmailBody>,
+) -> impl IntoResponse {
+    map_async_json_result(profile_service::send_notify_email_code(&ctx, &account_id, &payload.email).await)
+}
+
+async fn verify_notify_email(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+    Json(payload): Json<NotifyEmailVerifyBody>,
+) -> impl IntoResponse {
+    map_async_json_result(
+        profile_service::verify_notify_email(&ctx, &account_id, &payload.email, &payload.code)
+            .await,
+    )
+}
+
+async fn remove_notify_email(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+    Json(payload): Json<NotifyEmailBody>,
+) -> impl IntoResponse {
+    map_async_json_result(profile_service::remove_notify_email(&ctx, &account_id, &payload.email).await)
+}
+
+async fn toggle_notify_email(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+    Json(payload): Json<ToggleNotifyEmailBody>,
+) -> impl IntoResponse {
+    map_async_json_result(
+        profile_service::toggle_notify_email(&ctx, &account_id, &payload.email, payload.disabled)
+            .await,
+    )
+}
+
+async fn send_email_binding_code(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+    Json(payload): Json<NotifyEmailBody>,
+) -> impl IntoResponse {
+    map_async_json_result(profile_service::send_email_binding_code(&ctx, &account_id, &payload.email).await)
+}
+
+async fn bind_email_identity(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+    Json(payload): Json<NotifyEmailVerifyBody>,
+) -> impl IntoResponse {
+    map_async_json_result(
+        profile_service::bind_email_identity(&ctx, &account_id, &payload.email, &payload.code)
+            .await,
+    )
+}
+
+async fn unbind_auth_identity(
+    State(ctx): State<AppContext>,
+    Path((account_id, provider)): Path<(String, String)>,
+) -> impl IntoResponse {
+    map_async_json_result(profile_service::unbind_auth_identity(&ctx, &account_id, &provider).await)
 }
 
 async fn account_proxy_request(
