@@ -245,8 +245,12 @@ export function Topbar({
             </div>
           </div>
         </div>
-        {selectedAccount && (
-          <div className={`topbar-account-menu ${topbarAccountMenuOpen ? "open" : ""}`} ref={topbarAccountMenuRef}>
+        {selectedAccount ? (
+          <div
+            className={`topbar-account-menu ${topbarAccountMenuOpen ? "open" : ""}`}
+            ref={topbarAccountMenuRef}
+            onMouseEnter={() => closeTopbarPeekPanels()}
+          >
             <button
               type="button"
               className="topbar-account-trigger"
@@ -348,6 +352,24 @@ export function Topbar({
                 </button>
               </div>
             )}
+        ) : (
+          <button
+            type="button"
+            className="topbar-account-trigger topbar-account-login-trigger"
+            onClick={() => {
+              closeTopbarPeekPanels();
+              onOpenSettings();
+            }}
+            aria-label="登录并前往站点账号配置"
+          >
+            <div className="topbar-account-trigger-copy">
+              <strong>登录</strong>
+              <span>前往站点账号配置</span>
+            </div>
+            <div className="topbar-account-avatar topbar-account-login-avatar" aria-hidden="true">
+              <UserRound size={14} />
+            </div>
+          </button>
           </div>
         )}
       </div>
