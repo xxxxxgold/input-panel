@@ -174,4 +174,39 @@ describe("Topbar subscription peek", () => {
     expect(html).toContain("当前没有订阅数据");
     expect(html).not.toContain("topbar-subscription-dots");
   });
+
+  it("renders a login trigger when there is no selected account", () => {
+    const html = renderToStaticMarkup(
+      createElement(Topbar, {
+        onReload: () => {},
+        alertCount: 0,
+        topbarAlertsExpanded: false,
+        setTopbarAlertsExpanded: () => {},
+        topbarAlertsRef: createRef<HTMLDivElement>(),
+        topbarAlertPreview: [],
+        closeTopbarAccountMenu: () => {},
+        setTopbarSubscriptionsExpanded: () => {},
+        topbarSubscriptionsExpanded: false,
+        topbarSubscriptionsRef: createRef<HTMLDivElement>(),
+        usageStatusLabel: "等待同步",
+        usageStatusHint: "暂无订阅数据",
+        subscriptionSpend: 0,
+        subscriptionCount: 0,
+        subscriptionPreviewRecords: [],
+        closeTopbarPeekPanels: () => {},
+        onOpenAlerts: () => {},
+        onOpenSubscriptions: () => {},
+        selectedAccount: null,
+        topbarAccountMenuOpen: false,
+        setTopbarAccountMenuOpen: () => {},
+        topbarAccountMenuRef: createRef<HTMLDivElement>(),
+        selectedAccountStatusLabel: "未选择账号",
+        selectedAccountAvatarUrl: null,
+        selectedSite: null,
+        topbarFilteredAccounts: [],
+        accounts: [],
+        topbarAccountSearch: "",
+        setTopbarAccountSearch: () => {},
+        onAccountSelect: () => {},
+        onOpenProfileModal: () => {},
 });

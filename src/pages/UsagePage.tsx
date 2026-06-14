@@ -35,7 +35,7 @@ import {
   UsageModelRequestDetails,
   UsageTokenMetricDetails
 } from "../features/usage/components/UsageMetricDetails";
-import type { UsageModelSummary } from "../features/usage/model-summary";
+import { summarizeUsageRowsByModel, type UsageModelSummary } from "../features/usage/model-summary";
 import {
   buildTrendAreaChartOption,
   EChartCard,
@@ -52,6 +52,87 @@ const USAGE_RANGE_PRESETS = [
   { key: "thisMonth", label: "本月" },
   { key: "lastMonth", label: "上月" }
 ] as const;
+
+function getCacheInputTokens(
+  totalCacheTokens?: number | null,
+  cacheCreationTokens?: number | null,
+  cacheReadTokens?: number | null
+) {
+  if (totalCacheTokens !== null && totalCacheTokens !== undefined && Number.isFinite(totalCacheTokens)) {
+    return totalCacheTokens;
+  }
+  return (cacheCreationTokens ?? 0) + (cacheReadTokens ?? 0);
+}
+
+function findTopUsageModel(
+  summaries: UsageModelSummary[],
+  valueSelector: (summary: UsageModelSummary) => number
+) {
+  return summaries.reduce<UsageModelSummary | null>((best, summary) => {
+    if (!best) {
+      return summary;
+    }
+    const nextValue = valueSelector(summary);
+    const bestValue = valueSelector(best);
+    if (nextValue !== bestValue) {
+      return nextValue > bestValue ? summary : best;
+    }
+    return summary.totalTokens > best.totalTokens ? summary : best;
+  }, null);
+}
+
+function buildUsageModelHint(prefix: string, model?: string | null) {
+  return model ? `${prefix}: ${model}` : "当前没有模型数据";
+}
+
+function normalizeReasoningEffort(value?: string | null) {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+function formatUsageReasoningLabel(value?: string | null) {
+  const normalized = normalizeReasoningEffort(value);
+  return normalized || "-";
+}
+
+function getUsageReasoningTone(value?: string | null) {
+  switch (normalizeReasoningEffort(value)) {
+    case "xhigh":
+      return "reasoning-xhigh";
+    case "high":
+      return "reasoning-high";
+    case "medium":
+      return "reasoning-medium";
+    case "low":
+      return "reasoning-low";
+    default:
+      return "reasoning-default";
+  }
+}
+
+function formatUsageRequestTypeLabel(row: UsageRow) {
+  const requestType = row.requestType?.trim().toLowerCase() ?? "";
+  if (row.stream || requestType === "stream") {
+    return "流式";
+  }
+  if (!requestType || requestType === "standard" || requestType === "default") {
+    return "标准";
+  }
+  if (requestType === "batch") {
+    return "批量";
+  }
+  return row.requestType ?? "-";
+}
+
+function getUsageRequestTypeTone(row: UsageRow) {
+  const requestType = row.requestType?.trim().toLowerCase() ?? "";
+  if (row.stream || requestType === "stream") {
+    return "usage-pill-stream";
+  }
+  if (requestType === "batch") {
+    return "usage-pill-batch";
+  }
+  return "usage-pill-standard";
+}
 
 export function UsagePage({
   managedKeys,
@@ -70,6 +151,7 @@ export function UsagePage({
   usageModelSummaries,
   usageModelSummariesLoading,
   usageRecords,
+  usageScopeRows,
   handleUsageSearch,
   handleUsagePageChange,
   usageTrend,
@@ -91,11 +173,25 @@ export function UsagePage({
   usageModelSummaries: UsageModelSummary[];
   usageModelSummariesLoading: boolean;
   usageRecords: PaginatedResult<UsageRow> | null;
+  usageScopeRows: UsageRow[];
   handleUsageSearch: () => Promise<void>;
   handleUsagePageChange: (page: number) => Promise<void>;
   usageTrend: UsageTrendPayload | null;
   usageModels: DashboardModelsPayload | null;
 }) {
+  const scopedModelSummaries = usageScopeRows.length > 0
+    ? summarizeUsageRowsByModel(usageScopeRows)
+    : (usageStats?.totalRequests ?? 0) > 0
+      ? usageModelSummaries
+      : [];
+  const topRequestModel = findTopUsageModel(scopedModelSummaries, (summary) => summary.requests);
+  const topOutputModel = findTopUsageModel(scopedModelSummaries, (summary) => summary.outputTokens);
+  const totalCacheInputTokens = getCacheInputTokens(
+    usageStats?.totalCacheTokens,
+    usageStats?.totalCacheCreationTokens,
+    usageStats?.totalCacheReadTokens
+  );
+
   return (
     <section className="usage-view">
       <SectionCard
@@ -189,30 +285,30 @@ export function UsagePage({
           <div className="metric-grid compact-metrics">
             <MetricCard
               label="请求数"
-              value={String(usageStats.totalRequests)}
-              hint="筛选结果"
+              value={usageStats.totalRequests.toLocaleString()}
+              hint={buildUsageModelHint("最多请求", topRequestModel?.model)}
               accent="sky"
               icon={<LayoutDashboard size={18} />}
               detailTitle="模型请求次数"
-              detail={<UsageModelRequestDetails models={usageModelSummaries} loading={usageModelSummariesLoading} />}
+              detail={<UsageModelRequestDetails models={scopedModelSummaries} loading={usageModelSummariesLoading} />}
             />
             <MetricCard
               label="输入 Tokens"
               value={compact(usageStats.totalInputTokens)}
-              hint="筛选结果"
+              hint={`输入 ${compact(usageStats.totalInputTokens)} / 缓存输入 ${compact(totalCacheInputTokens)}`}
               accent="emerald"
               icon={<MonitorDot size={18} />}
               detailTitle="输入 Token 明细"
-              detail={<UsageTokenMetricDetails models={usageModelSummaries} field="input" loading={usageModelSummariesLoading} />}
+              detail={<UsageTokenMetricDetails models={scopedModelSummaries} field="input" loading={usageModelSummariesLoading} />}
             />
             <MetricCard
               label="输出 Tokens"
               value={compact(usageStats.totalOutputTokens)}
-              hint="筛选结果"
+              hint={buildUsageModelHint("输出最多", topOutputModel?.model)}
               accent="indigo"
               icon={<MonitorDot size={18} />}
               detailTitle="输出 Token 明细"
-              detail={<UsageTokenMetricDetails models={usageModelSummaries} field="output" loading={usageModelSummariesLoading} />}
+              detail={<UsageTokenMetricDetails models={scopedModelSummaries} field="output" loading={usageModelSummariesLoading} />}
             />
             <MetricCard
               label="实际成本"
@@ -245,12 +341,12 @@ export function UsagePage({
               <col style={{ width: "10%" }} />
               <col style={{ width: "5%" }} />
               <col style={{ width: "7%" }} />
-              <col style={{ width: "11%" }} />
+              <col style={{ width: "13%" }} />
               <col style={{ width: "9%" }} />
               <col style={{ width: "6%" }} />
               <col style={{ width: "6%" }} />
               <col style={{ width: "8%" }} />
-              <col style={{ width: "15%" }} />
+              <col style={{ width: "13%" }} />
             </colgroup>
             <thead>
               <tr>
@@ -283,22 +379,39 @@ export function UsagePage({
                       <span>{row.platform ?? row.subscriptionName ?? "unknown"}</span>
                     </div>
                   </td>
-                  <td>{row.reasoningEffort ?? "-"}</td>
+                  <td>
+                    {row.reasoningEffort ? (
+                      <span className={`status-pill neutral usage-pill usage-pill-reasoning ${getUsageReasoningTone(row.reasoningEffort)}`}>
+                        {formatUsageReasoningLabel(row.reasoningEffort)}
+                      </span>
+                    ) : (
+                      "-"
+                    )}
+                  </td>
                   <td>
                     <div className="usage-cell">
                       <strong>{row.endpoint ?? "-"}</strong>
                       <span>{row.upstreamEndpoint ?? "-"}</span>
                     </div>
                   </td>
-                  <td>{row.stream ? "stream" : row.requestType ?? "-"}</td>
+                  <td>
+                    <span className={`status-pill neutral usage-pill usage-pill-request ${getUsageRequestTypeTone(row)}`}>
+                      {formatUsageRequestTypeLabel(row)}
+                    </span>
+                  </td>
                   <td>{formatBillingMode(row.billingMode, row.billingType)}</td>
                   <td>
                     <UsageDetailPopover
                       trigger={(
-                        <div className="usage-cell usage-cell-number">
-                          <strong>{compact(row.totalTokens)}</strong>
-                          <span>I {compact(row.inputTokens)} / O {compact(row.outputTokens)}</span>
-                          <span>C {compact((row.cacheCreationTokens ?? 0) + (row.cacheReadTokens ?? 0))}</span>
+                        <div className="usage-cell usage-cell-number usage-token-summary">
+                          <div className="usage-token-lines">
+                            <span>输入 {compact(row.inputTokens)}</span>
+                            <span>输出 {compact(row.outputTokens)}</span>
+                          </div>
+                          <div className="usage-token-lines usage-token-lines-secondary">
+                            <span>缓存输入 {compact(getCacheInputTokens(undefined, row.cacheCreationTokens, row.cacheReadTokens))}</span>
+                          </div>
+                          <strong>总和 {compact(row.totalTokens)}</strong>
                         </div>
                       )}
                       title="Token 明细"
@@ -338,8 +451,8 @@ export function UsagePage({
                       <DetailItem label="计费" value={formatUsd(row.actualCost)} />
                     </UsageDetailPopover>
                   </td>
-                  <td>{formatMilliseconds(row.firstTokenMs)}</td>
-                  <td>{formatMilliseconds(row.durationMs)}</td>
+                  <td>{formatDurationSeconds(row.firstTokenMs, 2, "秒")}</td>
+                  <td>{formatDurationSeconds(row.durationMs, 2, "秒")}</td>
                   <td>{formatDateTimeFull(row.createdAt)}</td>
                   <td className="usage-user-agent" title={row.userAgent ?? "-"}>
                     {row.userAgent ?? "-"}

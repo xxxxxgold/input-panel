@@ -2246,7 +2246,7 @@ html.deep-blue {
 }
 
 .summary-stat strong {
-  font-size: 28px;
+  font-size: 22px;
   line-height: 1.05;
   color: var(--text-strong);
 }
@@ -4133,8 +4133,8 @@ html.deep-blue {
 .floating-menu-card {
   position: relative;
   width: 88px;
-  min-height: 100%;
-  height: 100%;
+  min-height: calc(100% - 16px);
+  height: calc(100% - 16px);
   padding: 6px 6px 10px;
   border-radius: 30px;
   display: flex;
@@ -4148,8 +4148,8 @@ html.deep-blue {
 .floating-preview-card {
   position: relative;
   width: 366px;
-  min-height: 100%;
-  height: 100%;
+  min-height: calc(100% - 16px);
+  height: calc(100% - 16px);
   padding: 6px 10px 10px;
   border-radius: 30px;
   display: flex;
@@ -4169,7 +4169,7 @@ html.deep-blue {
   width: 100%;
   height: 100%;
   display: flex;
-  align-items: stretch;
+  align-items: flex-start;
   justify-content: flex-end;
   gap: 4px;
   padding: 0;
@@ -4200,8 +4200,9 @@ html.deep-blue {
 }
 
 .floating-panel-window-preview {
-  align-self: stretch;
+  align-self: flex-start;
   display: flex;
+  height: calc(100% - 16px);
 }
 
 .floating-menu-header,
