@@ -1,9 +1,17 @@
 import type { AccountSnapshot, SubscriptionSummaryPayload } from "../types";
-import { compact, formatTime, formatUsd } from "../shared/lib/formatters";
+import {
+  formatPercent,
+  formatRemainingDaysLabel,
+  formatTime,
+  formatUsd
+} from "../shared/lib/formatters";
 import { EmptyState } from "../shared/ui/EmptyState";
 import { SectionCard } from "../shared/ui/SectionCard";
 import { SubscriptionList } from "../features/subscriptions/components/SubscriptionList";
-import { buildSubscriptionUsageInsights } from "../subscription-view";
+import {
+  buildSubscriptionUsageInsights,
+  getSubscriptionStatusPresentation
+} from "../subscription-view";
 
 export function SubscriptionsPage({
   visibleSnapshot,
@@ -14,9 +22,7 @@ export function SubscriptionsPage({
 }) {
   const subscriptionUsageInsights = buildSubscriptionUsageInsights({
     summary: subscriptionSummary,
-    snapshotSubscriptions: visibleSnapshot?.subscriptions ?? [],
-    requestHistory: visibleSnapshot?.requestHistory ?? [],
-    recentUsage: visibleSnapshot?.recentUsage ?? []
+    snapshotSubscriptions: visibleSnapshot?.subscriptions ?? []
   });
 
   return (
@@ -31,45 +37,77 @@ export function SubscriptionsPage({
       <SectionCard title="订阅摘要" subtitle="对齐 subscriptions/summary 接口">
         {subscriptionSummary ? (
           <div className="stack-list">
-            <div className="summary-stat">
-              <span>活跃订阅数</span>
-              <strong>{subscriptionSummary.activeCount}</strong>
-            </div>
-            <div className="summary-stat">
-              <span>累计已用金额</span>
-              <strong>${subscriptionSummary.totalUsedUsd.toFixed(4)}</strong>
-            </div>
-            <div className="summary-stat">
-              <span>已归因请求数</span>
-              <strong>{subscriptionUsageInsights.totalAttributedRequests.toLocaleString()}</strong>
-            </div>
-            <div className="summary-stat">
-              <span>已归因总 Tokens</span>
-              <strong>{compact(subscriptionUsageInsights.totalAttributedTokens)}</strong>
-            </div>
-            <div className="summary-stat">
-              <span>已归因累计成本</span>
-              <strong>{formatUsd(subscriptionUsageInsights.totalAttributedActualCost, 4)}</strong>
+            <div className="subscription-summary-grid">
+              <div className="summary-stat">
+                <span>活跃订阅数</span>
+                <strong>{subscriptionSummary.activeCount}</strong>
+              </div>
+              <div className="summary-stat">
+                <span>累计已用金额</span>
+                <strong>{formatUsd(subscriptionSummary.totalUsedUsd, 4)}</strong>
+              </div>
+              <div className="summary-stat">
+                <span>日额度总量</span>
+                <strong>{formatUsd(sum(subscriptionUsageInsights.rows.map((item) => item.dailyLimitUsd)), 2)}</strong>
+              </div>
+              <div className="summary-stat">
+                <span>日已用总量</span>
+                <strong>{formatUsd(sum(subscriptionUsageInsights.rows.map((item) => item.dailyUsedUsd)), 2)}</strong>
+              </div>
+              <div className="summary-stat">
+                <span>日额度总占用</span>
+                <strong>{formatPercent(computePercent(
+                  sum(subscriptionUsageInsights.rows.map((item) => item.dailyUsedUsd)),
+                  sum(subscriptionUsageInsights.rows.map((item) => item.dailyLimitUsd))
+                ))}</strong>
+              </div>
+              <div className="summary-stat">
+                <span>最近到期</span>
+                <strong>{resolveNearestExpiryLabel(subscriptionUsageInsights.rows)}</strong>
+              </div>
             </div>
             <p className="quota-hint">
-              统计口径: {subscriptionUsageInsights.sourceLabel}。当前订阅接口只返回金额/配额摘要, 请求数与 Tokens 为按订阅标签归因后的累计值。
+              当前只展示订阅接口原生可确认的数据: 金额、日/周/月额度、状态与到期信息。未再展示按 usage 归因的请求数或 Tokens。
             </p>
-            <div className="table-list">
-              {subscriptionUsageInsights.rows.map((item) => (
-                <div key={item.id} className="table-row">
-                  <div>
-                    <strong>{item.name}</strong>
-                    <p>{item.status}</p>
+            <div className="table-list wide">
+              {subscriptionUsageInsights.rows.map((item) => {
+                const statusPresentation = getSubscriptionStatusPresentation(item.status);
+                return (
+                  <div key={item.id} className="table-row wide subscription-summary-row">
+                    <div className="subscription-summary-main">
+                      <strong>{item.name}</strong>
+                      <p>{statusPresentation.label}</p>
+                      <small>{item.expiresAt ? formatRemainingDaysLabel(item.expiresAt) : "暂无到期时间"}</small>
+                    </div>
+                    <div className="subscription-metric-grid">
+                      <div className="table-numbers subscription-metric-card">
+                        <span>日用量</span>
+                        <strong>{formatUsd(item.dailyUsedUsd, 2)} / {formatUsd(item.dailyLimitUsd, 2)}</strong>
+                      </div>
+                      <div className="table-numbers subscription-metric-card">
+                        <span>日剩余</span>
+                        <strong>{formatUsd(Math.max(item.dailyLimitUsd - item.dailyUsedUsd, 0), 2)}</strong>
+                      </div>
+                      <div className="table-numbers subscription-metric-card">
+                        <span>日占用</span>
+                        <strong>{formatPercent(computePercent(item.dailyUsedUsd, item.dailyLimitUsd))}</strong>
+                      </div>
+                      <div className="table-numbers subscription-metric-card">
+                        <span>周用量</span>
+                        <strong>{formatUsd(item.weeklyUsedUsd, 2)}</strong>
+                      </div>
+                      <div className="table-numbers subscription-metric-card">
+                        <span>月用量</span>
+                        <strong>{formatUsd(item.monthlyUsedUsd, 2)}</strong>
+                      </div>
+                      <div className="table-numbers subscription-metric-card">
+                        <span>到期时间</span>
+                        <strong>{item.expiresAt ? formatTime(item.expiresAt) : "无到期时间"}</strong>
+                      </div>
+                    </div>
                   </div>
-                  <div className="table-numbers">
-                    <span>日用量 ${item.dailyUsedUsd.toFixed(2)} / ${item.dailyLimitUsd.toFixed(2)}</span>
-                    <span>周用量 ${item.weeklyUsedUsd.toFixed(2)} / 月用量 ${item.monthlyUsedUsd.toFixed(2)}</span>
-                    <span>累计 {item.attributedRequests.toLocaleString()} 请求 / {compact(item.attributedTokens)} Tokens</span>
-                    <span>归因成本 {formatUsd(item.attributedActualCost, 4)}</span>
-                    <span>{item.expiresAt ? formatTime(item.expiresAt) : "无到期时间"}</span>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         ) : (
@@ -78,4 +116,32 @@ export function SubscriptionsPage({
       </SectionCard>
     </section>
   );
+}
+
+function sum(values: number[]) {
+  return values.reduce((accumulator, value) => accumulator + value, 0);
+}
+
+function computePercent(used: number, limit: number) {
+  if (!Number.isFinite(limit) || limit <= 0) {
+    return null;
+  }
+  return (used / limit) * 100;
+}
+
+function resolveNearestExpiryLabel(
+  rows: Array<{ expiresAt: string | null }>
+) {
+  const values = rows
+    .map((item) => item.expiresAt)
+    .filter((value): value is string => Boolean(value))
+    .map((value) => ({ raw: value, time: new Date(value).getTime() }))
+    .filter((item) => !Number.isNaN(item.time))
+    .sort((left, right) => left.time - right.time);
+
+  if (values.length === 0) {
+    return "暂无到期时间";
+  }
+
+  return formatRemainingDaysLabel(values[0].raw);
 }
