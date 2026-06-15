@@ -5,7 +5,12 @@ export const THEME_IDS = [
   "cloud-mist",
   "graphite-cyan",
   "warm-paper-console",
-  "carbon-amber-terminal"
+  "carbon-amber-terminal",
+  "spruce-server-room",
+  "polar-lab",
+  "spectral-lab",
+  "clinical-monitor-bay",
+  "audit-archive-room"
 ] as const;
 
 export type ThemeId = (typeof THEME_IDS)[number];
@@ -77,6 +82,46 @@ export const THEME_OPTIONS: ThemeOption[] = [
     family: "dark",
     accent: "#ffb24d",
     preview: "linear-gradient(135deg, #121012 0%, #21181a 48%, #4c2d18 100%)"
+  },
+  {
+    id: "spruce-server-room",
+    label: "冷杉机房",
+    summary: "深绿机房夜盘, 强调基础设施值守与稳定运行。",
+    family: "dark",
+    accent: "#6fcca0",
+    preview: "linear-gradient(135deg, #0d1210 0%, #16201b 48%, #284135 100%)"
+  },
+  {
+    id: "polar-lab",
+    label: "极地实验台",
+    summary: "冷亮实验底盘, 适合高精度核对与低刺激阅读。",
+    family: "light",
+    accent: "#3b90c9",
+    preview: "linear-gradient(135deg, #ffffff 0%, #f1f7fd 44%, #dcecf8 100%)"
+  },
+  {
+    id: "spectral-lab",
+    label: "光谱实验台",
+    summary: "深靛光谱面板, 突出图表比较与信号分析。",
+    family: "dark",
+    accent: "#8a7dff",
+    preview: "linear-gradient(135deg, #10111a 0%, #1a1b2a 46%, #2f2a4f 100%)"
+  },
+  {
+    id: "clinical-monitor-bay",
+    label: "医护监测舱",
+    summary: "无菌白监测面, 强化状态信号与连续监护节奏。",
+    family: "light",
+    accent: "#35b39c",
+    preview: "linear-gradient(135deg, #fdfffe 0%, #eef8f4 44%, #d7efe8 100%)"
+  },
+  {
+    id: "audit-archive-room",
+    label: "审计档案室",
+    summary: "冷纸档案语气, 适合台账核查与证据链阅读。",
+    family: "light",
+    accent: "#6a7e8f",
+    preview: "linear-gradient(135deg, #faf7f1 0%, #f0ebe2 44%, #ddd6ca 100%)"
   }
 ];
 

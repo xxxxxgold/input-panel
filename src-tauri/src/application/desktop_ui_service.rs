@@ -10,7 +10,8 @@ const DESKTOP_UI_PREFS_KEY: &str = "desktop_ui_prefs";
 fn normalize_theme(value: String) -> String {
     match value.as_str() {
         "light" | "dark" | "deep-blue" | "cloud-mist" | "graphite-cyan" | "warm-paper-console"
-        | "carbon-amber-terminal" => value,
+        | "carbon-amber-terminal" | "spruce-server-room" | "polar-lab" | "spectral-lab"
+        | "clinical-monitor-bay" | "audit-archive-room" => value,
         _ => "light".into(),
     }
 }
