@@ -182,4 +182,52 @@ describe("OverviewPage metric hints", () => {
     expect(html).toContain("主账号 $42.50");
     expect(html).toContain("最新: 主账号 余额偏低, 需要尽快补充避免影响后续调用");
   });
+  it("renders platform distribution as summary cards instead of a donut chart", () => {
+    const overview = {
+      sites: [],
+      accounts: [],
+      totals: {
+        balance: 0,
+        totalSites: 1,
+        totalAccounts: 0,
+        totalApiKeys: 0,
+        activeApiKeys: 0,
+        todayRequests: 12,
+        totalRequests: 34,
+        todayActualCost: 1.2,
+        totalActualCost: 5.6,
+        todayTokens: 7890,
+        totalTokens: 12345
+      },
+      alerts: [],
+      platformSeries: [
+        {
+          platform: "openai",
+          totalActualCost: 5.6,
+          todayActualCost: 1.2,
+          totalRequests: 34,
+          totalTokens: 12345
+        }
+      ],
+      trend: [],
+      recentUsage: [],
+      subscriptions: [],
+      keys: [],
+      generatedAt: "2026-06-15T10:47:34Z"
+    } satisfies OverviewPayload;
+
+    const html = renderToStaticMarkup(
+      createElement(OverviewPage, {
+        overview,
+        visibleSnapshot: null,
+        alertCount: 0
+      })
+    );
+
+    expect(html).toContain("platform-distribution-card");
+    expect(html).toContain("累计实际成本");
+    expect(html).toContain("$5.6000");
+    expect(html).toContain("12.3K");
+    expect(html).not.toContain("当前没有平台汇总数据");
+  });
 });

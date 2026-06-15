@@ -16,7 +16,6 @@ import { SectionCard } from "../shared/ui/SectionCard";
 import { ApiKeyList } from "../features/keys/components/ApiKeyList";
 import { SubscriptionList } from "../features/subscriptions/components/SubscriptionList";
 import {
-  buildPlatformDonutChartOption,
   buildTrendAreaChartOption,
   EChartCard,
   normalizeTrendChartData
@@ -41,7 +40,15 @@ export function OverviewPage({
 }) {
   const balanceHint = buildOverviewBalanceHint(overview);
   const alertsHint = buildOverviewAlertsHint(overview);
-
+  const platformCards = overview.platformSeries
+    .slice()
+    .sort((left, right) => {
+      const costDiff = right.totalActualCost - left.totalActualCost;
+      if (costDiff !== 0) {
+        return costDiff;
+      }
+      return left.platform.localeCompare(right.platform, "zh-CN");
+    });
   return (
     <>
       <section className="metric-grid">
@@ -116,17 +123,41 @@ export function OverviewPage({
         </SectionCard>
 
         <SectionCard title="平台分布" subtitle="按平台汇总实际成本与 tokens">
-          <div className="chart-wrap">
-            <EChartCard option={buildPlatformDonutChartOption(overview.platformSeries)} />
-          </div>
-          <div className="legend-list">
-            {overview.platformSeries.map((item) => (
-              <div key={item.platform} className="legend-row">
-                <span>{item.platform}</span>
-                <strong>${item.totalActualCost.toFixed(4)}</strong>
-              </div>
-            ))}
-          </div>
+          {platformCards.length > 0 ? (
+            <div className="platform-distribution-grid">
+              {platformCards.map((item, index) => (
+                <article key={item.platform} className="platform-distribution-card">
+                  <div className="platform-distribution-head">
+                    <div className="platform-distribution-copy">
+                      <span className="platform-distribution-rank">TOP {index + 1}</span>
+                      <strong>{item.platform}</strong>
+                      <p>{item.totalRequests.toLocaleString()} 请求</p>
+                    </div>
+                    <div className="platform-distribution-cost">
+                      <span>累计实际成本</span>
+                      <strong>${item.totalActualCost.toFixed(4)}</strong>
+                    </div>
+                  </div>
+                  <div className="platform-distribution-metrics">
+                    <div className="summary-stat compact-stat">
+                      <span>今日成本</span>
+                      <strong>${item.todayActualCost.toFixed(4)}</strong>
+                    </div>
+                    <div className="summary-stat compact-stat">
+                      <span>总 Tokens</span>
+                      <strong>{compact(item.totalTokens)}</strong>
+                    </div>
+                    <div className="summary-stat compact-stat">
+                      <span>总请求</span>
+                      <strong>{item.totalRequests.toLocaleString()}</strong>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <EmptyState title="当前没有平台汇总数据" detail="刷新账号后, 这里会按平台展示成本与 tokens 摘要。" compact />
+          )}
         </SectionCard>
       </section>
 
