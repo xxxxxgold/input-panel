@@ -1,4 +1,4 @@
-import type { KeyMutationInput } from "../../generated/contracts";
+import type { KeyMutationInput, KeyPatchInput } from "../../generated/contracts";
 import type { GroupRecord, ManagedKeyRecord, PaginatedResult } from "../../types";
 import { desktopOrHttp } from "../../shared/transport/runtime";
 
@@ -41,7 +41,7 @@ export function createManagedKey(accountId: string, payload: KeyMutationInput) {
 export function updateManagedKey(
   accountId: string,
   keyId: string | number,
-  payload: Partial<KeyMutationInput> & { resetQuota?: boolean; resetRateLimitUsage?: boolean }
+  payload: KeyPatchInput
 ) {
   return desktopOrHttp<ManagedKeyRecord>({
     command: "update_managed_key",

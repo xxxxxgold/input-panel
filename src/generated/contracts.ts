@@ -329,6 +329,22 @@ export interface KeyMutationInput {
   resetRateLimitUsage?: boolean;
 }
 
+export interface KeyPatchInput {
+  name?: string | null;
+  groupId?: number | null;
+  customKey?: string | null;
+  ipWhitelist?: string | null;
+  ipBlacklist?: string | null;
+  quota?: number | null;
+  expiresInDays?: number | null;
+  status?: string | null;
+  rateLimit5h?: number | null;
+  rateLimit1d?: number | null;
+  rateLimit7d?: number | null;
+  resetQuota?: boolean;
+  resetRateLimitUsage?: boolean;
+}
+
 export interface ProfileUpdateInput {
   email?: string;
   username?: string;
@@ -387,6 +403,26 @@ export interface AccountRuntime extends AccountRecord {
   snapshot?: AccountSnapshot | null;
   sessionState: "ready" | "missing" | "expired";
   lastError?: string | null;
+}
+
+export type RefreshTriggerSource = "manual" | "stale_auto";
+
+export type TaskRunStatus = "running" | "succeeded" | "failed";
+
+export interface TaskRunRecord {
+  id: string;
+  accountId: string;
+  primaryTriggerSource: RefreshTriggerSource;
+  status: TaskRunStatus;
+  joinCount: number;
+  startedAt: string;
+  finishedAt?: string | null;
+  errorMessage?: string | null;
+}
+
+export interface RefreshAccountTaskResponse {
+  account: AccountRuntime;
+  run: TaskRunRecord;
 }
 
 export interface OverviewUsageRow extends UsageRow {
@@ -482,4 +518,24 @@ export interface DesktopUiPrefsPatch {
 
 export interface OpenMainWindowPayload {
   nav?: string | null;
+}
+
+export interface ServiceStatusProbeRecord {
+  ts: number;
+  ok: boolean;
+  latencyMs?: number | null;
+  error?: string | null;
+}
+
+export interface ServiceStatusServiceRecord {
+  model: string;
+  uptimePct: number;
+  last?: ServiceStatusProbeRecord | null;
+  history: ServiceStatusProbeRecord[];
+}
+
+export interface ServiceStatusPayload {
+  allOk: boolean;
+  generatedAt: number;
+  services: ServiceStatusServiceRecord[];
 }

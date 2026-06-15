@@ -12,8 +12,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::application::{
-    account_service, auth_service, dashboard_service, keys_service, profile_service, proxy_service,
-    site_service, usage_service, AppContext,
+    account_service, auth_service, dashboard_service, desktop_ui_service, keys_service,
+    profile_service, proxy_service, refresh_task_service, service_status_service, site_service, usage_service, AppContext,
 };
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +48,12 @@ struct Login2faBody {
 #[serde(rename_all = "camelCase")]
 struct PersistCredentialBody {
     password: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RefreshAccountBody {
+    trigger_source: Option<crate::contracts::RefreshTriggerSource>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,6 +119,52 @@ struct ToggleNotifyEmailBody {
     disabled: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopUiPrefsPatchBody {
+    launch_mode: Option<crate::contracts::AppLaunchMode>,
+    open_floating_in_main_mode: Option<bool>,
+    close_behavior: Option<crate::contracts::CloseBehavior>,
+    theme: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LaunchModeBody {
+    launch_mode: crate::contracts::AppLaunchMode,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FloatingVisibilityBody {
+    visible: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FloatingPanelVisibilityBody {
+    visible: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FloatingPanelPositionBody {
+    x: i32,
+    y: i32,
+}
+
+#[derive(Debug, Deserialize)]
+struct FloatingContextMenuBody {
+    x: Option<f64>,
+    y: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenMainBody {
+    nav: Option<String>,
+}
+
 pub async fn serve(ctx: AppContext, addr: SocketAddr) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, router(ctx)).await?;
@@ -123,6 +175,18 @@ pub fn router(ctx: AppContext) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/dashboard/overview", get(get_overview))
+        .route("/api/service-status", get(get_service_status))
+        .route(
+            "/api/desktop-ui/preferences",
+            get(get_desktop_ui_prefs).patch(update_desktop_ui_prefs),
+        )
+        .route("/api/desktop-ui/mode", post(switch_app_mode))
+        .route("/api/desktop-ui/floating/visibility", post(set_floating_window_visible))
+        .route("/api/desktop-ui/floating/context-menu", post(show_floating_context_menu))
+        .route("/api/desktop-ui/floating-panel/visibility", post(set_floating_panel_visible))
+        .route("/api/desktop-ui/floating-panel/position", post(position_floating_panel))
+        .route("/api/desktop-ui/open-main", post(open_main_window))
+        .route("/api/desktop-ui/quit", post(quit_application))
         .route("/api/sites", post(create_site))
         .route("/api/sites/:site_id", patch(update_site).delete(remove_site))
         .route("/api/accounts", post(create_account))
@@ -192,6 +256,83 @@ async fn health() -> impl IntoResponse {
 
 async fn get_overview(State(ctx): State<AppContext>) -> impl IntoResponse {
     map_json_result(dashboard_service::get_overview(&ctx))
+}
+
+async fn get_service_status() -> impl IntoResponse {
+    map_async_json_result(service_status_service::get_service_status().await)
+}
+
+async fn get_desktop_ui_prefs(State(ctx): State<AppContext>) -> impl IntoResponse {
+    map_json_result(desktop_ui_service::get_desktop_ui_prefs(&ctx))
+}
+
+async fn update_desktop_ui_prefs(
+    State(ctx): State<AppContext>,
+    Json(payload): Json<DesktopUiPrefsPatchBody>,
+) -> impl IntoResponse {
+    map_json_result(desktop_ui_service::update_desktop_ui_prefs(
+        &ctx,
+        crate::contracts::DesktopUiPrefsPatch {
+            launch_mode: payload.launch_mode,
+            open_floating_in_main_mode: payload.open_floating_in_main_mode,
+            close_behavior: payload.close_behavior,
+            theme: payload.theme,
+        },
+    ))
+}
+
+async fn switch_app_mode(
+    State(ctx): State<AppContext>,
+    Json(payload): Json<LaunchModeBody>,
+) -> impl IntoResponse {
+    map_json_result(desktop_ui_service::set_launch_mode(&ctx, payload.launch_mode))
+}
+
+async fn set_floating_window_visible(
+    State(ctx): State<AppContext>,
+    Json(payload): Json<FloatingVisibilityBody>,
+) -> impl IntoResponse {
+    map_json_result(desktop_ui_service::update_desktop_ui_prefs(
+        &ctx,
+        crate::contracts::DesktopUiPrefsPatch {
+            open_floating_in_main_mode: Some(payload.visible),
+            ..crate::contracts::DesktopUiPrefsPatch::default()
+        },
+    ))
+}
+
+async fn set_floating_panel_visible(
+    Json(payload): Json<FloatingPanelVisibilityBody>,
+) -> impl IntoResponse {
+    (StatusCode::OK, Json(json!(payload.visible))).into_response()
+}
+
+async fn show_floating_context_menu(
+    Json(payload): Json<FloatingContextMenuBody>,
+) -> impl IntoResponse {
+    (StatusCode::OK, Json(json!({ "x": payload.x, "y": payload.y }))).into_response()
+}
+
+async fn position_floating_panel(
+    Json(payload): Json<FloatingPanelPositionBody>,
+) -> impl IntoResponse {
+    (StatusCode::OK, Json(json!({ "x": payload.x, "y": payload.y }))).into_response()
+}
+
+async fn open_main_window(
+    State(ctx): State<AppContext>,
+    Json(payload): Json<OpenMainBody>,
+) -> impl IntoResponse {
+    map_json_result(desktop_ui_service::set_launch_mode(&ctx, crate::contracts::AppLaunchMode::Main).map(
+        |prefs| {
+            let _ = payload.nav;
+            prefs
+        },
+    ))
+}
+
+async fn quit_application() -> impl IntoResponse {
+    (StatusCode::OK, Json(json!(true))).into_response()
 }
 
 async fn create_site(
@@ -292,8 +433,21 @@ async fn persist_account_credential(
 async fn refresh_account(
     State(ctx): State<AppContext>,
     Path(account_id): Path<String>,
+    body: Option<Json<RefreshAccountBody>>,
 ) -> impl IntoResponse {
-    map_async_json_result(auth_service::refresh_account(&ctx, &account_id).await)
+    map_async_json_result(
+        refresh_task_service::refresh_account(
+            &ctx,
+            &account_id,
+            body.and_then(|Json(payload)| payload.trigger_source)
+                .unwrap_or(crate::contracts::RefreshTriggerSource::Manual),
+        )
+        .await
+        .map(|result| crate::contracts::RefreshAccountTaskResponse {
+            account: result.account,
+            run: result.run,
+        }),
+    )
 }
 
 async fn refresh_all_accounts(State(ctx): State<AppContext>) -> impl IntoResponse {
@@ -341,7 +495,7 @@ async fn create_managed_key(
 async fn update_managed_key(
     State(ctx): State<AppContext>,
     Path((account_id, key_id)): Path<(String, String)>,
-    Json(payload): Json<crate::contracts::KeyMutationInput>,
+    Json(payload): Json<crate::contracts::KeyPatchInput>,
 ) -> impl IntoResponse {
     map_async_json_result(
         keys_service::update_managed_key(&ctx, &account_id, &key_id, payload).await,
