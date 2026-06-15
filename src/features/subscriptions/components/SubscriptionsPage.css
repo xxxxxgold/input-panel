@@ -1,0 +1,45 @@
+.subscriptions-page-layout {
+  width: 100%;
+}
+
+.subscription-summary-lead {
+  width: 100%;
+}
+
+.bar-label-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.quota-progress-percent {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.quota-progress-percent.quota-tier-20 {
+  color: #16a34a;
+}
+
+.quota-progress-percent.quota-tier-40 {
+  color: #a16207;
+}
+
+.quota-progress-percent.quota-tier-60 {
+  color: #ea580c;
+}
+
+.quota-progress-percent.quota-tier-80 {
+  color: #dc2626;
+}
+
+.quota-progress-percent.quota-tier-90 {
+  color: #e11d48;
+}
+
+.quota-progress-percent.quota-tier-100,
+.quota-progress-percent.quota-tier-over {
+  color: #9f1239;
+}
