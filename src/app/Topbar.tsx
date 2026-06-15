@@ -2,7 +2,7 @@ import { Activity, Bell, ChevronDown, Crown, RefreshCw, Search, Server, Settings
 import { useEffect, useState, type MutableRefObject } from "react";
 
 import type { AccountRuntime, ServiceStatusPayload, SiteRecord, SnapshotAlert } from "../types";
-import { formatLiveClockDate, formatLiveClockTime, formatMilliseconds, formatTime, formatUsd, maskEmail } from "../shared/lib/formatters";
+import { formatLiveClockDate, formatLiveClockTime, formatMilliseconds, formatPercent, formatTime, formatUsd, maskEmail } from "../shared/lib/formatters";
 import type { TopbarSubscriptionPreviewRecord } from "../subscription-view";
 import { StatusBadge } from "../shared/ui/StatusBadge";
 
@@ -33,6 +33,7 @@ export function Topbar({
   subscriptionPreviewRecords,
   closeTopbarPeekPanels,
   onRefreshServiceStatus,
+  serviceStatusRefreshIntervalSeconds,
   onTriggerTestNotification,
   onOpenAlerts,
   onOpenSubscriptions,
@@ -80,6 +81,7 @@ export function Topbar({
   subscriptionPreviewRecords: TopbarSubscriptionPreviewRecord[];
   closeTopbarPeekPanels: () => void;
   onRefreshServiceStatus: () => void;
+  serviceStatusRefreshIntervalSeconds: number;
   onTriggerTestNotification: (kind: "down" | "recovered") => void;
   onOpenAlerts: () => void;
   onOpenSubscriptions: () => void;
@@ -215,7 +217,7 @@ export function Topbar({
                   <span className="topbar-card-label">服务状态</span>
                   <strong>{serviceStatusUnavailable ? "未配置账号" : serviceStatus ? serviceStatus.allOk ? `${serviceStatusOnlineCount} / ${serviceStatusRecords.length} 正常` : `${serviceStatusOnlineCount} / ${serviceStatusRecords.length} 正常, 存在异常` : "等待同步"}</strong>
                   <p>
-                    {serviceStatusUnavailable ? "先登录一个账号后再自动监控服务状态" : serviceStatus ? `每 9 秒刷新一次最新探测结果` : "等待服务状态接口返回"}
+                    {serviceStatusUnavailable ? "先登录一个账号后再自动监控服务状态" : serviceStatus ? `每 ${serviceStatusRefreshIntervalSeconds} 秒刷新一次最新探测结果` : "等待服务状态接口返回"}
                   </p>
                 </div>
                 <span className="topbar-metric">
@@ -367,7 +369,7 @@ export function Topbar({
                       {subscription.quota && subscription.quotaProgress ? (
                         <>
                           <div className="topbar-subscription-amounts">
-                            <span>{subscription.quota.label}</span>
+                            <span>{`${subscription.quota.label} ${formatPercent(subscription.quotaProgress.rawPercent, 1)}`}</span>
                             <strong>{formatUsd(subscription.quota.used, 2)} / {formatUsd(subscription.quota.limit, 2)}</strong>
                           </div>
                           <div className="topbar-subscription-bar-track">

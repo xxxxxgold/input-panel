@@ -2,6 +2,10 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useState } from "react";
 
+import {
+  DEFAULT_AUTO_REFRESH_INTERVAL_SECONDS,
+  normalizeAutoRefreshIntervalSeconds
+} from "../../app/refresh-policy";
 import { DEFAULT_THEME_ID, normalizeThemeId } from "../../shared/lib/theme";
 import type { CloseBehavior, DesktopUiPrefs } from "../../types";
 import { isTauriRuntime } from "../../shared/transport/runtime";
@@ -20,6 +24,8 @@ const defaultPrefs: DesktopUiPrefs = {
   openFloatingInMainMode: true,
   keepFloatingPanelVisible: false,
   closeBehavior: "ask",
+  autoRefreshEnabled: true,
+  autoRefreshIntervalSeconds: DEFAULT_AUTO_REFRESH_INTERVAL_SECONDS,
   theme: DEFAULT_THEME_ID
 };
 
@@ -39,6 +45,8 @@ export function isDesktopUiPrefsPayload(value: unknown): value is DesktopUiPrefs
     (candidate.closeBehavior === "ask" ||
       candidate.closeBehavior === "switch_to_floating" ||
       candidate.closeBehavior === "exit_app") &&
+    typeof candidate.autoRefreshEnabled === "boolean" &&
+    typeof candidate.autoRefreshIntervalSeconds === "number" &&
     typeof candidate.theme === "string"
   );
 }
@@ -46,6 +54,7 @@ export function isDesktopUiPrefsPayload(value: unknown): value is DesktopUiPrefs
 function normalizeDesktopUiPrefs(prefs: DesktopUiPrefs): DesktopUiPrefs {
   return {
     ...prefs,
+    autoRefreshIntervalSeconds: normalizeAutoRefreshIntervalSeconds(prefs.autoRefreshIntervalSeconds),
     theme: normalizeThemeId(prefs.theme)
   };
 }

@@ -505,14 +505,20 @@ export interface DesktopUiPrefs {
   version: number;
   launchMode: AppLaunchMode;
   openFloatingInMainMode: boolean;
+  keepFloatingPanelVisible: boolean;
   closeBehavior: CloseBehavior;
+  autoRefreshEnabled: boolean;
+  autoRefreshIntervalSeconds: number;
   theme: "light" | "dark" | "deep-blue" | string;
 }
 
 export interface DesktopUiPrefsPatch {
   launchMode?: AppLaunchMode;
   openFloatingInMainMode?: boolean;
+  keepFloatingPanelVisible?: boolean;
   closeBehavior?: CloseBehavior;
+  autoRefreshEnabled?: boolean;
+  autoRefreshIntervalSeconds?: number;
   theme?: "light" | "dark" | "deep-blue" | string;
 }
 
