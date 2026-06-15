@@ -179,7 +179,7 @@ describe("OverviewPage metric hints", () => {
       })
     );
 
-    expect(html).toContain("主账号 余额最高, $42.50");
+    expect(html).toContain("主账号 $42.50");
     expect(html).toContain("最新: 主账号 余额偏低, 需要尽快补充避免影响后续调用");
   });
 });
