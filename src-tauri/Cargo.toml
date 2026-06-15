@@ -28,7 +28,9 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls", "cookies"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tauri = { version = "2.11.2", features = [] }
+tauri = { version = "2.11.2", features = ["tray-icon"] }
 tauri-plugin-log = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-window-state = "2.4.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync"] }
 uuid = { version = "1.11", features = ["v4", "serde"] }

@@ -115,7 +115,9 @@ export function MainWindowApp() {
       const record = buildServiceStatusNotificationRecord(event);
       pushAppNotification(record);
       void sendAppNotification(record);
-      setError(event.detail);
+      if (event.kind === "down") {
+        setError(event.detail);
+      }
     },
     refreshIntervalMs: 9000
   });
@@ -219,8 +221,6 @@ export function MainWindowApp() {
   const settingsWorkspace = useSettingsWorkspace({
     sites
   });
-  const alertCount = overview?.alerts.length ?? 0;
-  const topbarAlertPreview = overview?.alerts.slice(0, 3) ?? [];
   const subscriptionCount =
     accountScopedWorkspace.subscriptionSummary?.activeCount ?? visibleSnapshot?.subscriptions.length ?? 0;
   const subscriptionSpend = accountScopedWorkspace.subscriptionSummary?.totalUsedUsd ?? 0;
@@ -264,7 +264,7 @@ export function MainWindowApp() {
   });
   const inboxItems: NotificationInboxItem[] = [
     ...appNotifications.map((item) => ({
-      source: item.source,
+      source: "service-status" as const,
       id: item.id,
       severity: item.severity,
       title: item.title,
@@ -283,6 +283,20 @@ export function MainWindowApp() {
       accountLabel: item.accountLabel
     }))
   ].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
+  const alertCount = inboxItems.length;
+  const topbarAlertPreview = inboxItems.slice(0, 3).map((item) => ({
+    id: item.id,
+    severity: (item.severity === "critical" ? "critical" : item.severity === "success" ? "low" : "medium") as
+      | "critical"
+      | "high"
+      | "medium"
+      | "low",
+    title: item.title,
+    detail: item.detail,
+    siteId: item.source === "overview-alert" ? item.siteName ?? "unknown-site" : "service-status",
+    accountId: item.source === "overview-alert" ? item.accountLabel ?? "unknown-account" : "runtime",
+    createdAt: item.createdAt
+  }));
 
   function handleTestNotification(kind: "down" | "recovered") {
     const notification = buildServiceStatusTestNotification(kind);
@@ -386,6 +400,7 @@ export function MainWindowApp() {
           filteredSites={settingsWorkspace.filteredSites}
           accounts={accounts}
           selectedSite={selectedSite}
+          selectedAccountId={selectedAccountId}
           visibleSnapshot={visibleSnapshot}
           onOpenNewSite={accountWorkspace.openNewSite}
           onSelectSite={setSelectedSiteId}
@@ -393,7 +408,11 @@ export function MainWindowApp() {
           onOpenEditSite={accountWorkspace.openEditSite}
           onRemoveSite={(siteId) => void accountWorkspace.handleRemoveSite(siteId)}
           onOpenNewAccount={accountWorkspace.openNewAccount}
-          onOpenAccountManager={accountWorkspace.openAccountManager}
+          onSelectAccount={(account) => {
+            setSelectedSiteId(account.siteId);
+            setSelectedAccountId(account.id);
+          }}
+          onEditAccount={accountWorkspace.openEditAccount}
           handleActionKey={handleActionKey}
         />
       )}

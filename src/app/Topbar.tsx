@@ -1,13 +1,18 @@
-import { Bell, ChevronDown, Crown, RefreshCw, Search, Server, Settings2, UserRound } from "lucide-react";
+import { Activity, Bell, ChevronDown, Crown, RefreshCw, Search, Server, Settings2, UserRound } from "lucide-react";
 import { useEffect, useState, type MutableRefObject } from "react";
 
-import type { AccountRuntime, SiteRecord, SnapshotAlert } from "../types";
-import { formatTime, formatUsd, maskEmail } from "../shared/lib/formatters";
+import type { AccountRuntime, ServiceStatusPayload, SiteRecord, SnapshotAlert } from "../types";
+import { formatLiveClockDate, formatLiveClockTime, formatMilliseconds, formatTime, formatUsd, maskEmail } from "../shared/lib/formatters";
 import type { TopbarSubscriptionPreviewRecord } from "../subscription-view";
 import { StatusBadge } from "../shared/ui/StatusBadge";
 
 export function Topbar({
   onReload,
+  serviceStatus,
+  serviceStatusRefreshing,
+  topbarServiceStatusExpanded,
+  setTopbarServiceStatusExpanded,
+  topbarServiceStatusRef,
   alertCount,
   topbarAlertsExpanded,
   setTopbarAlertsExpanded,
@@ -17,12 +22,17 @@ export function Topbar({
   setTopbarSubscriptionsExpanded,
   topbarSubscriptionsExpanded,
   topbarSubscriptionsRef,
+  previewTopbarPeek,
+  clearTopbarPeekPreview,
+  toggleTopbarPeek,
   usageStatusLabel,
   usageStatusHint,
   subscriptionSpend,
   subscriptionCount,
   subscriptionPreviewRecords,
   closeTopbarPeekPanels,
+  onRefreshServiceStatus,
+  onTriggerTestNotification,
   onOpenAlerts,
   onOpenSubscriptions,
   selectedAccount,
@@ -44,6 +54,11 @@ export function Topbar({
   onOpenSelectedAccountLogin
 }: {
   onReload: () => void;
+  serviceStatus: ServiceStatusPayload | null;
+  serviceStatusRefreshing: boolean;
+  topbarServiceStatusExpanded: boolean;
+  setTopbarServiceStatusExpanded: (value: boolean) => void;
+  topbarServiceStatusRef: MutableRefObject<HTMLDivElement | null>;
   alertCount: number;
   topbarAlertsExpanded: boolean;
   setTopbarAlertsExpanded: (value: boolean) => void;
@@ -53,12 +68,17 @@ export function Topbar({
   setTopbarSubscriptionsExpanded: (value: boolean) => void;
   topbarSubscriptionsExpanded: boolean;
   topbarSubscriptionsRef: MutableRefObject<HTMLDivElement | null>;
+  previewTopbarPeek: (key: "serviceStatus" | "alerts" | "subscriptions") => void;
+  clearTopbarPeekPreview: (key: "serviceStatus" | "alerts" | "subscriptions") => void;
+  toggleTopbarPeek: (key: "serviceStatus" | "alerts" | "subscriptions") => void;
   usageStatusLabel: string;
   usageStatusHint: string;
   subscriptionSpend: number;
   subscriptionCount: number;
   subscriptionPreviewRecords: TopbarSubscriptionPreviewRecord[];
   closeTopbarPeekPanels: () => void;
+  onRefreshServiceStatus: () => void;
+  onTriggerTestNotification: (kind: "down" | "recovered") => void;
   onOpenAlerts: () => void;
   onOpenSubscriptions: () => void;
   selectedAccount: AccountRuntime | null;
@@ -80,16 +100,53 @@ export function Topbar({
   onOpenSelectedAccountLogin: () => void;
 }) {
   const [avatarLoadFailed, setAvatarLoadFailed] = useState(false);
+  const [clockNow, setClockNow] = useState(() => new Date());
 
   useEffect(() => {
     setAvatarLoadFailed(false);
   }, [selectedAccountAvatarUrl]);
 
+  useEffect(() => {
+    const timerId = window.setInterval(() => {
+      setClockNow(new Date());
+    }, 1000);
+
+    return () => {
+      window.clearInterval(timerId);
+    };
+  }, []);
+
   const avatarFallback = (selectedAccount?.label || selectedAccount?.email || "A").slice(0, 1).toUpperCase();
   const avatarUrl = selectedAccountAvatarUrl && !avatarLoadFailed ? selectedAccountAvatarUrl : null;
+  const serviceStatusRecords = serviceStatus?.services ?? [];
+  const serviceStatusOnlineCount = serviceStatusRecords.filter((item) => item.last?.ok).length;
+
+  function handlePeekMouseEnter(key: "serviceStatus" | "alerts" | "subscriptions") {
+    closeTopbarAccountMenu();
+    previewTopbarPeek(key);
+  }
+
+  function handlePeekMouseLeave(key: "serviceStatus" | "alerts" | "subscriptions") {
+    clearTopbarPeekPreview(key);
+  }
+
+  function handlePeekClick(key: "serviceStatus" | "alerts" | "subscriptions") {
+    toggleTopbarPeek(key);
+  }
 
   return (
     <header className="global-topbar">
+      <div className="topbar-leading">
+        <div className="topbar-card topbar-context-card topbar-clock-card" aria-live="polite">
+          <div className="topbar-clock-indicator" aria-hidden="true">
+            <span className="topbar-clock-dot" />
+          </div>
+          <div className="topbar-card-copy topbar-clock-copy">
+            <p className="topbar-clock-meta">{formatLiveClockDate(clockNow)}</p>
+            <strong className="topbar-clock-time">{formatLiveClockTime(clockNow)}</strong>
+          </div>
+        </div>
+      </div>
       <div className="header-actions global-topbar-actions">
         <div className="global-topbar-grid">
           <button
@@ -101,21 +158,118 @@ export function Topbar({
           >
             <RefreshCw size={16} />
           </button>
+          <button
+            type="button"
+            className="topbar-peek-trigger topbar-test-trigger critical"
+            onClick={() => onTriggerTestNotification("down")}
+            aria-label="测试红色通知"
+            title="测试红色通知"
+          >
+            <Bell size={16} />
+          </button>
+          <button
+            type="button"
+            className="topbar-peek-trigger topbar-test-trigger success"
+            onClick={() => onTriggerTestNotification("recovered")}
+            aria-label="测试绿色通知"
+            title="测试绿色通知"
+          >
+            <Bell size={16} />
+          </button>
 
-          <div className={`topbar-peek-card peek-align-right ${topbarAlertsExpanded ? "expanded" : ""}`} ref={topbarAlertsRef}>
+          <div
+            className={`topbar-peek-card peek-align-right ${topbarServiceStatusExpanded ? "expanded" : ""}`}
+            ref={topbarServiceStatusRef}
+            onMouseEnter={() => handlePeekMouseEnter("serviceStatus")}
+            onMouseLeave={() => handlePeekMouseLeave("serviceStatus")}
+          >
             <button
               type="button"
               className="topbar-peek-trigger"
-              onClick={() => {
-                const nextOpen = !topbarAlertsExpanded;
-                if (nextOpen) {
-                  closeTopbarAccountMenu();
-                }
-                setTopbarAlertsExpanded(nextOpen);
-                setTopbarSubscriptionsExpanded(false);
-              }}
+              onClick={() => handlePeekClick("serviceStatus")}
+              aria-expanded={topbarServiceStatusExpanded}
+              aria-label="服务状态详情"
+            >
+              <Activity size={18} />
+              {serviceStatusRecords.length > 0 && (
+                <span className="topbar-subscription-dots topbar-service-status-dots" aria-hidden="true">
+                  {serviceStatusRecords.map((service) => (
+                    <span
+                      key={service.model}
+                      className={`topbar-subscription-dot ${service.last?.ok ? "subscription-dot-ready" : "subscription-dot-critical"}`}
+                    />
+                  ))}
+                </span>
+              )}
+            </button>
+            <div className="topbar-card topbar-peek-panel topbar-subscription-panel topbar-service-status-panel">
+              <div className="topbar-subscription-head">
+                <div className="topbar-card-icon">
+                  <Activity size={18} />
+                </div>
+                <div className="topbar-card-copy">
+                  <span className="topbar-card-label">服务状态</span>
+                  <strong>
+                    {serviceStatus
+                      ? serviceStatus.allOk
+                        ? `${serviceStatusOnlineCount} / ${serviceStatusRecords.length} 正常`
+                        : `${serviceStatusOnlineCount} / ${serviceStatusRecords.length} 正常, 存在异常`
+                      : "等待同步"}
+                  </strong>
+                  <p>
+                    {serviceStatus
+                      ? `每 9 秒刷新一次最新探测结果`
+                      : "等待服务状态接口返回"}
+                  </p>
+                </div>
+                <span className="topbar-metric">
+                  {serviceStatus ? `${serviceStatusRecords.length} 模型` : "-"}
+                </span>
+              </div>
+              {serviceStatusRecords.length > 0 ? (
+                <div className="topbar-subscription-list">
+                  {serviceStatusRecords.map((service) => (
+                    <div key={service.model} className="topbar-subscription-item topbar-service-status-item">
+                      <div className="topbar-subscription-item-head">
+                        <div className="topbar-subscription-item-copy">
+                          <strong>{service.model}</strong>
+                          <p>
+                            {service.last?.ok ? "最新探测正常" : "最新探测失败"}
+                            {service.last ? ` · ${formatTime(new Date(service.last.ts * 1000).toISOString())}` : ""}
+                          </p>
+                        </div>
+                        <span className={`status-pill ${service.last?.ok ? "ready" : "critical"}`}>
+                          {service.last?.ok ? "正常" : "失败"}
+                        </span>
+                      </div>
+                      <div className="topbar-subscription-amounts topbar-service-status-amounts">
+                        <span>可用率 {service.uptimePct.toFixed(2)}%</span>
+                        <strong>{formatMilliseconds(service.last?.latencyMs)}</strong>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="topbar-alert-empty">当前没有服务状态数据</p>
+              )}
+              <button type="button" className="topbar-peek-action" onClick={onRefreshServiceStatus}>
+                {serviceStatusRefreshing ? "刷新中..." : "立即刷新服务状态"}
+              </button>
+            </div>
+          </div>
+
+          <div
+            className={`topbar-peek-card peek-align-right ${topbarAlertsExpanded ? "expanded" : ""}`}
+            ref={topbarAlertsRef}
+            onMouseEnter={() => handlePeekMouseEnter("alerts")}
+            onMouseLeave={() => handlePeekMouseLeave("alerts")}
+          >
+            <button
+              type="button"
+              className="topbar-peek-trigger"
+              onClick={() => handlePeekClick("alerts")}
               aria-expanded={topbarAlertsExpanded}
-              aria-label="通知详情"
+              aria-label="消息盒子"
             >
               <Bell size={18} />
             </button>
@@ -149,7 +303,7 @@ export function Topbar({
                 <p className="topbar-alert-empty">当前没有新的余额或订阅告警</p>
               )}
               <button type="button" className="topbar-peek-action" onClick={onOpenAlerts}>
-                打开告警中心
+                打开消息盒子
               </button>
             </div>
           </div>
@@ -157,24 +311,13 @@ export function Topbar({
           <div
             className={`topbar-peek-card peek-align-right ${topbarSubscriptionsExpanded ? "expanded" : ""}`}
             ref={topbarSubscriptionsRef}
-            onMouseEnter={() => {
-              closeTopbarAccountMenu();
-              setTopbarAlertsExpanded(false);
-              setTopbarSubscriptionsExpanded(true);
-            }}
-            onMouseLeave={() => setTopbarSubscriptionsExpanded(false)}
+            onMouseEnter={() => handlePeekMouseEnter("subscriptions")}
+            onMouseLeave={() => handlePeekMouseLeave("subscriptions")}
           >
             <button
               type="button"
               className="topbar-peek-trigger"
-              onClick={() => {
-                const nextOpen = !topbarSubscriptionsExpanded;
-                if (nextOpen) {
-                  closeTopbarAccountMenu();
-                }
-                setTopbarSubscriptionsExpanded(nextOpen);
-                setTopbarAlertsExpanded(false);
-              }}
+              onClick={() => handlePeekClick("subscriptions")}
               aria-expanded={topbarSubscriptionsExpanded}
               aria-label="订阅使用情况详情"
             >
@@ -352,6 +495,7 @@ export function Topbar({
                 </button>
               </div>
             )}
+          </div>
         ) : (
           <button
             type="button"
@@ -370,7 +514,6 @@ export function Topbar({
               <UserRound size={14} />
             </div>
           </button>
-          </div>
         )}
       </div>
     </header>

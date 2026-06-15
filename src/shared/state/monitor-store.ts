@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { getOverview } from "../../api";
+import type { AppNotificationItem } from "../../features/service-status/notifications";
 import { formatAppErrorMessage } from "../lib/error-display";
 import type {
   AccountRuntime,
@@ -28,6 +29,11 @@ interface ToastInput {
   loading?: boolean;
 }
 
+interface LoadOverviewOptions {
+  busyText?: string;
+  successMessage?: string;
+}
+
 interface MonitorStore {
   nav: NavKey;
   theme: "light" | "dark" | "deep-blue";
@@ -36,6 +42,7 @@ interface MonitorStore {
   busyText: string | null;
   error: string | null;
   toasts: MonitorToast[];
+  appNotifications: AppNotificationItem[];
   activeBusyToastId: string | null;
   selectedSiteId: string | null;
   selectedAccountId: string | null;
@@ -44,10 +51,12 @@ interface MonitorStore {
   setBusyText: (text: string | null) => void;
   setError: (text: string | null) => void;
   pushToast: (toast: ToastInput) => string;
+  pushAppNotification: (notification: AppNotificationItem) => void;
   dismissToast: (toastId: string) => void;
+  dismissAppNotification: (notificationId: string) => void;
   setSelectedSiteId: (siteId: string | null) => void;
   setSelectedAccountId: (accountId: string | null) => void;
-  loadOverview: () => Promise<void>;
+  loadOverview: (options?: LoadOverviewOptions) => Promise<void>;
   replaceOverview: (overview: OverviewPayload) => void;
 }
 
@@ -121,6 +130,7 @@ export const useMonitorStore = create<MonitorStore>((set, get) => ({
   busyText: null,
   error: null,
   toasts: [],
+  appNotifications: [],
   activeBusyToastId: null,
   selectedSiteId: null,
   selectedAccountId: null,
@@ -177,14 +187,32 @@ export const useMonitorStore = create<MonitorStore>((set, get) => ({
     });
     return toastId;
   },
+  pushAppNotification: (notification) =>
+    set((state) => {
+      const duplicate = state.appNotifications.find((item) => item.dedupeKey === notification.dedupeKey);
+      if (duplicate) {
+        return state;
+      }
+      return {
+        appNotifications: [notification, ...state.appNotifications].slice(0, 50)
+      };
+    }),
   dismissToast: (toastId) =>
     set((state) => ({
       toasts: state.toasts.filter((item) => item.id !== toastId)
     })),
+  dismissAppNotification: (notificationId) =>
+    set((state) => ({
+      appNotifications: state.appNotifications.filter((item) => item.id !== notificationId)
+    })),
   setSelectedSiteId: (selectedSiteId) => set({ selectedSiteId }),
   setSelectedAccountId: (selectedAccountId) => set({ selectedAccountId }),
   replaceOverview: (overview) => set({ overview }),
-  loadOverview: async () => {
+  loadOverview: async (options) => {
+    const nextBusyText = options?.busyText?.trim() || null;
+    if (nextBusyText) {
+      get().setBusyText(nextBusyText);
+    }
     set({ loading: true, error: null });
     try {
       const next = await getOverview();
@@ -199,9 +227,18 @@ export const useMonitorStore = create<MonitorStore>((set, get) => ({
         selectedSiteId: selection.selectedSiteId,
         selectedAccountId: selection.selectedAccountId
       });
+      if (options?.successMessage) {
+        get().pushToast({
+          tone: "info",
+          message: options.successMessage
+        });
+      }
     } catch (cause) {
       get().setError((cause as Error).message);
     } finally {
+      if (nextBusyText) {
+        get().setBusyText(null);
+      }
       set({ loading: false });
     }
   }
