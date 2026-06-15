@@ -2,6 +2,7 @@ import { ChevronRight, MonitorDot } from "lucide-react";
 
 import type { NavKey } from "../types";
 import { NAV_ITEMS } from "./navigation";
+import { getNextThemeId, type ThemeId } from "../shared/lib/theme";
 
 export function RailNav({
   nav,
@@ -20,8 +21,8 @@ export function RailNav({
   onOpenOverview: () => void;
   onToggleRail: () => void;
   onNavChange: (key: NavKey) => void;
-  theme: "light" | "dark" | "deep-blue";
-  setTheme: (theme: "light" | "dark" | "deep-blue") => void;
+  theme: ThemeId;
+  setTheme: (theme: ThemeId) => void;
   projectLogo: string;
 }) {
   return (
@@ -65,7 +66,7 @@ export function RailNav({
         <button
           className="rail-item"
           onClick={() => {
-            setTheme(theme === "deep-blue" ? "light" : theme === "light" ? "dark" : "deep-blue");
+            setTheme(getNextThemeId(theme));
           }}
           title="切换主题"
           aria-label="切换主题"

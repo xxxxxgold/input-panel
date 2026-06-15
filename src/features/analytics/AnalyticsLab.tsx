@@ -25,6 +25,13 @@ interface AnalyticsLabProps {
   usageTrend: UsageTrendPayload | null;
   usageModels: DashboardModelsPayload | null;
   usageRecords: PaginatedResult<UsageRow> | null;
+  usageScopeRows: UsageRow[];
+  usageScopeMeta: {
+    total: number;
+    pages: number;
+    loadedPages: number;
+    pageSize: number;
+  } | null;
   subscriptionSummary: SubscriptionSummaryPayload | null;
   profileRecord: UserProfileRecord | null;
   platformQuotas: PlatformQuotaPayload | null;
@@ -49,6 +56,8 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
     usageTrend,
     usageModels,
     usageRecords,
+    usageScopeRows,
+    usageScopeMeta,
     subscriptionSummary,
     profileRecord,
     platformQuotas,
@@ -68,14 +77,48 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
   const selectedSnapshot = selectedAccount?.snapshot ?? null;
   const keys = managedKeys?.items ?? [];
   const sampleRows = usageRecords?.items ?? [];
+  const scopedRows = usageScopeRows;
   const selectedKey = keys.find((item) => item.id === keyUsageKeyId) ?? null;
   const platformSeries = selectedSnapshot?.stats.byPlatform ?? overview?.platformSeries ?? [];
+  const scopedTrend = scopedRows.length > 0 ? buildScopedTrendPayload(scopedRows) : usageTrend;
+  const scopedModels = scopedRows.length > 0 ? buildScopedModelsPayload(scopedRows) : usageModels;
+  const scopedPlatformSeries = buildScopedPlatformRows(scopedRows);
+  const endpointUsageRows = buildUsageAggregateRows(scopedRows, (row) => row.endpoint ?? "unknown");
+  const modelUsageRows = buildUsageAggregateRows(scopedRows, (row) => row.model || "unknown");
+  const keyUsageAggregates = buildUsageAggregateRows(
+    scopedRows,
+    (row) => row.apiKeyName ?? (row.apiKeyId ? `#${row.apiKeyId}` : "未知 Key")
+  );
+  const groupUsageAggregates = buildUsageAggregateRows(
+    scopedRows,
+    (row) => row.groupName ?? row.subscriptionName ?? "未分组"
+  );
+  const subscriptionUsageAggregates = buildUsageAggregateRows(
+    scopedRows,
+    (row) => row.subscriptionName ?? row.groupName ?? "未归属订阅"
+  );
+  const comboRows = buildDimensionRows(
+    scopedRows,
+    (row) => `${row.stream ? "stream" : row.requestType ?? "standard"} × ${row.reasoningEffort ?? "unknown"}`
+  );
+  const heatmapRows = buildUsageTimeHeatmapRows(scopedRows);
+  const upstreamFlowRows = buildEndpointFlowRows(scopedRows);
+  const modelLatencyRows = buildLatencyRows(modelUsageRows);
+  const endpointLatencyRows = buildLatencyRows(endpointUsageRows);
+  const cacheEfficiencyRows = buildCacheEfficiencyRows(modelUsageRows);
+  const efficiencyRows = buildEfficiencyRows(modelUsageRows);
+  const costBreakdownRows = buildCostBreakdownRows(scopedRows);
+  const premiumRows = buildPremiumRows(groupUsageAggregates);
+  const keyCostRankingRows = buildUsageRankingRows(keyUsageAggregates);
+  const groupCostRankingRows = buildUsageRankingRows(groupUsageAggregates);
+  const subscriptionCostRankingRows = buildUsageRankingRows(subscriptionUsageAggregates);
+  const extremeRows = buildExtremeRequestRows(scopedRows);
   const siteRankings = buildSiteRankings(overview);
   const accountRankings = buildAccountRankings(overview);
-  const endpointRows = buildDimensionRows(sampleRows, (row) => row.endpoint ?? "unknown");
-  const reasoningRows = buildDimensionRows(sampleRows, (row) => row.reasoningEffort ?? "unknown");
-  const requestTypeRows = buildDimensionRows(sampleRows, (row) => row.requestType ?? (row.stream ? "stream" : "standard"));
-  const userAgentRows = buildDimensionRows(sampleRows, (row) => simplifyUserAgent(row.userAgent));
+  const endpointRows = buildDimensionRows(scopedRows, (row) => row.endpoint ?? "unknown");
+  const reasoningRows = buildDimensionRows(scopedRows, (row) => row.reasoningEffort ?? "unknown");
+  const requestTypeRows = buildDimensionRows(scopedRows, (row) => row.requestType ?? (row.stream ? "stream" : "standard"));
+  const userAgentRows = buildDimensionRows(scopedRows, (row) => simplifyUserAgent(row.userAgent));
   const keyStatusRows = buildDimensionRows(keys, (key) => key.status || "unknown");
   const identityRows = buildIdentityRows(profileRecord);
   const quotaRows = platformQuotas?.platformQuotas ?? [];
@@ -88,6 +131,9 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
   const sampleFootnote = usageRecords
     ? `当前样本为第 ${usageRecords.page} / ${usageRecords.pages} 页，共 ${usageRecords.total} 条明细。`
     : "尚未加载 usage 明细。";
+  const scopedFootnote = usageScopeMeta
+    ? `当前筛选范围已聚合 ${usageScopeMeta.loadedPages} / ${usageScopeMeta.pages} 页，共 ${usageScopeMeta.total} 条 usage 明细。`
+    : "当前还没有筛选范围聚合数据。";
   const dateLabel = usageStartDate && usageEndDate ? `${usageStartDate} ~ ${usageEndDate}` : "请选择时间范围";
 
   if (!overview) {
@@ -126,7 +172,7 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
           <div className="analytics-meta-card">
             <span>样本区间</span>
             <strong>{dateLabel}</strong>
-            <p>{sampleFootnote}</p>
+            <p>{scopedFootnote}</p>
           </div>
           <div className="analytics-meta-card">
             <span>全局聚合</span>
@@ -183,7 +229,7 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
             <button className="primary-button" type="button" onClick={onUsageSearch}>
               刷新筛选结果
             </button>
-            <p>筛选会影响 usage 汇总、样本散点、端点分布、模型效率和请求明细。</p>
+            <p>筛选会影响 usage 汇总、全量范围聚合图表和当前页样本明细。散点与明细仍保留当前页样本视角。</p>
           </div>
         </div>
         <div className="analytics-kpi-grid">
@@ -202,23 +248,41 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
         <AnalyticsChartCard
           title="成本 / 请求 / Token 趋势"
           subtitle="使用 dashboard/trend 的时间序列, 同时观察成本、请求量、Token 规模。"
-          option={buildUsageTrendOption(usageTrend, palette)}
-          footer={usageTrend ? <AnalyticsFootnote>开始 {usageTrend.startDate || "-"} · 结束 {usageTrend.endDate || "-"}</AnalyticsFootnote> : null}
+          option={buildUsageTrendOption(scopedTrend, palette)}
+          footer={scopedTrend ? <AnalyticsFootnote>开始 {scopedTrend.startDate || "-"} · 结束 {scopedTrend.endDate || "-"}</AnalyticsFootnote> : null}
         />
         <AnalyticsChartCard
           title="模型成本排行"
           subtitle="使用 dashboard/models, 看哪几个模型最烧钱。"
-          option={buildModelCostOption(usageModels, palette)}
+          option={buildModelCostOption(scopedModels, palette)}
         />
         <AnalyticsChartCard
           title="模型 Token 构成"
           subtitle="横向堆叠, 同时对比输入、输出、缓存写入、缓存读取。"
-          option={buildModelTokenOption(usageModels, palette)}
+          option={buildModelTokenOption(scopedModels, palette)}
         />
         <AnalyticsChartCard
           title="平台全景"
           subtitle="按平台对比实际成本、请求数、Token 数, 一眼看出主力平台。"
-          option={buildPlatformOverviewOption(platformSeries, palette)}
+          option={buildPlatformOverviewOption(scopedPlatformSeries.length > 0 ? scopedPlatformSeries : platformSeries, palette)}
+        />
+        <AnalyticsChartCard
+          title="延迟分位"
+          subtitle="基于当前筛选范围, 看首 Token 与总耗时的 p50 / p90 / p99。"
+          option={buildLatencyPercentileOption(scopedRows, palette)}
+          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+        />
+        <AnalyticsChartCard
+          title="成本拆解"
+          subtitle="按输入、输出、缓存写入、缓存读取拆开成本结构。"
+          option={buildCostBreakdownOption(costBreakdownRows, palette)}
+          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+        />
+        <AnalyticsChartCard
+          title="模型溢价分析"
+          subtitle="看各模型实际成本相对原始成本的放大倍数。"
+          option={buildEfficiencyScatterOption(efficiencyRows, palette)}
+          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
         />
         <AnalyticsChartCard
           title="请求样本散点"
@@ -228,18 +292,33 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
         />
         <AnalyticsChartCard
           title="端点分布"
-          subtitle="看哪些 endpoint 在当前筛选区间内最常出现。"
+          subtitle="基于当前筛选范围的全部 usage 明细聚合, 看哪些 endpoint 最常出现。"
           option={buildDimensionBarOption(endpointRows, palette, "endpoint")}
+          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
         />
         <AnalyticsChartCard
           title="推理强度分布"
-          subtitle="从 usage 样本里看 `reasoning_effort` 的占比。"
+          subtitle="基于当前筛选范围的全部 usage 明细, 看 `reasoning_effort` 的占比。"
           option={buildDimensionDonutOption(reasoningRows, palette, "推理强度")}
+          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
         />
         <AnalyticsChartCard
           title="请求类型分布"
-          subtitle="基于 `request_type` 和 stream 标记整理的调用类型视图。"
+          subtitle="基于当前筛选范围的全部 usage 明细, 按 `request_type` 和 stream 标记聚合。"
           option={buildDimensionDonutOption(requestTypeRows, palette, "请求类型")}
+          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+        />
+        <AnalyticsChartCard
+          title="请求类型 × 推理强度"
+          subtitle="看 stream / standard 与 reasoning effort 的组合占比。"
+          option={buildDimensionBarOption(comboRows, palette, "组合请求")}
+          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+        />
+        <AnalyticsChartCard
+          title="时段热力图"
+          subtitle="按星期与小时聚合请求强度, 看什么时候最忙。"
+          option={buildUsageHeatmapOption(heatmapRows, palette)}
+          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
         />
         <AnalyticsChartCard
           title="Key 状态分布"
@@ -275,6 +354,18 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
           option={buildSubscriptionUsageOption(subscriptionRows, palette)}
         />
         <AnalyticsChartCard
+          title="缓存效率"
+          subtitle="按模型看缓存读取占全部 Token 的比例与成本。"
+          option={buildCacheEfficiencyOption(cacheEfficiencyRows, palette)}
+          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+        />
+        <AnalyticsChartCard
+          title="Endpoint 上下游映射"
+          subtitle="看入口 endpoint 与 upstream endpoint 的主要流向。"
+          option={buildEndpointFlowOption(upstreamFlowRows, palette)}
+          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+        />
+        <AnalyticsChartCard
           title="平台配额"
           subtitle="对齐 user/platform-quotas, 展示 quota / used / remaining。"
           option={buildPlatformQuotaOption(quotaRows, palette)}
@@ -298,6 +389,48 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
           title="账号余额排行"
           subtitle="把站点下的账号余额、请求数、活跃状态放到一个直观排行里。"
           option={buildRankingOption(accountRankings, palette, "余额")}
+        />
+        <AnalyticsChartCard
+          title="Key 成本排行"
+          subtitle="按 Key 聚合请求数、Token 和实际成本。"
+          option={buildUsageRankingBarOption(keyCostRankingRows, palette, "Key 成本")}
+          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+        />
+        <AnalyticsChartCard
+          title="分组成本站位"
+          subtitle="按 group / subscription 聚合看谁最烧钱。"
+          option={buildUsageRankingBarOption(groupCostRankingRows, palette, "分组成本站位")}
+          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+        />
+        <AnalyticsChartCard
+          title="订阅成本排行"
+          subtitle="按订阅名称聚合当前筛选范围的成本与请求。"
+          option={buildUsageRankingBarOption(subscriptionCostRankingRows, palette, "订阅成本")}
+          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+        />
+        <AnalyticsChartCard
+          title="模型延迟排行"
+          subtitle="按模型比较平均首 Token 与平均总耗时。"
+          option={buildLatencyComparisonOption(modelLatencyRows, palette, "模型")}
+          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+        />
+        <AnalyticsChartCard
+          title="Endpoint 延迟排行"
+          subtitle="按 endpoint 看哪些路径最慢。"
+          option={buildLatencyComparisonOption(endpointLatencyRows, palette, "endpoint")}
+          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+        />
+        <AnalyticsChartCard
+          title="极值请求榜"
+          subtitle="把单次最贵、最长、最大 Token 的请求集中看。"
+          option={buildExtremeRowsOption(extremeRows, palette)}
+          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+        />
+        <AnalyticsChartCard
+          title="分组溢价排行"
+          subtitle="按分组看实际成本 / 原始成本 的放大倍数。"
+          option={buildPremiumBarOption(premiumRows, palette)}
+          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
         />
       </div>
 
@@ -353,7 +486,7 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
                   </div>
                 ))}
                 {userAgentRows.length === 0 && (
-                  <AnalyticsEmptyState title="当前没有 User-Agent 样本" detail="样本页没有 user_agent 字段时这里会为空。" />
+                  <AnalyticsEmptyState title="当前没有 User-Agent 聚合" detail="当前筛选范围内没有可用的 user_agent 字段。" />
                 )}
               </div>
             </div>
@@ -447,7 +580,7 @@ function AnalyticsChartCard({
         </div>
       </header>
       {option ? (
-        <div className="analytics-chart-shell">
+        <div className="chart-wrap tall analytics-chart-shell">
           <BaseEChartCard option={option} />
         </div>
       ) : (
@@ -643,6 +776,313 @@ function buildPlatformOverviewOption(
       { name: "实际成本", type: "bar", data: rows.map((item) => item.totalActualCost) },
       { name: "请求数", type: "bar", data: rows.map((item) => item.totalRequests) },
       { name: "总 Tokens", type: "line", yAxisIndex: 1, smooth: true, data: rows.map((item) => item.totalTokens) }
+    ]
+  };
+}
+
+function buildLatencyPercentileOption(rows: UsageRow[], palette: ChartPalette): ChartOption | null {
+  const firstToken = buildLatencyPercentiles(rows, (row) => row.firstTokenMs);
+  const duration = buildLatencyPercentiles(rows, (row) => row.durationMs);
+  if (!firstToken && !duration) {
+    return null;
+  }
+  const labels = ["P50", "P90", "P99"];
+  return {
+    color: [palette.accent, palette.rose],
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+    legend: { top: 0, textStyle: { color: palette.textSoft } },
+    grid: { top: 42, left: 56, right: 20, bottom: 24 },
+    xAxis: {
+      type: "category",
+      data: labels,
+      axisLabel: { color: palette.textSoft }
+    },
+    yAxis: {
+      type: "value",
+      axisLabel: { color: palette.textSoft },
+      splitLine: { lineStyle: { color: palette.grid } }
+    },
+    series: [
+      {
+        name: "首 Token",
+        type: "bar",
+        data: firstToken ? [firstToken.p50, firstToken.p90, firstToken.p99] : [0, 0, 0]
+      },
+      {
+        name: "总耗时",
+        type: "bar",
+        data: duration ? [duration.p50, duration.p90, duration.p99] : [0, 0, 0]
+      }
+    ]
+  };
+}
+
+function buildCostBreakdownOption(rows: Array<{ name: string; value: number }>, palette: ChartPalette): ChartOption | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  return {
+    color: [palette.accent, palette.secondary, palette.warning, palette.rose],
+    tooltip: { trigger: "item" },
+    legend: { orient: "vertical", right: 8, top: 20, textStyle: { color: palette.textSoft } },
+    series: [
+      {
+        type: "pie",
+        radius: ["45%", "72%"],
+        center: ["36%", "52%"],
+        label: { color: palette.textSoft },
+        data: rows.map((row) => ({ name: row.name, value: row.value }))
+      }
+    ]
+  };
+}
+
+function buildEfficiencyScatterOption(rows: EfficiencyRow[], palette: ChartPalette): ChartOption | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  return {
+    color: [palette.indigo],
+    tooltip: {
+      trigger: "item",
+      formatter: (params: { data?: [number, number, number, string] }) => {
+        const data = params.data;
+        if (!data) return "暂无数据";
+        return [
+          `<strong>${data[3]}</strong>`,
+          `单位请求成本: ${formatUsd(data[1], 6)}`,
+          `溢价倍率: ${data[0].toFixed(2)}x`,
+          `Tokens: ${compact(data[2])}`
+        ].join("<br/>");
+      }
+    },
+    grid: { top: 18, left: 56, right: 20, bottom: 28 },
+    xAxis: {
+      type: "value",
+      name: "溢价倍率",
+      axisLabel: { color: palette.textSoft },
+      splitLine: { lineStyle: { color: palette.grid } }
+    },
+    yAxis: {
+      type: "value",
+      name: "单位请求成本",
+      axisLabel: { color: palette.textSoft }
+    },
+    series: [
+      {
+        type: "scatter",
+        symbolSize: (data: [number, number, number]) => Math.max(12, Math.min(48, (data[2] || 0) / 40000)),
+        data: rows.map((row) => [row.premiumRatio || 0, row.costPerRequest || 0, row.totalTokens || 0, row.name])
+      }
+    ]
+  };
+}
+
+function buildUsageHeatmapOption(rows: UsageHeatmapRow[], palette: ChartPalette): ChartOption | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  const weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+  const hours = Array.from({ length: 24 }, (_, index) => `${index}:00`);
+  return {
+    tooltip: {
+      position: "top",
+      formatter: (params: { data?: [number, number, number, number] }) => {
+        const data = params.data;
+        if (!data) return "暂无数据";
+        return `${weekdays[data[0]]} ${hours[data[1]]}<br/>请求 ${data[2]}<br/>成本 ${formatUsd(data[3], 4)}`;
+      }
+    },
+    grid: { top: 24, left: 56, right: 24, bottom: 32 },
+    xAxis: {
+      type: "category",
+      data: weekdays,
+      axisLabel: { color: palette.textSoft }
+    },
+    yAxis: {
+      type: "category",
+      data: hours,
+      axisLabel: { color: palette.textSoft }
+    },
+    visualMap: {
+      min: 0,
+      max: Math.max(...rows.map((row) => row.requests), 1),
+      calculable: true,
+      orient: "horizontal",
+      left: "center",
+      bottom: 0,
+      inRange: {
+        color: [palette.border, palette.secondary, palette.accent]
+      }
+    },
+    series: [
+      {
+        type: "heatmap",
+        data: rows.map((row) => [row.weekday, row.hour, row.requests, row.actualCost]),
+        label: { show: false }
+      }
+    ]
+  };
+}
+
+function buildCacheEfficiencyOption(
+  rows: Array<{ name: string; cacheRatio: number; cacheReadTokens: number; totalTokens: number; actualCost: number }>,
+  palette: ChartPalette
+): ChartOption | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  const topRows = rows.slice(0, 10);
+  return {
+    color: [palette.sky, palette.warning],
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+    legend: { top: 0, textStyle: { color: palette.textSoft } },
+    grid: { top: 48, left: 120, right: 20, bottom: 24 },
+    xAxis: {
+      type: "value",
+      axisLabel: { color: palette.textSoft },
+      splitLine: { lineStyle: { color: palette.grid } }
+    },
+    yAxis: {
+      type: "category",
+      data: topRows.map((row) => row.name),
+      axisLabel: { color: palette.textSoft }
+    },
+    series: [
+      { name: "缓存读取 Token", type: "bar", data: topRows.map((row) => row.cacheReadTokens) },
+      { name: "缓存占比", type: "line", data: topRows.map((row) => Number((row.cacheRatio * 100).toFixed(2))) }
+    ]
+  };
+}
+
+function buildEndpointFlowOption(rows: EndpointFlowRow[], palette: ChartPalette): ChartOption | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  return {
+    color: [palette.accent],
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "shadow" }
+    },
+    grid: { top: 18, left: 180, right: 20, bottom: 24 },
+    xAxis: {
+      type: "value",
+      axisLabel: { color: palette.textSoft },
+      splitLine: { lineStyle: { color: palette.grid } }
+    },
+    yAxis: {
+      type: "category",
+      data: rows.map((row) => `${row.source} -> ${row.target}`),
+      axisLabel: { color: palette.textSoft }
+    },
+    series: [
+      {
+        type: "bar",
+        data: rows.map((row) => row.requests)
+      }
+    ]
+  };
+}
+
+function buildUsageRankingBarOption(rows: RankingRow[], palette: ChartPalette, label: string): ChartOption | null {
+  return buildRankingOption(rows, palette, label);
+}
+
+function buildLatencyComparisonOption(rows: UsageAggregateRow[], palette: ChartPalette, label: string): ChartOption | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  return {
+    color: [palette.rose, palette.secondary],
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+    legend: { top: 0, textStyle: { color: palette.textSoft } },
+    grid: { top: 48, left: 120, right: 20, bottom: 24 },
+    xAxis: {
+      type: "value",
+      axisLabel: { color: palette.textSoft },
+      splitLine: { lineStyle: { color: palette.grid } }
+    },
+    yAxis: {
+      type: "category",
+      data: rows.map((row) => row.name),
+      axisLabel: { color: palette.textSoft }
+    },
+    series: [
+      { name: "平均首 Token ms", type: "bar", data: rows.map((row) => Number(row.averageFirstTokenMs.toFixed(2))) },
+      { name: "平均总耗时 ms", type: "bar", data: rows.map((row) => Number(row.averageDurationMs.toFixed(2))) }
+    ]
+  };
+}
+
+function buildExtremeRowsOption(rows: ExtremeRequestRow[], palette: ChartPalette): ChartOption | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  return {
+    color: [palette.warning],
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "shadow" },
+      formatter: (params: Array<{ dataIndex: number }>) => {
+        const row = rows[params[0]?.dataIndex ?? 0];
+        if (!row) return "暂无数据";
+        return [
+          `<strong>${row.model}</strong>`,
+          `归属: ${row.name}`,
+          `成本: ${formatUsd(row.actualCost, 6)}`,
+          `Tokens: ${compact(row.totalTokens)}`,
+          `耗时: ${formatDurationSeconds(row.durationMs)}`,
+          `首 Token: ${formatMilliseconds(row.firstTokenMs)}`
+        ].join("<br/>");
+      }
+    },
+    grid: { top: 18, left: 120, right: 20, bottom: 24 },
+    xAxis: {
+      type: "value",
+      axisLabel: { color: palette.textSoft },
+      splitLine: { lineStyle: { color: palette.grid } }
+    },
+    yAxis: {
+      type: "category",
+      data: rows.map((row) => row.model),
+      axisLabel: { color: palette.textSoft }
+    },
+    series: [
+      { type: "bar", data: rows.map((row) => row.actualCost) }
+    ]
+  };
+}
+
+function buildPremiumBarOption(rows: PremiumRow[], palette: ChartPalette): ChartOption | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  return {
+    color: [palette.indigo],
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "shadow" }
+    },
+    grid: { top: 18, left: 120, right: 20, bottom: 24 },
+    xAxis: {
+      type: "value",
+      axisLabel: {
+        color: palette.textSoft,
+        formatter: (value: number) => `${value.toFixed(2)}x`
+      },
+      splitLine: { lineStyle: { color: palette.grid } }
+    },
+    yAxis: {
+      type: "category",
+      data: rows.map((row) => row.name),
+      axisLabel: { color: palette.textSoft }
+    },
+    series: [
+      {
+        type: "bar",
+        data: rows.map((row) => Number(row.premiumRatio.toFixed(3)))
+      }
     ]
   };
 }
@@ -1111,12 +1551,12 @@ function readChartPalette(): ChartPalette {
   if (typeof window === "undefined") {
     return {
       accent: "#68c4ba",
-      secondary: "#7aa2ff",
+      secondary: "#5e8cff",
       tertiary: "#53cdb5",
-      warning: "#eab308",
+      warning: "#e3a62c",
       rose: "#d6455f",
-      indigo: "#7c3aed",
-      sky: "#0ea5e9",
+      indigo: "#8d78ff",
+      sky: "#4fc8f0",
       textStrong: "#101826",
       textSoft: "#6a778d",
       border: "rgba(16, 24, 38, 0.12)",
@@ -1126,12 +1566,12 @@ function readChartPalette(): ChartPalette {
   const style = getComputedStyle(document.documentElement);
   return {
     accent: style.getPropertyValue("--accent").trim() || "#68c4ba",
-    secondary: "#7aa2ff",
-    tertiary: "#53cdb5",
-    warning: "#eab308",
+    secondary: style.getPropertyValue("--chart-2").trim() || "#5e8cff",
+    tertiary: style.getPropertyValue("--chart-6").trim() || "#53cdb5",
+    warning: style.getPropertyValue("--chart-3").trim() || "#e3a62c",
     rose: style.getPropertyValue("--danger").trim() || "#d6455f",
-    indigo: "#7c3aed",
-    sky: "#0ea5e9",
+    indigo: style.getPropertyValue("--chart-5").trim() || "#8d78ff",
+    sky: style.getPropertyValue("--chart-4").trim() || "#4fc8f0",
     textStrong: style.getPropertyValue("--text-strong").trim() || "#101826",
     textSoft: style.getPropertyValue("--text-subtle").trim() || "#6a778d",
     border: style.getPropertyValue("--border").trim() || "rgba(16, 24, 38, 0.12)",
@@ -1167,6 +1607,69 @@ interface RankingRow {
   detail: string;
 }
 
+interface UsageAggregateRow {
+  name: string;
+  requests: number;
+  actualCost: number;
+  totalCost: number;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  averageFirstTokenMs: number;
+  averageDurationMs: number;
+  rateMultiplierAverage: number;
+}
+
+interface UsageHeatmapRow {
+  weekday: number;
+  hour: number;
+  requests: number;
+  actualCost: number;
+}
+
+interface EndpointFlowRow {
+  source: string;
+  target: string;
+  requests: number;
+  actualCost: number;
+}
+
+interface EfficiencyRow {
+  name: string;
+  requests: number;
+  totalTokens: number;
+  actualCost: number;
+  totalCost: number;
+  costPerRequest: number;
+  costPerMillion: number;
+  premiumRatio: number;
+}
+
+interface PremiumRow {
+  name: string;
+  premiumRatio: number;
+  actualCost: number;
+  totalCost: number;
+}
+
+interface LatencyPercentileRow {
+  name: string;
+  p50: number;
+  p90: number;
+  p99: number;
+}
+
+interface ExtremeRequestRow {
+  name: string;
+  model: string;
+  actualCost: number;
+  totalTokens: number;
+  durationMs: number;
+  firstTokenMs: number;
+}
+
 function buildDimensionRows<T>(rows: T[], getName: (row: T) => string) {
   const bucket = new Map<string, DimensionRow>();
   for (const row of rows) {
@@ -1184,6 +1687,311 @@ function buildDimensionRows<T>(rows: T[], getName: (row: T) => string) {
     }
     return right.actualCost - left.actualCost;
   });
+}
+
+function buildUsageAggregateRows(rows: UsageRow[], getName: (row: UsageRow) => string) {
+  const bucket = new Map<
+    string,
+    UsageAggregateRow & {
+      firstTokenCount: number;
+      durationCount: number;
+      multiplierCount: number;
+      multiplierTotal: number;
+    }
+  >();
+
+  for (const row of rows) {
+    const name = getName(row) || "unknown";
+    const current =
+      bucket.get(name) ??
+      {
+        name,
+        requests: 0,
+        actualCost: 0,
+        totalCost: 0,
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        averageFirstTokenMs: 0,
+        averageDurationMs: 0,
+        rateMultiplierAverage: 0,
+        firstTokenCount: 0,
+        durationCount: 0,
+        multiplierCount: 0,
+        multiplierTotal: 0
+      };
+
+    current.requests += 1;
+    current.actualCost += row.actualCost ?? 0;
+    current.totalCost += row.totalCost ?? 0;
+    current.totalTokens += row.totalTokens ?? 0;
+    current.inputTokens += row.inputTokens ?? 0;
+    current.outputTokens += row.outputTokens ?? 0;
+    current.cacheCreationTokens += row.cacheCreationTokens ?? 0;
+    current.cacheReadTokens += row.cacheReadTokens ?? 0;
+
+    if ((row.firstTokenMs ?? 0) > 0) {
+      current.averageFirstTokenMs += row.firstTokenMs ?? 0;
+      current.firstTokenCount += 1;
+    }
+    if ((row.durationMs ?? 0) > 0) {
+      current.averageDurationMs += row.durationMs ?? 0;
+      current.durationCount += 1;
+    }
+    if ((row.rateMultiplier ?? 0) > 0) {
+      current.multiplierTotal += row.rateMultiplier ?? 0;
+      current.multiplierCount += 1;
+    }
+    bucket.set(name, current);
+  }
+
+  return Array.from(bucket.values())
+    .map((item) => ({
+      name: item.name,
+      requests: item.requests,
+      actualCost: item.actualCost,
+      totalCost: item.totalCost,
+      totalTokens: item.totalTokens,
+      inputTokens: item.inputTokens,
+      outputTokens: item.outputTokens,
+      cacheCreationTokens: item.cacheCreationTokens,
+      cacheReadTokens: item.cacheReadTokens,
+      averageFirstTokenMs: item.firstTokenCount > 0 ? item.averageFirstTokenMs / item.firstTokenCount : 0,
+      averageDurationMs: item.durationCount > 0 ? item.averageDurationMs / item.durationCount : 0,
+      rateMultiplierAverage: item.multiplierCount > 0 ? item.multiplierTotal / item.multiplierCount : 0
+    }))
+    .sort((left, right) => right.actualCost - left.actualCost);
+}
+
+function buildUsageTimeHeatmapRows(rows: UsageRow[]): UsageHeatmapRow[] {
+  const bucket = new Map<string, UsageHeatmapRow>();
+  for (const row of rows) {
+    const date = new Date(row.createdAt);
+    if (Number.isNaN(date.getTime())) {
+      continue;
+    }
+    const weekday = (date.getDay() + 6) % 7;
+    const hour = date.getHours();
+    const key = `${weekday}-${hour}`;
+    const current = bucket.get(key) ?? { weekday, hour, requests: 0, actualCost: 0 };
+    current.requests += 1;
+    current.actualCost += row.actualCost ?? 0;
+    bucket.set(key, current);
+  }
+  return Array.from(bucket.values());
+}
+
+function buildEndpointFlowRows(rows: UsageRow[]): EndpointFlowRow[] {
+  const bucket = new Map<string, EndpointFlowRow>();
+  for (const row of rows) {
+    const source = row.endpoint ?? "unknown";
+    const target = row.upstreamEndpoint ?? row.model ?? "unknown";
+    const key = `${source} -> ${target}`;
+    const current = bucket.get(key) ?? { source, target, requests: 0, actualCost: 0 };
+    current.requests += 1;
+    current.actualCost += row.actualCost ?? 0;
+    bucket.set(key, current);
+  }
+  return Array.from(bucket.values()).sort((left, right) => right.requests - left.requests).slice(0, 12);
+}
+
+function buildEfficiencyRows(rows: UsageAggregateRow[]): EfficiencyRow[] {
+  return rows
+    .map((row) => ({
+      name: row.name,
+      requests: row.requests,
+      totalTokens: row.totalTokens,
+      actualCost: row.actualCost,
+      totalCost: row.totalCost,
+      costPerRequest: row.requests > 0 ? row.actualCost / row.requests : 0,
+      costPerMillion: row.totalTokens > 0 ? (row.actualCost / row.totalTokens) * 1_000_000 : 0,
+      premiumRatio: row.totalCost > 0 ? row.actualCost / row.totalCost : row.rateMultiplierAverage || 0
+    }))
+    .sort((left, right) => right.actualCost - left.actualCost)
+    .slice(0, 12);
+}
+
+function buildCacheEfficiencyRows(rows: UsageAggregateRow[]) {
+  return rows
+    .map((row) => ({
+      name: row.name,
+      cacheRatio: row.totalTokens > 0 ? row.cacheReadTokens / row.totalTokens : 0,
+      cacheReadTokens: row.cacheReadTokens,
+      totalTokens: row.totalTokens,
+      actualCost: row.actualCost
+    }))
+    .sort((left, right) => right.cacheReadTokens - left.cacheReadTokens)
+    .slice(0, 12);
+}
+
+function buildCostBreakdownRows(rows: UsageRow[]) {
+  return [
+    {
+      name: "输入成本",
+      value: rows.reduce((sum, row) => sum + (row.inputCost ?? 0), 0)
+    },
+    {
+      name: "输出成本",
+      value: rows.reduce((sum, row) => sum + (row.outputCost ?? 0), 0)
+    },
+    {
+      name: "缓存写入成本",
+      value: rows.reduce((sum, row) => sum + (row.cacheCreationCost ?? 0), 0)
+    },
+    {
+      name: "缓存读取成本",
+      value: rows.reduce((sum, row) => sum + (row.cacheReadCost ?? 0), 0)
+    }
+  ].filter((row) => row.value > 0);
+}
+
+function buildPremiumRows(rows: UsageAggregateRow[]): PremiumRow[] {
+  return rows
+    .map((row) => ({
+      name: row.name,
+      premiumRatio: row.totalCost > 0 ? row.actualCost / row.totalCost : row.rateMultiplierAverage || 0,
+      actualCost: row.actualCost,
+      totalCost: row.totalCost
+    }))
+    .filter((row) => row.actualCost > 0)
+    .sort((left, right) => right.premiumRatio - left.premiumRatio)
+    .slice(0, 12);
+}
+
+function buildLatencyRows(rows: UsageAggregateRow[]) {
+  return rows
+    .filter((row) => row.averageDurationMs > 0 || row.averageFirstTokenMs > 0)
+    .sort((left, right) => right.averageDurationMs - left.averageDurationMs)
+    .slice(0, 12);
+}
+
+function buildExtremeRequestRows(rows: UsageRow[]): ExtremeRequestRow[] {
+  return rows
+    .map((row) => ({
+      name: row.apiKeyName ?? row.endpoint ?? row.model,
+      model: row.model,
+      actualCost: row.actualCost ?? 0,
+      totalTokens: row.totalTokens ?? 0,
+      durationMs: row.durationMs ?? 0,
+      firstTokenMs: row.firstTokenMs ?? 0
+    }))
+    .sort((left, right) => {
+      if (right.actualCost !== left.actualCost) {
+        return right.actualCost - left.actualCost;
+      }
+      if (right.totalTokens !== left.totalTokens) {
+        return right.totalTokens - left.totalTokens;
+      }
+      return right.durationMs - left.durationMs;
+    })
+    .slice(0, 12);
+}
+
+function buildLatencyPercentiles(rows: UsageRow[], pickValue: (row: UsageRow) => number | null | undefined): LatencyPercentileRow | null {
+  const values = rows
+    .map((row) => Number(pickValue(row) ?? 0))
+    .filter((value) => value > 0)
+    .sort((left, right) => left - right);
+  if (values.length === 0) {
+    return null;
+  }
+  return {
+    name: "延迟",
+    p50: percentile(values, 0.5),
+    p90: percentile(values, 0.9),
+    p99: percentile(values, 0.99)
+  };
+}
+
+function buildScopedTrendPayload(rows: UsageRow[]): UsageTrendPayload | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  const bucket = new Map<string, DailyUsagePoint>();
+  for (const row of rows) {
+    const dateKey = row.createdAt.slice(0, 10);
+    const current =
+      bucket.get(dateKey) ??
+      {
+        date: dateKey,
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        totalTokens: 0,
+        actualCost: 0,
+        totalCost: 0
+      };
+    current.requests += 1;
+    current.inputTokens += row.inputTokens ?? 0;
+    current.outputTokens += row.outputTokens ?? 0;
+    current.cacheReadTokens = (current.cacheReadTokens ?? 0) + (row.cacheReadTokens ?? 0);
+    current.cacheWriteTokens = (current.cacheWriteTokens ?? 0) + (row.cacheCreationTokens ?? 0);
+    current.totalTokens = (current.totalTokens ?? 0) + (row.totalTokens ?? 0);
+    current.actualCost = (current.actualCost ?? 0) + (row.actualCost ?? 0);
+    current.totalCost = (current.totalCost ?? 0) + (row.totalCost ?? 0);
+    bucket.set(dateKey, current);
+  }
+  const trend = Array.from(bucket.values()).sort((left, right) => left.date.localeCompare(right.date));
+  return {
+    startDate: trend[0]?.date ?? "",
+    endDate: trend[trend.length - 1]?.date ?? "",
+    granularity: "day",
+    trend
+  };
+}
+
+function buildScopedModelsPayload(rows: UsageRow[]): DashboardModelsPayload | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  const aggregates = buildUsageAggregateRows(rows, (row) => row.model || "unknown");
+  const trend = buildScopedTrendPayload(rows);
+  return {
+    startDate: trend?.startDate ?? "",
+    endDate: trend?.endDate ?? "",
+    models: aggregates.map((row) => ({
+      model: row.name,
+      requests: row.requests,
+      inputTokens: row.inputTokens,
+      outputTokens: row.outputTokens,
+      cacheCreationTokens: row.cacheCreationTokens,
+      cacheReadTokens: row.cacheReadTokens,
+      totalTokens: row.totalTokens,
+      cost: row.totalCost,
+      actualCost: row.actualCost
+    }))
+  };
+}
+
+function buildScopedPlatformRows(rows: UsageRow[]) {
+  return buildUsageAggregateRows(rows, (row) => row.platform ?? "unknown").map((row) => ({
+    platform: row.name,
+    totalActualCost: row.actualCost,
+    totalRequests: row.requests,
+    totalTokens: row.totalTokens
+  }));
+}
+
+function buildUsageRankingRows(rows: UsageAggregateRow[]) {
+  return rows.slice(0, 12).map((row) => ({
+    name: row.name,
+    balance: row.actualCost,
+    requests: row.requests,
+    activeCount: Math.round(row.totalTokens),
+    detail: `${compact(row.totalTokens)} tokens · ${formatUsdPerMillion(row.actualCost, row.totalTokens)}`
+  }));
+}
+
+function percentile(values: number[], ratio: number) {
+  if (values.length === 0) {
+    return 0;
+  }
+  const index = Math.min(values.length - 1, Math.max(0, Math.round((values.length - 1) * ratio)));
+  return values[index] ?? 0;
 }
 
 function buildSiteRankings(overview: OverviewPayload | null): RankingRow[] {
