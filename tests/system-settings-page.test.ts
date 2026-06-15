@@ -37,5 +37,10 @@ describe("SystemSettingsPage", () => {
     expect(html).toContain("石墨青夜班");
     expect(html).toContain("暖纸控制台");
     expect(html).toContain("琥珀交易台");
+    expect(html).toContain("冷杉机房");
+    expect(html).toContain("极地实验台");
+    expect(html).toContain("光谱实验台");
+    expect(html).toContain("医护监测舱");
+    expect(html).toContain("审计档案室");
   });
 });

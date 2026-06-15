@@ -14,7 +14,7 @@ const samplePrefs: DesktopUiPrefs = {
   openFloatingInMainMode: true,
   keepFloatingPanelVisible: true,
   closeBehavior: "switch_to_floating",
-  theme: "graphite-cyan"
+  theme: "spectral-lab"
 };
 
 describe("desktop ui prefs browser sync helpers", () => {
