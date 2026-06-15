@@ -87,7 +87,7 @@ function renderQuotaWindow(
           ${windowValue.current.toFixed(2)} / ${windowValue.limit.toFixed(2)}
         </strong>
       </div>
-      <div className="bar-track">
+      <div className={`bar-track ${progressMeta.tone}`}>
         <div className={`bar-fill ${progressMeta.tone}`} style={{ width: `${progressMeta.percent}%` }} />
       </div>
       {(windowValue.windowStart || (label === "每日额度" && expiresAt)) && (

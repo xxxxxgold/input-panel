@@ -36,6 +36,7 @@ describe("SubscriptionList quota bar tiers", () => {
     );
 
     expect(html).toContain("bar-fill quota-tier-80");
+    expect(html).toContain("bar-track quota-tier-80");
     expect(html).toContain("width:70.114%");
     expect(html).toContain("subscription-platform-pill openai");
     expect(html).toContain("status-pill ready");
