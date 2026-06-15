@@ -114,6 +114,7 @@ describe("Topbar subscription peek", () => {
         setTopbarAlertsExpanded: () => {},
         topbarAlertsRef: createRef<HTMLDivElement>(),
         topbarAlertPreview: [],
+        latestUnreadAlertSeverity: null,
         closeTopbarAccountMenu: () => {},
         setTopbarSubscriptionsExpanded: () => {},
         topbarSubscriptionsExpanded: true,
@@ -125,6 +126,7 @@ describe("Topbar subscription peek", () => {
         subscriptionPreviewRecords: subscriptions,
         closeTopbarPeekPanels: () => {},
         onRefreshServiceStatus: () => {},
+        serviceStatusRefreshIntervalSeconds: 9,
         onTriggerTestNotification: () => {},
         onOpenAlerts: () => {},
         onOpenSubscriptions: () => {},
@@ -151,6 +153,7 @@ describe("Topbar subscription peek", () => {
     expect(html).toContain("topbar-subscription-dots");
     expect(html).toContain("topbar-subscription-dot quota-tier-90");
     expect(html).toContain("CodeX Plus 年度");
+    expect(html).toContain("每日 87.4%");
     expect(html).toContain("$437.11 / $500.00");
     expect(html).toContain("剩余 363 天");
   });
@@ -184,6 +187,7 @@ describe("Topbar subscription peek", () => {
         setTopbarAlertsExpanded: () => {},
         topbarAlertsRef: createRef<HTMLDivElement>(),
         topbarAlertPreview: [],
+        latestUnreadAlertSeverity: null,
         closeTopbarAccountMenu: () => {},
         setTopbarSubscriptionsExpanded: () => {},
         topbarSubscriptionsExpanded: true,
@@ -195,6 +199,7 @@ describe("Topbar subscription peek", () => {
         subscriptionPreviewRecords: [],
         closeTopbarPeekPanels: () => {},
         onRefreshServiceStatus: () => {},
+        serviceStatusRefreshIntervalSeconds: 9,
         onTriggerTestNotification: () => {},
         onOpenAlerts: () => {},
         onOpenSubscriptions: () => {},
@@ -254,6 +259,7 @@ describe("Topbar subscription peek", () => {
         setTopbarAlertsExpanded: () => {},
         topbarAlertsRef: createRef<HTMLDivElement>(),
         topbarAlertPreview: [],
+        latestUnreadAlertSeverity: null,
         closeTopbarAccountMenu: () => {},
         setTopbarSubscriptionsExpanded: () => {},
         topbarSubscriptionsExpanded: false,
@@ -265,6 +271,7 @@ describe("Topbar subscription peek", () => {
         subscriptionPreviewRecords: [],
         closeTopbarPeekPanels: () => {},
         onRefreshServiceStatus: () => {},
+        serviceStatusRefreshIntervalSeconds: 9,
         onTriggerTestNotification: () => {},
         onOpenAlerts: () => {},
         onOpenSubscriptions: () => {},
@@ -289,10 +296,10 @@ describe("Topbar subscription peek", () => {
     );
 
     expect(html).toContain("topbar-clock-card");
-    expect(html).toContain("6月13日星期五");
+    expect(html).toContain("6月13日星期六");
     expect(html).toContain("14:05:09");
     expect(html).not.toContain("北京时间");
-    expect(html.indexOf("6月13日星期五")).toBeLessThan(html.indexOf("14:05:09"));
+    expect(html.indexOf("6月13日星期六")).toBeLessThan(html.indexOf("14:05:09"));
   });
 
   it("renders a login trigger when there is no selected account", () => {
@@ -309,6 +316,7 @@ describe("Topbar subscription peek", () => {
         setTopbarAlertsExpanded: () => {},
         topbarAlertsRef: createRef<HTMLDivElement>(),
         topbarAlertPreview: [],
+        latestUnreadAlertSeverity: null,
         closeTopbarAccountMenu: () => {},
         setTopbarSubscriptionsExpanded: () => {},
         topbarSubscriptionsExpanded: false,
@@ -320,6 +328,7 @@ describe("Topbar subscription peek", () => {
         subscriptionPreviewRecords: [],
         closeTopbarPeekPanels: () => {},
         onRefreshServiceStatus: () => {},
+        serviceStatusRefreshIntervalSeconds: 9,
         onTriggerTestNotification: () => {},
         onOpenAlerts: () => {},
         onOpenSubscriptions: () => {},
@@ -378,6 +387,7 @@ describe("Topbar subscription peek", () => {
         setTopbarAlertsExpanded: () => {},
         topbarAlertsRef: createRef<HTMLDivElement>(),
         topbarAlertPreview: [],
+        latestUnreadAlertSeverity: null,
         closeTopbarAccountMenu: () => {},
         setTopbarSubscriptionsExpanded: () => {},
         topbarSubscriptionsExpanded: false,
@@ -389,6 +399,7 @@ describe("Topbar subscription peek", () => {
         subscriptionPreviewRecords: [],
         closeTopbarPeekPanels: () => {},
         onRefreshServiceStatus: () => {},
+        serviceStatusRefreshIntervalSeconds: 9,
         onTriggerTestNotification: () => {},
         onOpenAlerts: () => {},
         onOpenSubscriptions: () => {},
@@ -422,5 +433,60 @@ describe("Topbar subscription peek", () => {
     expect(html).toContain("每 9 秒刷新一次最新探测结果");
     expect(html).toContain('aria-label="测试红色通知"');
     expect(html).toContain('aria-label="测试绿色通知"');
+  });
+
+  it("keeps the service status and inbox controls together in the top-right tool cluster", () => {
+    const html = renderToStaticMarkup(
+      createElement(Topbar, {
+        onReload: () => {},
+        serviceStatus,
+        serviceStatusRefreshing: false,
+        topbarServiceStatusExpanded: false,
+        setTopbarServiceStatusExpanded: () => {},
+        topbarServiceStatusRef: createRef<HTMLDivElement>(),
+        alertCount: 1,
+        topbarAlertsExpanded: false,
+        setTopbarAlertsExpanded: () => {},
+        topbarAlertsRef: createRef<HTMLDivElement>(),
+        topbarAlertPreview: [],
+        latestUnreadAlertSeverity: "critical",
+        closeTopbarAccountMenu: () => {},
+        setTopbarSubscriptionsExpanded: () => {},
+        topbarSubscriptionsExpanded: false,
+        topbarSubscriptionsRef: createRef<HTMLDivElement>(),
+        usageStatusLabel: "2 个有效订阅",
+        usageStatusHint: "已用 $643.86",
+        subscriptionSpend: 643.86,
+        subscriptionCount: 2,
+        subscriptionPreviewRecords: [],
+        closeTopbarPeekPanels: () => {},
+        onRefreshServiceStatus: () => {},
+        serviceStatusRefreshIntervalSeconds: 9,
+        onTriggerTestNotification: () => {},
+        onOpenAlerts: () => {},
+        onOpenSubscriptions: () => {},
+        selectedAccount: null,
+        topbarAccountMenuOpen: false,
+        setTopbarAccountMenuOpen: () => {},
+        topbarAccountMenuRef: createRef<HTMLDivElement>(),
+        selectedAccountStatusLabel: "未选择账号",
+        selectedAccountAvatarUrl: null,
+        selectedSite: null,
+        topbarFilteredAccounts: [],
+        accounts: [],
+        topbarAccountSearch: "",
+        setTopbarAccountSearch: () => {},
+        onAccountSelect: () => {},
+        onOpenProfileModal: () => {},
+        onOpenSystemSettings: () => {},
+        onOpenSettings: () => {},
+        onRefreshSelectedAccount: () => {},
+        onOpenSelectedAccountLogin: () => {}
+      })
+    );
+
+    expect(html).toContain("topbar-quick-action");
+    expect(html).toContain("topbar-test-trigger");
+    expect(html).toContain("topbar-alert-badge topbar-alert-badge-critical");
   });
 });

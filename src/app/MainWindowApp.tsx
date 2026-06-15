@@ -1,6 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emitTo } from "@tauri-apps/api/event";
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useEffectEvent, useState, type KeyboardEvent } from "react";
 
 import { DesktopModeCloseDialog } from "./DesktopModeCloseDialog";
 import { AppShell } from "./AppShell";
@@ -30,7 +30,11 @@ import { useSettingsWorkspace } from "../features/settings/useSettingsWorkspace"
 import { useUsageWorkspace } from "../features/usage/useUsageWorkspace";
 import { useDesktopUiPrefs } from "../features/desktop-ui/useDesktopUiPrefs";
 import {
+  DEFAULT_AUTO_REFRESH_INTERVAL_SECONDS,
   isSnapshotStaleForToday,
+  normalizeAutoRefreshIntervalSeconds,
+  resolveAutoRefreshScope,
+  shouldAutoRefreshSelectedAccountData,
   shouldRefreshAccountScopedData,
   shouldRefreshSnapshotForNav
 } from "./refresh-policy";
@@ -70,6 +74,9 @@ const ALLOWED_THEMES = new Set<string>(THEME_IDS);
 
 export function MainWindowApp() {
   const [alertInboxOpen, setAlertInboxOpen] = useState(false);
+  const [pageVisible, setPageVisible] = useState(
+    typeof document === "undefined" ? true : document.visibilityState === "visible"
+  );
   const nav = useMonitorStore((state) => state.nav);
   const setNav = useMonitorStore((state) => state.setNav);
   const theme = useMonitorStore((state) => state.theme);
@@ -125,7 +132,7 @@ export function MainWindowApp() {
   });
   const topbarServiceStatusWorkspace = useServiceStatusWorkspace({
     setError,
-    enabled: hasAnyAccount,
+    enabled: desktopUi.prefs.autoRefreshEnabled,
     notifyStatusTransition: (event) => {
       const record = buildServiceStatusNotificationRecord(event);
       pushAppNotification(record);
@@ -145,7 +152,9 @@ export function MainWindowApp() {
         setError(event.detail);
       }
     },
-    refreshIntervalMs: 9000
+    refreshIntervalMs: desktopUi.prefs.autoRefreshEnabled
+      ? normalizeAutoRefreshIntervalSeconds(desktopUi.prefs.autoRefreshIntervalSeconds) * 1000
+      : DEFAULT_AUTO_REFRESH_INTERVAL_SECONDS * 1000
   });
   const {
     usageApiKeyFilter,
@@ -172,6 +181,7 @@ export function MainWindowApp() {
     keyUsageRows,
     keyUsageKeyId,
     loadKeyUsage,
+    refreshUsageWorkspaceSilently,
     usageStartDate,
     setUsageStartDate,
     usageEndDate,
@@ -194,6 +204,20 @@ export function MainWindowApp() {
     document.documentElement.classList.remove(...THEME_IDS);
     document.documentElement.classList.add(theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    const syncVisibility = () => {
+      setPageVisible(document.visibilityState === "visible");
+    };
+
+    syncVisibility();
+    document.addEventListener("visibilitychange", syncVisibility);
+    return () => document.removeEventListener("visibilitychange", syncVisibility);
+  }, []);
 
   useEffect(() => {
     void loadOverview();
@@ -387,6 +411,77 @@ export function MainWindowApp() {
     });
   }, [nav, selectedAccount]);
 
+  const refreshSelectedPageSilently = useEffectEvent(async () => {
+    const autoRefreshEnabled = desktopUi.prefs.autoRefreshEnabled;
+    const intervalSeconds = normalizeAutoRefreshIntervalSeconds(desktopUi.prefs.autoRefreshIntervalSeconds);
+    const canRefreshSelectedAccount = shouldAutoRefreshSelectedAccountData({
+      nav,
+      autoRefreshEnabled,
+      pageVisible,
+      selectedAccount
+    });
+
+    if (!canRefreshSelectedAccount) {
+      return;
+    }
+
+    switch (resolveAutoRefreshScope(nav)) {
+      case "snapshot":
+        if (selectedAccount) {
+          await accountWorkspace.handleRefreshAccount(selectedAccount.id, {
+            silent: true,
+            triggerSource: "stale_auto"
+          });
+        }
+        break;
+      case "accountScoped":
+        await accountScopedWorkspace.refreshAccountScopedData();
+        break;
+      case "usage":
+        await refreshUsageWorkspaceSilently();
+        break;
+      default:
+        break;
+    }
+
+    return intervalSeconds;
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    let timerId: number | null = null;
+    let running = false;
+
+    const tick = async () => {
+      if (cancelled || running) {
+        return;
+      }
+      running = true;
+      try {
+        const intervalSeconds = await refreshSelectedPageSilently();
+        if (cancelled) {
+          return;
+        }
+        if (typeof intervalSeconds === "number") {
+          timerId = window.setTimeout(() => {
+            void tick();
+          }, intervalSeconds * 1000);
+        }
+      } finally {
+        running = false;
+      }
+    };
+
+    void tick();
+
+    return () => {
+      cancelled = true;
+      if (timerId !== null) {
+        window.clearTimeout(timerId);
+      }
+    };
+  }, [pageVisible, refreshSelectedPageSilently]);
+
   useEffect(() => {
     if (!selectedSiteId) return;
     const accountInSelectedSite = accounts.find(
@@ -455,7 +550,13 @@ export function MainWindowApp() {
           usageStats={usageStats}
         />
       )}
-      {nav === "serviceStatus" && <ServiceStatusPage setError={setError} enabled={hasAnyAccount} />}
+      {nav === "serviceStatus" && (
+        <ServiceStatusPage
+          workspace={topbarServiceStatusWorkspace}
+          enabled={desktopUi.prefs.autoRefreshEnabled}
+          refreshIntervalSeconds={normalizeAutoRefreshIntervalSeconds(desktopUi.prefs.autoRefreshIntervalSeconds)}
+        />
+      )}
       {nav === "settings" && (
         <SettingsPage
           siteSearch={settingsWorkspace.siteSearch}
@@ -570,6 +671,12 @@ export function MainWindowApp() {
           onFloatingVisibleChange={(value) => void desktopUi.handleFloatingVisible(value)}
           onFloatingPanelPinnedChange={(value) => void desktopUi.patchPrefs({ keepFloatingPanelVisible: value })}
           onCloseBehaviorChange={(value) => void desktopUi.handleRememberCloseBehavior(value)}
+          onAutoRefreshEnabledChange={(value) => void desktopUi.patchPrefs({ autoRefreshEnabled: value })}
+          onAutoRefreshIntervalSecondsChange={(value) =>
+            void desktopUi.patchPrefs({
+              autoRefreshIntervalSeconds: normalizeAutoRefreshIntervalSeconds(value)
+            })
+          }
         />
       )}
     </>
@@ -631,6 +738,7 @@ export function MainWindowApp() {
               subscriptionPreviewRecords={mergedTopbarSubscriptions}
               closeTopbarPeekPanels={shellWorkspace.closeTopbarPeekPanels}
               onRefreshServiceStatus={() => void topbarServiceStatusWorkspace.refreshNow()}
+              serviceStatusRefreshIntervalSeconds={normalizeAutoRefreshIntervalSeconds(desktopUi.prefs.autoRefreshIntervalSeconds)}
               onTriggerTestNotification={handleTestNotification}
               onOpenAlerts={() => {
                 handleOpenAlertInbox();

@@ -1,3 +1,4 @@
+import { MIN_AUTO_REFRESH_INTERVAL_SECONDS } from "../app/refresh-policy";
 import { THEME_OPTIONS, type ThemeId } from "../shared/lib/theme";
 import type { AppLaunchMode, CloseBehavior, DesktopUiPrefs } from "../types";
 
@@ -9,7 +10,9 @@ export function SystemSettingsPage({
   onLaunchModeChange,
   onFloatingVisibleChange,
   onFloatingPanelPinnedChange,
-  onCloseBehaviorChange
+  onCloseBehaviorChange,
+  onAutoRefreshEnabledChange,
+  onAutoRefreshIntervalSecondsChange
 }: {
   theme: ThemeId;
   setTheme: (theme: ThemeId) => void;
@@ -19,6 +22,8 @@ export function SystemSettingsPage({
   onFloatingVisibleChange: (value: boolean) => void;
   onFloatingPanelPinnedChange: (value: boolean) => void;
   onCloseBehaviorChange: (value: CloseBehavior) => void;
+  onAutoRefreshEnabledChange: (value: boolean) => void;
+  onAutoRefreshIntervalSecondsChange: (value: number) => void;
 }) {
   return (
     <section className="content-grid">
@@ -107,6 +112,40 @@ export function SystemSettingsPage({
               <option value="switch_to_floating">切到悬浮窗模式</option>
               <option value="exit_app">直接退出程序</option>
             </select>
+          </label>
+        </div>
+      </section>
+      <section className="section-card">
+        <header className="section-card-header">
+          <div>
+            <h3>数据自动刷新</h3>
+            <p>静默拉取当前页数据, 不会整页刷新, 保留当前筛选和页面上下文。</p>
+          </div>
+        </header>
+        <div className="stack-list">
+          <label className="toggle-field">
+            <div>
+              <strong>有账号时自动刷新数据</strong>
+              <p>仅在当前账号已登录、页面处于前台可见时执行静默轮询。</p>
+            </div>
+            <input
+              type="checkbox"
+              checked={desktopUiPrefs.autoRefreshEnabled}
+              onChange={(event) => onAutoRefreshEnabledChange(event.target.checked)}
+              disabled={desktopUiLoading}
+            />
+          </label>
+          <label className="field">
+            <span>刷新间隔(秒)</span>
+            <input
+              type="number"
+              min={MIN_AUTO_REFRESH_INTERVAL_SECONDS}
+              step={1}
+              value={desktopUiPrefs.autoRefreshIntervalSeconds}
+              onChange={(event) => onAutoRefreshIntervalSecondsChange(Number(event.target.value))}
+              disabled={desktopUiLoading}
+            />
+            <small>最低 {MIN_AUTO_REFRESH_INTERVAL_SECONDS} 秒。切到后台标签页时会暂停, 回到前台后自动恢复。</small>
           </label>
         </div>
       </section>

@@ -56,6 +56,8 @@ describe("ServiceStatusTerminal", () => {
         loading: false,
         refreshing: false,
         lastError: null,
+        enabled: true,
+        refreshIntervalSeconds: 9,
         onRefresh: () => {}
       })
     );
@@ -73,6 +75,7 @@ describe("ServiceStatusTerminal", () => {
     expect(html).toContain("gpt-5.5");
     expect(html).toContain("gpt-5.4-mini");
     expect(html).toContain("probe timeout");
+    expect(html).toContain("polling every 9s");
     expect(html).toContain("status-history-bar ok");
     expect(html).toContain("status-history-bar bad");
   });

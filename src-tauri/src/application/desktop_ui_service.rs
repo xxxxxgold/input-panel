@@ -6,6 +6,8 @@ use crate::infrastructure::sqlite::repositories;
 use super::AppContext;
 
 const DESKTOP_UI_PREFS_KEY: &str = "desktop_ui_prefs";
+const MIN_AUTO_REFRESH_INTERVAL_SECONDS: i64 = 1;
+const DEFAULT_AUTO_REFRESH_INTERVAL_SECONDS: i64 = 9;
 
 fn normalize_theme(value: String) -> String {
     match value.as_str() {
@@ -19,7 +21,12 @@ fn normalize_theme(value: String) -> String {
 fn normalize_prefs(mut prefs: DesktopUiPrefs) -> DesktopUiPrefs {
     prefs.version = 1;
     prefs.theme = normalize_theme(prefs.theme);
+    prefs.auto_refresh_interval_seconds = normalize_auto_refresh_interval_seconds(prefs.auto_refresh_interval_seconds);
     prefs
+}
+
+fn normalize_auto_refresh_interval_seconds(value: i64) -> i64 {
+    value.max(MIN_AUTO_REFRESH_INTERVAL_SECONDS)
 }
 
 pub fn get_desktop_ui_prefs(ctx: &AppContext) -> Result<DesktopUiPrefs> {
@@ -43,6 +50,12 @@ pub fn update_desktop_ui_prefs(ctx: &AppContext, patch: DesktopUiPrefsPatch) -> 
     }
     if let Some(value) = patch.close_behavior {
         prefs.close_behavior = value;
+    }
+    if let Some(value) = patch.auto_refresh_enabled {
+        prefs.auto_refresh_enabled = value;
+    }
+    if let Some(value) = patch.auto_refresh_interval_seconds {
+        prefs.auto_refresh_interval_seconds = normalize_auto_refresh_interval_seconds(value);
     }
     if let Some(value) = patch.theme {
         prefs.theme = normalize_theme(value);
@@ -85,6 +98,8 @@ mod tests {
         let prefs = DesktopUiPrefs::default();
 
         assert!(!prefs.keep_floating_panel_visible);
+        assert!(prefs.auto_refresh_enabled);
+        assert_eq!(prefs.auto_refresh_interval_seconds, DEFAULT_AUTO_REFRESH_INTERVAL_SECONDS);
     }
 
     #[test]
@@ -95,11 +110,14 @@ mod tests {
             open_floating_in_main_mode: true,
             keep_floating_panel_visible: true,
             close_behavior: CloseBehavior::Ask,
+            auto_refresh_enabled: true,
+            auto_refresh_interval_seconds: 0,
             theme: "invalid-theme".into(),
         });
 
         assert_eq!(prefs.version, 1);
         assert!(prefs.keep_floating_panel_visible);
         assert_eq!(prefs.theme, "light");
+        assert_eq!(prefs.auto_refresh_interval_seconds, MIN_AUTO_REFRESH_INTERVAL_SECONDS);
     }
 }

@@ -669,7 +669,13 @@ pub struct DesktopUiPrefs {
     pub version: i64,
     pub launch_mode: AppLaunchMode,
     pub open_floating_in_main_mode: bool,
+    #[serde(default)]
+    pub keep_floating_panel_visible: bool,
     pub close_behavior: CloseBehavior,
+    #[serde(default = "default_auto_refresh_enabled")]
+    pub auto_refresh_enabled: bool,
+    #[serde(default = "default_auto_refresh_interval_seconds")]
+    pub auto_refresh_interval_seconds: i64,
     pub theme: String,
 }
 
@@ -679,7 +685,10 @@ impl Default for DesktopUiPrefs {
             version: 1,
             launch_mode: AppLaunchMode::Main,
             open_floating_in_main_mode: true,
+            keep_floating_panel_visible: false,
             close_behavior: CloseBehavior::Ask,
+            auto_refresh_enabled: true,
+            auto_refresh_interval_seconds: 9,
             theme: "light".into(),
         }
     }
@@ -690,8 +699,19 @@ impl Default for DesktopUiPrefs {
 pub struct DesktopUiPrefsPatch {
     pub launch_mode: Option<AppLaunchMode>,
     pub open_floating_in_main_mode: Option<bool>,
+    pub keep_floating_panel_visible: Option<bool>,
     pub close_behavior: Option<CloseBehavior>,
+    pub auto_refresh_enabled: Option<bool>,
+    pub auto_refresh_interval_seconds: Option<i64>,
     pub theme: Option<String>,
+}
+
+fn default_auto_refresh_enabled() -> bool {
+    true
+}
+
+fn default_auto_refresh_interval_seconds() -> i64 {
+    9
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

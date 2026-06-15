@@ -11,6 +11,8 @@ const desktopUiPrefs: DesktopUiPrefs = {
   openFloatingInMainMode: true,
   keepFloatingPanelVisible: true,
   closeBehavior: "ask",
+  autoRefreshEnabled: true,
+  autoRefreshIntervalSeconds: 9,
   theme: "light"
 };
 
@@ -25,7 +27,9 @@ describe("SystemSettingsPage", () => {
         onLaunchModeChange: () => {},
         onFloatingVisibleChange: () => {},
         onFloatingPanelPinnedChange: () => {},
-        onCloseBehaviorChange: () => {}
+        onCloseBehaviorChange: () => {},
+        onAutoRefreshEnabledChange: () => {},
+        onAutoRefreshIntervalSecondsChange: () => {}
       })
     );
 
@@ -42,5 +46,9 @@ describe("SystemSettingsPage", () => {
     expect(html).toContain("光谱实验台");
     expect(html).toContain("医护监测舱");
     expect(html).toContain("审计档案室");
+    expect(html).toContain("有账号时自动刷新数据");
+    expect(html).toContain("静默拉取当前页数据, 不会整页刷新");
+    expect(html).toContain('type="number"');
+    expect(html).toContain('min="1"');
   });
 });

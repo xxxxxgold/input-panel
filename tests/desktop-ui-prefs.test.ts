@@ -14,6 +14,8 @@ const samplePrefs: DesktopUiPrefs = {
   openFloatingInMainMode: true,
   keepFloatingPanelVisible: true,
   closeBehavior: "switch_to_floating",
+  autoRefreshEnabled: true,
+  autoRefreshIntervalSeconds: 9,
   theme: "spectral-lab"
 };
 
