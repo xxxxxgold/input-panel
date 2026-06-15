@@ -1,0 +1,145 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+
+import { ApiKeyList } from "../src/features/keys/components/ApiKeyList";
+import { OverviewPage } from "../src/pages/OverviewPage";
+import type { KeyRecord, OverviewPayload } from "../src/types";
+
+const sampleKey: KeyRecord = {
+  id: "key-1",
+  name: "codex++",
+  groupId: 3,
+  groupName: "CodeX Plus 年度",
+  platform: "openai",
+  status: "active",
+  lastUsedAt: "2026-06-11T20:27:00+08:00"
+};
+
+describe("ApiKeyList summary style", () => {
+  it("renders api key rows with the shared card language while keeping original content fields", () => {
+    const html = renderToStaticMarkup(
+      createElement(ApiKeyList, {
+        keys: [sampleKey]
+      })
+    );
+
+    expect(html).toContain("api-key-summary-row");
+    expect(html).toContain("status-pill ready");
+    expect(html).toContain("codex++");
+    expect(html).toContain("CodeX Plus 年度");
+    expect(html).toContain("key-platform-pill openai");
+    expect(html).toContain(">active</small>");
+    expect(html).toContain("最后使用时间：06/11 20:27");
+    expect(html).toContain(">active</span>");
+  });
+
+  it("renders the overview all-api-keys panel with the same summary row style", () => {
+    const overview = {
+      sites: [],
+      accounts: [
+        {
+          id: "account-1",
+          siteId: "site-1",
+          label: "主账号",
+          email: "main@example.com",
+          balanceWarning: -1,
+          lastLoginAt: null,
+          createdAt: "2026-06-11T00:00:00Z",
+          updatedAt: "2026-06-11T00:00:00Z",
+          site: null,
+          sessionState: "ready",
+          lastError: null,
+          snapshot: null
+        }
+      ],
+      totals: {
+        balance: 0,
+        totalSites: 1,
+        totalAccounts: 1,
+        totalApiKeys: 1,
+        activeApiKeys: 1,
+        todayRequests: 12,
+        totalRequests: 34,
+        todayActualCost: 1.2,
+        totalActualCost: 5.6,
+        todayTokens: 7890,
+        totalTokens: 12345
+      },
+      alerts: [],
+      platformSeries: [],
+      trend: [],
+      recentUsage: [],
+      subscriptions: [],
+      keys: [],
+      generatedAt: "2026-06-15T10:47:34Z"
+    } satisfies OverviewPayload;
+
+    const visibleSnapshot = {
+      fetchedAt: "2026-06-15T10:00:00Z",
+      online: true,
+      siteName: "AI INPUT",
+      siteUrl: "https://example.com",
+      accountLabel: "主账号",
+      emailMasked: "m***@example.com",
+      balance: 42.5,
+      currency: "USD",
+      stats: {
+        totalApiKeys: 1,
+        activeApiKeys: 1,
+        todayRequests: 123,
+        totalRequests: 103576,
+        todayActualCost: 32.2293,
+        totalActualCost: 15701.5399,
+        todayCost: 32.2293,
+        totalCost: 15701.5399,
+        todayTokens: 54100000,
+        totalTokens: 21600700000,
+        todayInputTokens: 1000,
+        todayOutputTokens: 2000,
+        averageDurationMs: 400,
+        byPlatform: []
+      },
+      usageSummary: {
+        windowStart: "2026-06-15T00:00:00Z",
+        windowEnd: "2026-06-15T23:59:59Z",
+        todayRequests: 123,
+        todayActualCost: 32.2293,
+        todayCost: 32.2293,
+        todayTokens: 54100000,
+        todayInputTokens: 1000,
+        todayOutputTokens: 2000,
+        totalRequests: 103576,
+        totalActualCost: 15701.5399,
+        totalCost: 15701.5399,
+        totalTokens: 21600700000,
+        totalInputTokens: 3000,
+        totalOutputTokens: 4000,
+        averageDurationMs: 400,
+        byPlatform: []
+      },
+      recentUsage: [],
+      requestHistory: [],
+      trend: [],
+      subscriptions: [],
+      keys: [sampleKey],
+      activeSubscription: null,
+      alerts: []
+    };
+
+    const html = renderToStaticMarkup(
+      createElement(OverviewPage, {
+        overview,
+        visibleSnapshot,
+        usageStats: null
+      })
+    );
+
+    expect(html).toContain("全部 API Keys");
+    expect(html).toContain("api-key-summary-row");
+    expect(html).toContain("codex++");
+    expect(html).toContain("CodeX Plus 年度");
+    expect(html).toContain(">active</span>");
+    expect(html).toContain("06/11 20:27");
+  });
+});
