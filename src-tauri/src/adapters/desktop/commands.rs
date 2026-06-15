@@ -1,16 +1,32 @@
 use serde_json::Value;
-use tauri::State;
+use serde::Deserialize;
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::application::{
-    account_service, auth_service, dashboard_service, keys_service, profile_service, proxy_service,
-    site_service, usage_service, AppContext,
+    account_service, auth_service, dashboard_service, desktop_ui_service, keys_service,
+    profile_service, proxy_service, refresh_task_service, service_status_service, site_service, usage_service, AppContext,
 };
 use crate::contracts::{
-    AccountRuntime, DashboardModelsPayload, DailyUsagePoint, GroupRecord, KeyMutationInput,
-    LoginFlowResult, ManagedKeyRecord, OrderRecord, OverviewPayload, PaginatedResult,
-    PaymentConfigRecord, PlatformQuotaPayload, ProfileUpdateInput, SiteRecord,
+    AccountRuntime, AppLaunchMode, DashboardModelsPayload, DailyUsagePoint, DesktopUiPrefs,
+    DesktopUiPrefsPatch, GroupRecord, KeyMutationInput, KeyPatchInput, LoginFlowResult, ManagedKeyRecord,
+    OpenMainWindowPayload, OrderRecord, OverviewPayload, PaginatedResult, PaymentConfigRecord,
+    PlatformQuotaPayload, ProfileUpdateInput, RefreshAccountTaskResponse, RefreshTriggerSource, ServiceStatusPayload, SiteRecord,
     SubscriptionSummaryPayload, UsageRow, UsageStatsRecord, UsageTrendPayload, UserProfileRecord,
 };
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FloatingPanelPositionPayload {
+    pub x: i32,
+    pub y: i32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FloatingContextMenuPayload {
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+}
 
 #[tauri::command]
 pub fn health() -> String {
@@ -20,6 +36,199 @@ pub fn health() -> String {
 #[tauri::command]
 pub fn get_overview(ctx: State<'_, AppContext>) -> Result<OverviewPayload, String> {
     dashboard_service::get_overview(&ctx).map_err(to_message)
+}
+
+#[tauri::command]
+pub async fn get_service_status() -> Result<ServiceStatusPayload, String> {
+    service_status_service::get_service_status()
+        .await
+        .map_err(to_message)
+}
+
+#[tauri::command]
+pub fn get_desktop_ui_prefs(ctx: State<'_, AppContext>) -> Result<DesktopUiPrefs, String> {
+    desktop_ui_service::get_desktop_ui_prefs(&ctx).map_err(to_message)
+}
+
+#[tauri::command]
+pub fn update_desktop_ui_prefs(
+    ctx: State<'_, AppContext>,
+    payload: DesktopUiPrefsPatch,
+) -> Result<DesktopUiPrefs, String> {
+    desktop_ui_service::update_desktop_ui_prefs(&ctx, payload).map_err(to_message)
+}
+
+#[tauri::command]
+pub fn switch_app_mode(
+    app: AppHandle,
+    ctx: State<'_, AppContext>,
+    launch_mode: AppLaunchMode,
+) -> Result<DesktopUiPrefs, String> {
+    let prefs = desktop_ui_service::set_launch_mode(&ctx, launch_mode.clone()).map_err(to_message)?;
+    let main = app.get_webview_window("main");
+    let floating = app.get_webview_window("floating");
+    let floating_panel = app.get_webview_window("floating-panel");
+    match launch_mode {
+        AppLaunchMode::Main => {
+            if let Some(window) = &main {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+            if prefs.open_floating_in_main_mode {
+                if let Some(window) = &floating {
+                    let _ = window.show();
+                }
+            } else {
+                if let Some(window) = &floating {
+                    let _ = window.hide();
+                }
+                if let Some(window) = &floating_panel {
+                    let _ = window.hide();
+                }
+            }
+        }
+        AppLaunchMode::Floating => {
+            if let Some(window) = &main {
+                let _ = window.hide();
+            }
+            if let Some(window) = &floating {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+            if let Some(window) = &floating_panel {
+                let _ = window.hide();
+            }
+        }
+    }
+    let _ = app.emit("desktop-ui-prefs-updated", &prefs);
+    Ok(prefs)
+}
+
+#[tauri::command]
+pub fn set_floating_window_visible(
+    app: AppHandle,
+    ctx: State<'_, AppContext>,
+    visible: bool,
+) -> Result<DesktopUiPrefs, String> {
+    let prefs = desktop_ui_service::update_desktop_ui_prefs(
+        &ctx,
+        DesktopUiPrefsPatch {
+            open_floating_in_main_mode: Some(visible),
+            ..DesktopUiPrefsPatch::default()
+        },
+    )
+    .map_err(to_message)?;
+
+    if let Some(window) = app.get_webview_window("floating") {
+        if visible {
+            let _ = window.show();
+            let _ = window.set_focus();
+        } else {
+            let _ = window.hide();
+        }
+    }
+    if let Some(window) = app.get_webview_window("floating-panel") {
+        let _ = window.hide();
+    }
+
+    let _ = app.emit("desktop-ui-prefs-updated", &prefs);
+    Ok(prefs)
+}
+
+#[tauri::command]
+pub fn set_floating_panel_visible(app: AppHandle, visible: bool) -> Result<bool, String> {
+    if let Some(window) = app.get_webview_window("floating-panel") {
+        if visible {
+            let _ = window.show();
+        } else {
+            let _ = window.hide();
+        }
+    }
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn position_floating_panel(
+    app: AppHandle,
+    payload: FloatingPanelPositionPayload,
+) -> Result<bool, String> {
+    if let Some(window) = app.get_webview_window("floating-panel") {
+        let _ = window.set_position(tauri::LogicalPosition::new(payload.x as f64, payload.y as f64));
+    }
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn show_floating_context_menu(
+    app: AppHandle,
+    payload: Option<FloatingContextMenuPayload>,
+) -> Result<bool, String> {
+    use tauri::{
+        menu::{Menu, MenuItemBuilder},
+        LogicalPosition,
+    };
+
+    const TOGGLE_ID: &str = "floating_context_toggle_panel";
+    const OPEN_MAIN_ID: &str = "floating_context_open_main";
+    const QUIT_ID: &str = "floating_context_quit";
+
+    let window = app
+        .get_webview_window("floating")
+        .ok_or_else(|| "floating window not found".to_string())?;
+    let toggle = MenuItemBuilder::with_id(TOGGLE_ID, "展开/收起快捷面板")
+        .build(&app)
+        .map_err(|error| error.to_string())?;
+    let open_main = MenuItemBuilder::with_id(OPEN_MAIN_ID, "打开主窗口")
+        .build(&app)
+        .map_err(|error| error.to_string())?;
+    let quit = MenuItemBuilder::with_id(QUIT_ID, "退出")
+        .build(&app)
+        .map_err(|error| error.to_string())?;
+    let menu = Menu::with_items(&app, &[&toggle, &open_main, &quit]).map_err(|error| error.to_string())?;
+
+    if let Some(position) = payload.and_then(|value| match (value.x, value.y) {
+        (Some(x), Some(y)) => Some(LogicalPosition::new(x, y)),
+        _ => None,
+    }) {
+        window.popup_menu_at(&menu, position).map_err(|error| error.to_string())?;
+    } else {
+        window.popup_menu(&menu).map_err(|error| error.to_string())?;
+    }
+
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn open_main_window(
+    app: AppHandle,
+    ctx: State<'_, AppContext>,
+    payload: Option<OpenMainWindowPayload>,
+) -> Result<DesktopUiPrefs, String> {
+    let prefs = desktop_ui_service::set_launch_mode(&ctx, AppLaunchMode::Main).map_err(to_message)?;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+        if let Some(next) = payload.as_ref().and_then(|item| item.nav.clone()) {
+            let _ = window.emit("open-nav", next);
+        }
+    }
+    if prefs.open_floating_in_main_mode {
+        if let Some(window) = app.get_webview_window("floating") {
+            let _ = window.show();
+        }
+    }
+    if let Some(window) = app.get_webview_window("floating-panel") {
+        let _ = window.hide();
+    }
+    let _ = app.emit("desktop-ui-prefs-updated", &prefs);
+    Ok(prefs)
+}
+
+#[tauri::command]
+pub fn quit_application(app: AppHandle) -> Result<bool, String> {
+    app.exit(0);
+    Ok(true)
 }
 
 #[tauri::command]
@@ -102,9 +311,18 @@ pub async fn login_account_2fa(
 pub async fn refresh_account(
     ctx: State<'_, AppContext>,
     account_id: String,
-) -> Result<AccountRuntime, String> {
-    auth_service::refresh_account(&ctx, &account_id)
+    trigger_source: Option<RefreshTriggerSource>,
+) -> Result<RefreshAccountTaskResponse, String> {
+    refresh_task_service::refresh_account(
+        &ctx,
+        &account_id,
+        trigger_source.unwrap_or(RefreshTriggerSource::Manual),
+    )
         .await
+        .map(|result| RefreshAccountTaskResponse {
+            account: result.account,
+            run: result.run,
+        })
         .map_err(to_message)
 }
 
@@ -164,7 +382,7 @@ pub async fn update_managed_key(
     ctx: State<'_, AppContext>,
     account_id: String,
     key_id: String,
-    payload: KeyMutationInput,
+    payload: KeyPatchInput,
 ) -> Result<ManagedKeyRecord, String> {
     keys_service::update_managed_key(&ctx, &account_id, &key_id, payload)
         .await

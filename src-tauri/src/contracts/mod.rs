@@ -273,6 +273,42 @@ pub struct AccountRuntime {
     pub last_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RefreshTriggerSource {
+    #[default]
+    Manual,
+    StaleAuto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskRunStatus {
+    Running,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRunRecord {
+    pub id: String,
+    pub account_id: String,
+    pub primary_trigger_source: RefreshTriggerSource,
+    pub status: TaskRunStatus,
+    pub join_count: i64,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshAccountTaskResponse {
+    pub account: AccountRuntime,
+    pub run: TaskRunRecord,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OverviewUsageRow {
@@ -550,6 +586,24 @@ pub struct KeyMutationInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+pub struct KeyPatchInput {
+    pub name: Option<String>,
+    pub group_id: Option<i64>,
+    pub custom_key: Option<String>,
+    pub ip_whitelist: Option<String>,
+    pub ip_blacklist: Option<String>,
+    pub quota: Option<f64>,
+    pub expires_in_days: Option<i64>,
+    pub status: Option<String>,
+    pub rate_limit5h: Option<f64>,
+    pub rate_limit1d: Option<f64>,
+    pub rate_limit7d: Option<f64>,
+    pub reset_quota: Option<bool>,
+    pub reset_rate_limit_usage: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct ProfileUpdateInput {
     pub email: Option<String>,
     pub username: Option<String>,
@@ -644,6 +698,43 @@ pub struct DesktopUiPrefsPatch {
 #[serde(rename_all = "camelCase")]
 pub struct OpenMainWindowPayload {
     pub nav: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceStatusProbeRecord {
+    #[serde(alias = "ts")]
+    pub ts: i64,
+    #[serde(alias = "ok")]
+    pub ok: bool,
+    #[serde(alias = "latency_ms")]
+    pub latency_ms: Option<i64>,
+    #[serde(alias = "error")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceStatusServiceRecord {
+    #[serde(alias = "model")]
+    pub model: String,
+    #[serde(alias = "uptime_pct")]
+    pub uptime_pct: f64,
+    #[serde(alias = "last")]
+    pub last: Option<ServiceStatusProbeRecord>,
+    #[serde(alias = "history")]
+    pub history: Vec<ServiceStatusProbeRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceStatusPayload {
+    #[serde(alias = "all_ok")]
+    pub all_ok: bool,
+    #[serde(alias = "generated_at")]
+    pub generated_at: i64,
+    #[serde(alias = "services")]
+    pub services: Vec<ServiceStatusServiceRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
