@@ -8,6 +8,7 @@ import {
 import { EmptyState } from "../shared/ui/EmptyState";
 import { SectionCard } from "../shared/ui/SectionCard";
 import { SubscriptionList } from "../features/subscriptions/components/SubscriptionList";
+import "../features/subscriptions/components/SubscriptionsPage.css";
 import {
   buildSubscriptionUsageInsights,
   getSubscriptionStatusPresentation
@@ -20,31 +21,28 @@ export function SubscriptionsPage({
   visibleSnapshot: AccountSnapshot | null;
   subscriptionSummary: SubscriptionSummaryPayload | null;
 }) {
+  const summary = subscriptionSummary;
   const subscriptionUsageInsights = buildSubscriptionUsageInsights({
-    summary: subscriptionSummary,
+    summary,
     snapshotSubscriptions: visibleSnapshot?.subscriptions ?? []
   });
 
   return (
-    <section className="content-grid">
-      <SectionCard title="订阅视图" subtitle="当前账号全部订阅与订阅摘要">
-        {visibleSnapshot ? (
-          <SubscriptionList subscriptions={visibleSnapshot.subscriptions} />
-        ) : (
-          <EmptyState title="当前没有订阅数据" detail="先登录并刷新当前账号。" compact />
-        )}
-      </SectionCard>
+    <section className="stack-list subscriptions-page-layout">
       <SectionCard title="订阅摘要" subtitle="对齐 subscriptions/summary 接口">
-        {subscriptionSummary ? (
+        {summary ? (
           <div className="stack-list">
+            <p className="quota-hint subscription-summary-lead">
+              当前只展示订阅接口原生可确认的数据: 金额、日/周/月额度、状态与到期信息。未再展示按 usage 归因的请求数或 Tokens。
+            </p>
             <div className="subscription-summary-grid">
               <div className="summary-stat">
                 <span>活跃订阅数</span>
-                <strong>{subscriptionSummary.activeCount}</strong>
+                <strong>{summary.activeCount}</strong>
               </div>
               <div className="summary-stat">
                 <span>累计已用金额</span>
-                <strong>{formatUsd(subscriptionSummary.totalUsedUsd, 4)}</strong>
+                <strong>{formatUsd(summary.totalUsedUsd, 4)}</strong>
               </div>
               <div className="summary-stat">
                 <span>日额度总量</span>
@@ -66,9 +64,21 @@ export function SubscriptionsPage({
                 <strong>{resolveNearestExpiryLabel(subscriptionUsageInsights.rows)}</strong>
               </div>
             </div>
-            <p className="quota-hint">
-              当前只展示订阅接口原生可确认的数据: 金额、日/周/月额度、状态与到期信息。未再展示按 usage 归因的请求数或 Tokens。
-            </p>
+          </div>
+        ) : (
+          <EmptyState title="当前没有订阅摘要" detail="站点未返回 subscriptions/summary 数据。" compact />
+        )}
+      </SectionCard>
+      <section className="content-grid">
+        <SectionCard title="订阅视图" subtitle="当前账号全部订阅与订阅摘要">
+          {visibleSnapshot ? (
+            <SubscriptionList subscriptions={visibleSnapshot.subscriptions} />
+          ) : (
+            <EmptyState title="当前没有订阅数据" detail="先登录并刷新当前账号。" compact />
+          )}
+        </SectionCard>
+        <SectionCard title="订阅明细" subtitle="按订阅拆分每日、每周、每月额度与到期信息">
+          {summary ? (
             <div className="table-list wide">
               {subscriptionUsageInsights.rows.map((item) => {
                 const statusPresentation = getSubscriptionStatusPresentation(item.status);
@@ -109,11 +119,11 @@ export function SubscriptionsPage({
                 );
               })}
             </div>
-          </div>
-        ) : (
-          <EmptyState title="当前没有订阅摘要" detail="站点未返回 subscriptions/summary 数据。" compact />
-        )}
-      </SectionCard>
+          ) : (
+            <EmptyState title="当前没有订阅摘要" detail="站点未返回 subscriptions/summary 数据。" compact />
+          )}
+        </SectionCard>
+      </section>
     </section>
   );
 }

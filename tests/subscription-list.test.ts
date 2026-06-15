@@ -38,6 +38,8 @@ describe("SubscriptionList quota bar tiers", () => {
     expect(html).toContain("bar-fill quota-tier-80");
     expect(html).toContain("bar-track quota-tier-80");
     expect(html).toContain("width:70.114%");
+    expect(html).toContain("quota-progress-percent quota-tier-80");
+    expect(html).toContain(">70.1%</small>");
     expect(html).toContain("subscription-platform-pill openai");
     expect(html).toContain("status-pill ready");
     expect(html).toContain(">正常</span>");
@@ -103,6 +105,7 @@ describe("SubscriptionList quota bar tiers", () => {
       })
     );
 
+    expect(html).toContain(">0.0%</small>");
     expect(html).toContain("到期情况: 剩余 340 天");
     expect(html).toContain("到期时间: 2027/05/18 22:42:23");
   });

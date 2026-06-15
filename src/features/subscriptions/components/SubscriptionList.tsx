@@ -1,4 +1,8 @@
-import { formatDateTimeFull, formatRemainingDaysLabel } from "../../../shared/lib/formatters";
+import {
+  formatDateTimeFull,
+  formatPercent,
+  formatRemainingDaysLabel
+} from "../../../shared/lib/formatters";
 import { EmptyState } from "../../../shared/ui/EmptyState";
 import {
   getSubscriptionQuotaProgressMeta,
@@ -82,7 +86,12 @@ function renderQuotaWindow(
   return (
     <div className="quota-row">
       <div className="bar-label">
-        <span>{label}</span>
+        <div className="bar-label-copy">
+          <span>{label}</span>
+          <small className={`quota-progress-percent ${progressMeta.tone}`}>
+            {formatPercent(progressMeta.rawPercent, 1)}
+          </small>
+        </div>
         <strong>
           ${windowValue.current.toFixed(2)} / ${windowValue.limit.toFixed(2)}
         </strong>
