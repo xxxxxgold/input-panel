@@ -16,12 +16,14 @@ export function useServiceStatusWorkspace(options: {
   notifyStatusTransition?: (event: ServiceStatusTransitionEvent) => void;
   refreshIntervalMs?: number;
   autoRefresh?: boolean;
+  enabled?: boolean;
 }) {
   const {
     setError,
     notifyStatusTransition,
     refreshIntervalMs = REFRESH_INTERVAL_MS,
-    autoRefresh = true
+    autoRefresh = true,
+    enabled = true
   } = options;
   const [status, setStatus] = useState<ServiceStatusPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -43,6 +45,20 @@ export function useServiceStatusWorkspace(options: {
   }, []);
 
   useEffect(() => {
+    if (!enabled) {
+      if (refreshTimerRef.current !== null) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+      setStatus(null);
+      setLastError(null);
+      setLoading(false);
+      setRefreshing(false);
+      lastReportedRequestErrorRef.current = null;
+      lastKnownHealthRef.current = null;
+      return;
+    }
+
     let cancelled = false;
 
     function syncStatusTransition(next: ServiceStatusPayload, shouldNotify: boolean) {
@@ -117,9 +133,12 @@ export function useServiceStatusWorkspace(options: {
         window.clearTimeout(refreshTimerRef.current);
       }
     };
-  }, [autoRefresh, notifyStatusTransition, refreshIntervalMs, setError]);
+  }, [autoRefresh, enabled, notifyStatusTransition, refreshIntervalMs, setError]);
 
   async function refreshNow() {
+    if (!enabled) {
+      return;
+    }
     if (refreshTimerRef.current !== null) {
       window.clearTimeout(refreshTimerRef.current);
       refreshTimerRef.current = null;

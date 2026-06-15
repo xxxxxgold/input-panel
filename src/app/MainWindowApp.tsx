@@ -98,6 +98,7 @@ export function MainWindowApp() {
   const desktopUi = useDesktopUiPrefs("main");
   const sites = overview?.sites ?? [];
   const accounts = overview?.accounts ?? [];
+  const hasAnyAccount = accounts.length > 0;
   const shellWorkspace = useShellWorkspace({ accounts });
   const accountScopedWorkspace = useAccountScopedWorkspace({
     selectedAccountId,
@@ -124,6 +125,7 @@ export function MainWindowApp() {
   });
   const topbarServiceStatusWorkspace = useServiceStatusWorkspace({
     setError,
+    enabled: hasAnyAccount,
     notifyStatusTransition: (event) => {
       const record = buildServiceStatusNotificationRecord(event);
       pushAppNotification(record);
@@ -425,7 +427,9 @@ export function MainWindowApp() {
   }
 
   const workspaceSubtitle = nav === "serviceStatus"
-    ? "本地服务状态页, 通过本地 /api/service-status 对接远端监控数据"
+    ? hasAnyAccount
+      ? "本地服务状态页, 通过本地 /api/service-status 对接远端监控数据"
+      : "当前还没有账号, 暂不启动服务状态监控"
     : selectedSite
       ? `${selectedSite.name} / ${selectedAccount?.label ?? "未选择账号"}`
       : "请先添加站点与账号";
@@ -451,7 +455,7 @@ export function MainWindowApp() {
           usageStats={usageStats}
         />
       )}
-      {nav === "serviceStatus" && <ServiceStatusPage setError={setError} />}
+      {nav === "serviceStatus" && <ServiceStatusPage setError={setError} enabled={hasAnyAccount} />}
       {nav === "settings" && (
         <SettingsPage
           siteSearch={settingsWorkspace.siteSearch}

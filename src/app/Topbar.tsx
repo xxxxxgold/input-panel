@@ -18,6 +18,7 @@ export function Topbar({
   setTopbarAlertsExpanded,
   topbarAlertsRef,
   topbarAlertPreview,
+  latestUnreadAlertSeverity,
   closeTopbarAccountMenu,
   setTopbarSubscriptionsExpanded,
   topbarSubscriptionsExpanded,
@@ -64,6 +65,7 @@ export function Topbar({
   setTopbarAlertsExpanded: (value: boolean) => void;
   topbarAlertsRef: MutableRefObject<HTMLDivElement | null>;
   topbarAlertPreview: SnapshotAlert[];
+  latestUnreadAlertSeverity: "critical" | "high" | "medium" | "low" | "success" | "info" | null;
   closeTopbarAccountMenu: () => void;
   setTopbarSubscriptionsExpanded: (value: boolean) => void;
   topbarSubscriptionsExpanded: boolean;
@@ -120,6 +122,8 @@ export function Topbar({
   const avatarUrl = selectedAccountAvatarUrl && !avatarLoadFailed ? selectedAccountAvatarUrl : null;
   const serviceStatusRecords = serviceStatus?.services ?? [];
   const serviceStatusOnlineCount = serviceStatusRecords.filter((item) => item.last?.ok).length;
+  const alertBadgeToneClass = resolveAlertBadgeToneClass(latestUnreadAlertSeverity);
+  const serviceStatusUnavailable = !selectedAccount;
 
   function handlePeekMouseEnter(key: "serviceStatus" | "alerts" | "subscriptions") {
     closeTopbarAccountMenu();
@@ -209,24 +213,18 @@ export function Topbar({
                 </div>
                 <div className="topbar-card-copy">
                   <span className="topbar-card-label">服务状态</span>
-                  <strong>
-                    {serviceStatus
-                      ? serviceStatus.allOk
-                        ? `${serviceStatusOnlineCount} / ${serviceStatusRecords.length} 正常`
-                        : `${serviceStatusOnlineCount} / ${serviceStatusRecords.length} 正常, 存在异常`
-                      : "等待同步"}
-                  </strong>
+                  <strong>{serviceStatusUnavailable ? "未配置账号" : serviceStatus ? serviceStatus.allOk ? `${serviceStatusOnlineCount} / ${serviceStatusRecords.length} 正常` : `${serviceStatusOnlineCount} / ${serviceStatusRecords.length} 正常, 存在异常` : "等待同步"}</strong>
                   <p>
-                    {serviceStatus
-                      ? `每 9 秒刷新一次最新探测结果`
-                      : "等待服务状态接口返回"}
+                    {serviceStatusUnavailable ? "先登录一个账号后再自动监控服务状态" : serviceStatus ? `每 9 秒刷新一次最新探测结果` : "等待服务状态接口返回"}
                   </p>
                 </div>
                 <span className="topbar-metric">
-                  {serviceStatus ? `${serviceStatusRecords.length} 模型` : "-"}
+                  {serviceStatusUnavailable ? "-" : serviceStatus ? `${serviceStatusRecords.length} 模型` : "-"}
                 </span>
               </div>
-              {serviceStatusRecords.length > 0 ? (
+              {serviceStatusUnavailable ? (
+                <p className="topbar-alert-empty">未配置账号时不启动服务状态监控</p>
+              ) : serviceStatusRecords.length > 0 ? (
                 <div className="topbar-subscription-list">
                   {serviceStatusRecords.map((service) => (
                     <div key={service.model} className="topbar-subscription-item topbar-service-status-item">
@@ -252,7 +250,7 @@ export function Topbar({
               ) : (
                 <p className="topbar-alert-empty">当前没有服务状态数据</p>
               )}
-              <button type="button" className="topbar-peek-action" onClick={onRefreshServiceStatus}>
+              <button type="button" className="topbar-peek-action" onClick={onRefreshServiceStatus} disabled={serviceStatusUnavailable}>
                 {serviceStatusRefreshing ? "刷新中..." : "立即刷新服务状态"}
               </button>
             </div>
@@ -272,6 +270,12 @@ export function Topbar({
               aria-label="消息盒子"
             >
               <Bell size={18} />
+              {alertBadgeToneClass ? (
+                <span
+                  className={`topbar-alert-badge ${alertBadgeToneClass}`}
+                  aria-hidden="true"
+                />
+              ) : null}
             </button>
             <div className="topbar-card topbar-peek-panel topbar-alert-panel">
               <div className="topbar-alert-head">
@@ -518,4 +522,17 @@ export function Topbar({
       </div>
     </header>
   );
+}
+
+function resolveAlertBadgeToneClass(severity: "critical" | "high" | "medium" | "low" | "success" | "info" | null) {
+  if (!severity) {
+    return null;
+  }
+  if (severity === "critical" || severity === "high") {
+    return "topbar-alert-badge-critical";
+  }
+  if (severity === "success" || severity === "low") {
+    return "topbar-alert-badge-success";
+  }
+  return "topbar-alert-badge-neutral";
 }

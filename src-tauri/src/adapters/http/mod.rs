@@ -10,7 +10,6 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-
 use crate::application::{
     account_service, auth_service, dashboard_service, desktop_ui_service, keys_service,
     profile_service, proxy_service, refresh_task_service, service_status_service, site_service, usage_service, AppContext,
@@ -124,7 +123,10 @@ struct ToggleNotifyEmailBody {
 struct DesktopUiPrefsPatchBody {
     launch_mode: Option<crate::contracts::AppLaunchMode>,
     open_floating_in_main_mode: Option<bool>,
+    keep_floating_panel_visible: Option<bool>,
     close_behavior: Option<crate::contracts::CloseBehavior>,
+    auto_refresh_enabled: Option<bool>,
+    auto_refresh_interval_seconds: Option<i64>,
     theme: Option<String>,
 }
 
@@ -151,6 +153,14 @@ struct FloatingPanelVisibilityBody {
 struct FloatingPanelPositionBody {
     x: i32,
     y: i32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FloatingPanelToastBody {
+    tone: String,
+    message: String,
+    duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -185,6 +195,7 @@ pub fn router(ctx: AppContext) -> Router {
         .route("/api/desktop-ui/floating/context-menu", post(show_floating_context_menu))
         .route("/api/desktop-ui/floating-panel/visibility", post(set_floating_panel_visible))
         .route("/api/desktop-ui/floating-panel/position", post(position_floating_panel))
+        .route("/api/desktop-ui/floating-panel/toast", post(push_floating_panel_toast))
         .route("/api/desktop-ui/open-main", post(open_main_window))
         .route("/api/desktop-ui/quit", post(quit_application))
         .route("/api/sites", post(create_site))
@@ -275,7 +286,10 @@ async fn update_desktop_ui_prefs(
         crate::contracts::DesktopUiPrefsPatch {
             launch_mode: payload.launch_mode,
             open_floating_in_main_mode: payload.open_floating_in_main_mode,
+            keep_floating_panel_visible: payload.keep_floating_panel_visible,
             close_behavior: payload.close_behavior,
+            auto_refresh_enabled: payload.auto_refresh_enabled,
+            auto_refresh_interval_seconds: payload.auto_refresh_interval_seconds,
             theme: payload.theme,
         },
     ))
@@ -317,6 +331,13 @@ async fn position_floating_panel(
     Json(payload): Json<FloatingPanelPositionBody>,
 ) -> impl IntoResponse {
     (StatusCode::OK, Json(json!({ "x": payload.x, "y": payload.y }))).into_response()
+}
+
+async fn push_floating_panel_toast(
+    Json(payload): Json<FloatingPanelToastBody>,
+) -> impl IntoResponse {
+    let _ = payload;
+    (StatusCode::OK, Json(json!(true))).into_response()
 }
 
 async fn open_main_window(
