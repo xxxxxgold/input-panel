@@ -39,6 +39,9 @@ export function OverviewPage({
   visibleSnapshot: AccountRuntime["snapshot"] | null;
   alertCount: number;
 }) {
+  const balanceHint = buildOverviewBalanceHint(overview);
+  const alertsHint = buildOverviewAlertsHint(overview);
+
   return (
     <>
       <section className="metric-grid">
@@ -47,7 +50,7 @@ export function OverviewPage({
           value={`$${overview.totals.balance.toFixed(2)}`}
           accent="emerald"
           icon={<BadgeDollarSign size={18} />}
-          hint="聚合所有已登录账号 · 悬浮查看账号"
+          hint={balanceHint}
           detailTitle="各账号余额"
           detail={renderOverviewMetricDetails(overview, "balance")}
         />
@@ -56,7 +59,7 @@ export function OverviewPage({
           value={overview.totals.todayRequests.toLocaleString()}
           accent="sky"
           icon={<LayoutDashboard size={18} />}
-          hint={`累计 ${overview.totals.totalRequests.toLocaleString()} · 悬浮查看账号`}
+          hint={`累计 ${overview.totals.totalRequests.toLocaleString()}`}
           detailTitle="各账号今日请求"
           detail={renderOverviewMetricDetails(overview, "todayRequests")}
         />
@@ -65,7 +68,7 @@ export function OverviewPage({
           value={`$${overview.totals.todayActualCost.toFixed(4)}`}
           accent="violet"
           icon={<ChartColumn size={18} />}
-          hint={`累计 $${overview.totals.totalActualCost.toFixed(4)} · 悬浮查看账号`}
+          hint={`累计 $${overview.totals.totalActualCost.toFixed(4)}`}
           detailTitle="各账号今日实际成本"
           detail={renderOverviewMetricDetails(overview, "todayActualCost")}
           detailPanelAlign="end"
@@ -75,7 +78,7 @@ export function OverviewPage({
           value={`${overview.totals.activeApiKeys}`}
           accent="amber"
           icon={<KeyRound size={18} />}
-          hint={`总数 ${overview.totals.totalApiKeys} · 悬浮查看账号`}
+          hint={`总数 ${overview.totals.totalApiKeys}`}
           detailTitle="各账号 Key 状态"
           detail={renderOverviewMetricDetails(overview, "activeApiKeys")}
         />
@@ -84,7 +87,7 @@ export function OverviewPage({
           value={compact(overview.totals.todayTokens)}
           accent="indigo"
           icon={<MonitorDot size={18} />}
-          hint={`累计 ${compact(overview.totals.totalTokens)} · 悬浮查看账号`}
+          hint={`累计 ${compact(overview.totals.totalTokens)}`}
           detailTitle="各账号今日 Tokens"
           detail={renderOverviewMetricDetails(overview, "todayTokens")}
         />
@@ -93,7 +96,7 @@ export function OverviewPage({
           value={String(alertCount)}
           accent="rose"
           icon={<ShieldAlert size={18} />}
-          hint="低余额、会话失效、拉取失败 · 悬浮查看账号"
+          hint={alertsHint}
           detailTitle="各账号异常数"
           detail={renderOverviewMetricDetails(overview, "alerts")}
           detailPanelAlign="end"
@@ -128,23 +131,24 @@ export function OverviewPage({
       </section>
 
       <section className="content-grid">
-        <SectionCard title="异常优先" subtitle="当前需要关注的问题">
-          <div className="stack-list">
-            {overview.alerts.slice(0, 8).map((alert) => (
-              <div key={alert.id} className={`alert-item ${alert.severity}`}>
-                <div>
-                  <strong>{alert.title}</strong>
-                  <p>{alert.detail}</p>
-                </div>
-                <span>{formatTime(alert.createdAt)}</span>
-              </div>
-            ))}
-            {overview.alerts.length === 0 && (
-              <EmptyState title="当前没有异常" detail="最近一次聚合已经成功完成。" compact />
-            )}
-          </div>
+        <SectionCard title="全部订阅" subtitle="当前账号返回的全部套餐与额度窗口">
+          {visibleSnapshot ? (
+            <SubscriptionList subscriptions={visibleSnapshot.subscriptions} />
+          ) : (
+            <EmptyState title="当前没有订阅数据" detail="该账号未返回有效订阅或套餐信息。" compact />
+          )}
         </SectionCard>
 
+        <SectionCard title="全部 API Keys" subtitle="状态、最近使用、额度与限流摘要">
+          {visibleSnapshot ? (
+            <ApiKeyList keys={visibleSnapshot.keys} />
+          ) : (
+            <EmptyState title="还没有 Key 快照" detail="登录并刷新后这里会展示 key 列表。" compact />
+          )}
+        </SectionCard>
+      </section>
+
+      <section className="content-grid">
         <SectionCard title="最近使用" subtitle="当前选中账号的近期调用">
           <div className="table-list">
             {visibleSnapshot?.recentUsage.slice(0, 8).map((row) => (
@@ -165,30 +169,39 @@ export function OverviewPage({
           </div>
         </SectionCard>
       </section>
-
-      <section className="content-grid">
-        <SectionCard title="全部订阅" subtitle="当前账号返回的全部套餐与额度窗口">
-          {visibleSnapshot ? (
-            <SubscriptionList subscriptions={visibleSnapshot.subscriptions} />
-          ) : (
-            <EmptyState title="当前没有订阅数据" detail="该账号未返回有效订阅或套餐信息。" compact />
-          )}
-        </SectionCard>
-
-        <SectionCard title="全部 API Keys" subtitle="状态、最近使用、额度与限流摘要">
-          {visibleSnapshot ? (
-            <ApiKeyList keys={visibleSnapshot.keys} />
-          ) : (
-            <EmptyState title="还没有 Key 快照" detail="登录并刷新后这里会展示 key 列表。" compact />
-          )}
-        </SectionCard>
-      </section>
     </>
   );
 }
 
 function formatOverviewAccountSource(account: AccountRuntime) {
   return `${account.site?.name ?? account.snapshot?.siteName ?? "未命名站点"} / ${account.label}`;
+}
+
+function buildOverviewBalanceHint(overview: OverviewPayload) {
+  const richestAccount = overview.accounts
+    .filter((account) => account.snapshot)
+    .sort((left, right) => {
+      const balanceDiff = (right.snapshot?.balance ?? Number.NEGATIVE_INFINITY) - (left.snapshot?.balance ?? Number.NEGATIVE_INFINITY);
+      if (balanceDiff !== 0) {
+        return balanceDiff;
+      }
+      return left.label.localeCompare(right.label, "zh-CN");
+    })[0];
+
+  if (!richestAccount?.snapshot) {
+    return "当前没有可展示的账号余额";
+  }
+
+  return `${richestAccount.label} 余额最高, $${richestAccount.snapshot.balance.toFixed(2)}`;
+}
+
+function buildOverviewAlertsHint(overview: OverviewPayload) {
+  const latestAlert = overview.alerts[0];
+  if (!latestAlert) {
+    return "当前没有新的异常通知";
+  }
+
+  return `最新: ${latestAlert.title}`;
 }
 
 function buildOverviewMetricDetails(overview: OverviewPayload, kind: OverviewMetricDetailKind) {
