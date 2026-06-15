@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { runSiteCardAction, SettingsPage } from "../src/pages/SettingsPage";
+import { runSiteAccountRowAction, runSiteCardAction, SettingsPage } from "../src/pages/SettingsPage";
 import type { AccountRuntime, SiteRecord } from "../src/types";
 
 const site: SiteRecord = {
@@ -99,6 +99,20 @@ describe("SettingsPage site detail panel", () => {
     expect(html).not.toContain("请求记录详情");
     expect(html).not.toContain("本地累计请求记录");
     expect(html).not.toContain("本次最新拉取");
+  });
+
+  it("treats site account rows as select-on-click and edit-on-double-click", () => {
+    const calls: string[] = [];
+    const actions = runSiteAccountRowAction({
+      account,
+      onSelectAccount: (nextAccount) => calls.push(`select:${nextAccount.id}`),
+      onEditAccount: (nextAccount) => calls.push(`edit:${nextAccount.id}`)
+    });
+
+    actions.handleClick();
+    actions.handleDoubleClick();
+
+    expect(calls).toEqual([`select:${account.id}`, `edit:${account.id}`]);
   });
 
   it("opens account manager on single click when the site card is already selected", () => {
