@@ -5396,8 +5396,9 @@ html.carbon-amber-terminal {
 
 @media (max-width: 1200px) {
   .global-topbar {
-    flex-direction: column;
-    align-items: stretch;
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: nowrap;
   }
 
   .analytics-lab-meta-grid,
@@ -5419,7 +5420,17 @@ html.carbon-amber-terminal {
 
   .topbar-leading,
   .global-topbar-actions {
-    width: 100%;
+    width: auto;
+  }
+
+  .topbar-leading {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .global-topbar-actions {
+    min-width: 0;
+    margin-left: auto;
   }
 
   .metric-grid,
@@ -5482,13 +5493,34 @@ html.carbon-amber-terminal {
     padding: 18px;
   }
 
+  .global-topbar {
+    flex-wrap: nowrap;
+  }
+
   .global-topbar-actions,
   .workspace-header-summary {
     width: 100%;
   }
 
+  .topbar-leading,
   .global-topbar-actions {
+    width: auto;
+    min-width: 0;
     justify-content: flex-end;
+  }
+
+  .topbar-clock-card {
+    min-width: 0;
+    width: auto;
+    padding-inline: 10px;
+  }
+
+  .topbar-clock-time {
+    display: none;
+  }
+
+  .topbar-clock-copy {
+    gap: 0;
   }
 
   .usage-pagination {
@@ -5519,15 +5551,16 @@ html.carbon-amber-terminal {
 
   .topbar-clock-card {
     min-width: 0;
-    width: 100%;
+    width: auto;
+    max-width: 100%;
   }
 
   .topbar-clock-time {
-    font-size: 17px;
+    display: none;
   }
 
   .topbar-clock-copy {
-    gap: 8px;
+    gap: 0;
   }
 
   .alert-inbox-item,
