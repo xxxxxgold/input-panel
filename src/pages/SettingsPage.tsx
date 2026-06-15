@@ -1,13 +1,32 @@
 import type { KeyboardEvent } from "react";
 import { Plus } from "lucide-react";
 
-import type { AccountRuntime, SiteRecord, UsageHistoryRow } from "../types";
+import type { AccountRuntime, SiteRecord } from "../types";
 import { formatTime } from "../shared/lib/formatters";
 import { DetailItem } from "../shared/ui/DetailItem";
 import { EmptyState } from "../shared/ui/EmptyState";
 import { SectionCard } from "../shared/ui/SectionCard";
+import { StatusBadge } from "../shared/ui/StatusBadge";
 import { ApiKeyList } from "../features/keys/components/ApiKeyList";
 import { SubscriptionList } from "../features/subscriptions/components/SubscriptionList";
+
+export function runSiteCardAction({
+  site,
+  selectedSiteId,
+  onSelectSite,
+  onOpenSiteAccountManager
+}: {
+  site: SiteRecord;
+  selectedSiteId: string | null;
+  onSelectSite: (siteId: string) => void;
+  onOpenSiteAccountManager: (site: SiteRecord) => void;
+}) {
+  if (selectedSiteId === site.id) {
+    onOpenSiteAccountManager(site);
+    return;
+  }
+  onSelectSite(site.id);
+}
 
 export function SettingsPage({
   siteSearch,
@@ -16,11 +35,8 @@ export function SettingsPage({
   accounts,
   selectedSite,
   visibleSnapshot,
-  visibleHistory,
-  latestHistory,
-  selectedHistoryRow,
-  onSelectHistoryRow,
   onOpenNewSite,
+  onSelectSite,
   onOpenSiteAccountManager,
   onOpenEditSite,
   onRemoveSite,
@@ -34,11 +50,8 @@ export function SettingsPage({
   accounts: AccountRuntime[];
   selectedSite: SiteRecord | null;
   visibleSnapshot: AccountRuntime["snapshot"] | null;
-  visibleHistory: UsageHistoryRow[];
-  latestHistory: UsageHistoryRow[];
-  selectedHistoryRow: UsageHistoryRow | null;
-  onSelectHistoryRow: (row: UsageHistoryRow) => void;
   onOpenNewSite: () => void;
+  onSelectSite: (siteId: string) => void;
   onOpenSiteAccountManager: (site: SiteRecord) => void;
   onOpenEditSite: (site: SiteRecord) => void;
   onRemoveSite: (siteId: string) => void;
@@ -46,6 +59,14 @@ export function SettingsPage({
   onOpenAccountManager: (account: AccountRuntime) => void;
   handleActionKey: (event: KeyboardEvent<HTMLElement>, action: () => void) => void;
 }) {
+  const selectedSiteAccounts = selectedSite ? accounts.filter((item) => item.siteId === selectedSite.id) : [];
+  const selectedSiteBalance = selectedSiteAccounts.reduce((sum, item) => sum + (item.snapshot?.balance ?? 0), 0);
+  const selectedSiteReadyCount = selectedSiteAccounts.filter((item) => item.sessionState === "ready").length;
+  const selectedSiteLatestFetchedAt = selectedSiteAccounts
+    .map((item) => item.snapshot?.fetchedAt ?? null)
+    .filter((value): value is string => Boolean(value))
+    .sort((left, right) => right.localeCompare(left))[0] ?? null;
+
   return (
     <>
       <section className="management-grid">
@@ -70,15 +91,27 @@ export function SettingsPage({
                 const siteAccounts = accounts.filter((item) => item.siteId === site.id);
                 const siteBalance = siteAccounts.reduce((sum, item) => sum + (item.snapshot?.balance ?? 0), 0);
                 const activeCount = siteAccounts.filter((item) => item.sessionState === "ready").length;
+                const siteCardSelected = selectedSite?.id === site.id;
+                const siteCardTitle = siteCardSelected
+                  ? `打开 ${site.name} 的账号管理`
+                  : `选中 ${site.name} 并查看下方详情`;
+                const handleSiteCardAction = () =>
+                  runSiteCardAction({
+                    site,
+                    selectedSiteId: selectedSite?.id ?? null,
+                    onSelectSite,
+                    onOpenSiteAccountManager
+                  });
                 return (
                   <div
                     key={site.id}
-                    className={`context-card ${selectedSite?.id === site.id ? "selected" : ""}`}
-                    onClick={() => onOpenSiteAccountManager(site)}
-                    onKeyDown={(event) => handleActionKey(event, () => onOpenSiteAccountManager(site))}
+                    className={`context-card ${siteCardSelected ? "selected" : ""}`}
+                    onClick={handleSiteCardAction}
+                    onKeyDown={(event) => handleActionKey(event, handleSiteCardAction)}
                     role="button"
+                    aria-pressed={siteCardSelected}
                     tabIndex={0}
-                    title={`打开 ${site.name} 的站点详情`}
+                    title={siteCardTitle}
                   >
                     <div className="context-card-head">
                       <strong>{site.name}</strong>
@@ -115,6 +148,95 @@ export function SettingsPage({
                 <EmptyState title="还没有站点" detail="先添加第一个 Sub2API 站点。" compact />
               )}
             </div>
+            <div className="request-detail-card site-detail-card">
+              {selectedSite ? (
+                <>
+                  <div className="request-detail-head site-detail-head">
+                    <div>
+                      <strong>{selectedSite.name}</strong>
+                      <p>{selectedSite.baseUrl}</p>
+                    </div>
+                    <div className="inline-actions wrap-actions">
+                      <button type="button" className="inline-text-button" onClick={() => onOpenEditSite(selectedSite)}>
+                        编辑站点
+                      </button>
+                      <button
+                        type="button"
+                        className="inline-text-button"
+                        onClick={() => onOpenNewAccount(selectedSite.id)}
+                      >
+                        加账号
+                      </button>
+                      <button
+                        type="button"
+                        className="inline-text-button"
+                        onClick={() => onOpenSiteAccountManager(selectedSite)}
+                      >
+                        管理账号
+                      </button>
+                    </div>
+                  </div>
+                  <div className="request-detail-grid site-detail-grid">
+                    <DetailItem label="站点 URL" value={selectedSite.baseUrl} />
+                    <DetailItem label="账号总数" value={String(selectedSiteAccounts.length)} />
+                    <DetailItem label="已连接账号" value={String(selectedSiteReadyCount)} />
+                    <DetailItem label="站点余额汇总" value={`$${selectedSiteBalance.toFixed(2)}`} />
+                    <DetailItem
+                      label="最近同步"
+                      value={selectedSiteLatestFetchedAt ? formatTime(selectedSiteLatestFetchedAt) : "当前还没有同步记录"}
+                    />
+                    <DetailItem
+                      label="当前账号详情联动"
+                      value={selectedSiteAccounts.length > 0 ? "下方账号详情会跟随当前站点切换" : "先为当前站点添加账号"}
+                    />
+                  </div>
+                  <div className="site-account-list">
+                    <div className="section-mini-title">当前站点账号</div>
+                    <div className="table-list wide">
+                      {selectedSiteAccounts.map((account) => (
+                        <div
+                          key={account.id}
+                          className="table-row wide account-row-trigger site-account-row"
+                          onClick={() => onOpenAccountManager(account)}
+                          onKeyDown={(event) => handleActionKey(event, () => onOpenAccountManager(account))}
+                          role="button"
+                          tabIndex={0}
+                          title={`打开 ${account.label} 的账号管理`}
+                        >
+                          <div className="row-main">
+                            <strong>{account.label}</strong>
+                            <p>{account.email}</p>
+                            <small>{account.snapshot ? `最近同步 ${formatTime(account.snapshot.fetchedAt)}` : "当前还没有同步"}</small>
+                          </div>
+                          <div className="row-meta">
+                            <span>余额 {account.snapshot ? `$${account.snapshot.balance.toFixed(2)}` : "-"}</span>
+                            <span>Keys {account.snapshot?.stats.totalApiKeys ?? 0} / 活跃 {account.snapshot?.stats.activeApiKeys ?? 0}</span>
+                          </div>
+                          <div className="row-actions">
+                            <StatusBadge state={account.sessionState} />
+                            <button
+                              type="button"
+                              className="inline-text-button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                onOpenAccountManager(account);
+                              }}
+                            >
+                              打开
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                      {selectedSiteAccounts.length === 0 && (
+                        <EmptyState title="当前站点还没有账号" detail="先在这个站点下添加一个账号。" compact />
+                      )}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <EmptyState title="先选择一个站点" detail="点击上面的站点卡片, 这里会展示该站点的基础信息和账号列表。" compact />
+              )}
+            </div>
           </div>
         </SectionCard>
       </section>
@@ -144,94 +266,9 @@ export function SettingsPage({
                 <ApiKeyList keys={visibleSnapshot.keys} />
               </div>
             </div>
-            <div className="summary-stat">
-              <span>本地累计请求记录</span>
-              <strong>{visibleHistory.length}</strong>
-            </div>
-            <div className="summary-stat">
-              <span>本次最新拉取</span>
-              <strong>{latestHistory.length}</strong>
-            </div>
           </div>
         ) : (
           <EmptyState title="还没有当前账号详情" detail="先登录并刷新当前账号。" compact />
-        )}
-      </SectionCard>
-
-      <SectionCard title="请求记录详情" subtitle="本地累计存储, 新数据会持续追加并标记是否为本次最新">
-        {visibleSnapshot ? (
-          <div className="stack-list">
-            <div className="detail-toolbar">
-              <div className="summary-stat compact-stat">
-                <span>最后刷新</span>
-                <strong>{formatTime(visibleSnapshot.fetchedAt)}</strong>
-              </div>
-              <div className="summary-stat compact-stat">
-                <span>最新命中</span>
-                <strong>{latestHistory.length}</strong>
-              </div>
-            </div>
-            <div className="table-list">
-              {visibleHistory.slice(0, 16).map((row) => (
-                <button
-                  key={`${row.id}-${row.firstSeenAt}`}
-                  type="button"
-                  className={`history-row ${selectedHistoryRow?.id === row.id ? "selected" : ""}`}
-                  onClick={() => onSelectHistoryRow(row)}
-                >
-                  <div className="history-main">
-                    <div className="history-title-row">
-                      <strong>{row.model}</strong>
-                      <span className={`latest-pill ${row.isLatest ? "yes" : "no"}`}>
-                        {row.isLatest ? "最新" : "历史"}
-                      </span>
-                    </div>
-                    <p>{row.apiKeyName ?? "未知 Key"} / {row.endpoint ?? "-"}</p>
-                    <small>
-                      请求时间 {formatTime(row.createdAt)} · 首次入库 {formatTime(row.firstSeenAt)}
-                    </small>
-                  </div>
-                  <div className="table-numbers">
-                    <strong>${row.actualCost.toFixed(5)}</strong>
-                    <span>{row.totalTokens.toLocaleString()} tokens</span>
-                    <span>{row.platform ?? "unknown"}</span>
-                  </div>
-                </button>
-              ))}
-              {visibleHistory.length === 0 && (
-                <EmptyState title="还没有请求记录" detail="下一次刷新成功后会把 usage 记录写入本地历史。" compact />
-              )}
-            </div>
-            {selectedHistoryRow && (
-              <div className="request-detail-card">
-                <div className="request-detail-head">
-                  <div>
-                    <strong>{selectedHistoryRow.model}</strong>
-                    <p>{selectedHistoryRow.subscriptionName ?? "未关联订阅"} / {selectedHistoryRow.platform ?? "unknown"}</p>
-                  </div>
-                  <span className={`latest-pill ${selectedHistoryRow.isLatest ? "yes" : "no"}`}>
-                    {selectedHistoryRow.isLatest ? "当前最新数据" : "本地历史数据"}
-                  </span>
-                </div>
-                <div className="request-detail-grid">
-                  <DetailItem label="请求时间" value={formatTime(selectedHistoryRow.createdAt)} />
-                  <DetailItem label="首次入库" value={formatTime(selectedHistoryRow.firstSeenAt)} />
-                  <DetailItem label="最后命中" value={formatTime(selectedHistoryRow.lastSeenAt)} />
-                  <DetailItem label="API Key" value={selectedHistoryRow.apiKeyName ?? "未知"} />
-                  <DetailItem label="Endpoint" value={selectedHistoryRow.endpoint ?? "-"} />
-                  <DetailItem label="实际成本" value={`$${selectedHistoryRow.actualCost.toFixed(6)}`} />
-                  <DetailItem label="标准成本" value={`$${selectedHistoryRow.totalCost.toFixed(6)}`} />
-                  <DetailItem label="输入 Tokens" value={selectedHistoryRow.inputTokens.toLocaleString()} />
-                  <DetailItem label="输出 Tokens" value={selectedHistoryRow.outputTokens.toLocaleString()} />
-                  <DetailItem label="总 Tokens" value={selectedHistoryRow.totalTokens.toLocaleString()} />
-                  <DetailItem label="首 Token 延迟" value={selectedHistoryRow.firstTokenMs ? `${selectedHistoryRow.firstTokenMs} ms` : "-"} />
-                  <DetailItem label="总耗时" value={selectedHistoryRow.durationMs ? `${selectedHistoryRow.durationMs} ms` : "-"} />
-                </div>
-              </div>
-            )}
-          </div>
-        ) : (
-          <EmptyState title="还没有请求记录详情" detail="先登录并刷新当前账号, 这里会展示本地累积的请求历史。" compact />
         )}
       </SectionCard>
     </>

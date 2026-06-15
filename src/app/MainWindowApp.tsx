@@ -15,7 +15,14 @@ import { useAccountScopedWorkspace } from "../features/accounts/useAccountScoped
 import { AccountWorkspaceModals } from "../features/accounts/components/AccountWorkspaceModals";
 import { useAccountWorkspace } from "../features/accounts/useAccountWorkspace";
 import { AlertInboxModal, type AlertInboxItem } from "../features/overview/components/AlertInboxModal";
+import type { NotificationInboxItem } from "../features/overview/components/AlertInboxModal";
 import { useProfileWorkspace } from "../features/profile/useProfileWorkspace";
+import { useServiceStatusWorkspace } from "../features/service-status/useServiceStatusWorkspace";
+import {
+  buildServiceStatusNotificationRecord,
+  buildServiceStatusTestNotification,
+  sendAppNotification
+} from "../features/service-status/notifications";
 import { useSettingsWorkspace } from "../features/settings/useSettingsWorkspace";
 import { useUsageWorkspace } from "../features/usage/useUsageWorkspace";
 import { useDesktopUiPrefs } from "../features/desktop-ui/useDesktopUiPrefs";
@@ -67,6 +74,8 @@ export function MainWindowApp() {
   const error = useMonitorStore((state) => state.error);
   const setError = useMonitorStore((state) => state.setError);
   const toasts = useMonitorStore((state) => state.toasts);
+  const appNotifications = useMonitorStore((state) => state.appNotifications);
+  const pushAppNotification = useMonitorStore((state) => state.pushAppNotification);
   const dismissToast = useMonitorStore((state) => state.dismissToast);
   const selectedSiteId = useMonitorStore((state) => state.selectedSiteId);
   const setSelectedSiteId = useMonitorStore((state) => state.setSelectedSiteId);
@@ -99,6 +108,16 @@ export function MainWindowApp() {
     loadOverview,
     setBusyText,
     setError
+  });
+  const topbarServiceStatusWorkspace = useServiceStatusWorkspace({
+    setError,
+    notifyStatusTransition: (event) => {
+      const record = buildServiceStatusNotificationRecord(event);
+      pushAppNotification(record);
+      void sendAppNotification(record);
+      setError(event.detail);
+    },
+    refreshIntervalMs: 9000
   });
   const {
     usageApiKeyFilter,
@@ -197,10 +216,8 @@ export function MainWindowApp() {
     sites.find((item) => item.id === selectedSiteId) ??
     (selectedAccount ? sites.find((item) => item.id === selectedAccount.siteId) ?? null : null);
   const visibleSnapshot = selectedAccount?.snapshot ?? null;
-  const visibleHistory = visibleSnapshot?.requestHistory ?? [];
   const settingsWorkspace = useSettingsWorkspace({
-    sites,
-    visibleHistory
+    sites
   });
   const alertCount = overview?.alerts.length ?? 0;
   const topbarAlertPreview = overview?.alerts.slice(0, 3) ?? [];
@@ -245,6 +262,33 @@ export function MainWindowApp() {
       siteName: site?.name ?? null
     };
   });
+  const inboxItems: NotificationInboxItem[] = [
+    ...appNotifications.map((item) => ({
+      source: item.source,
+      id: item.id,
+      severity: item.severity,
+      title: item.title,
+      detail: item.detail,
+      createdAt: item.createdAt,
+      models: item.models
+    })),
+    ...alertInboxItems.map((item) => ({
+      source: "overview-alert" as const,
+      id: item.id,
+      severity: item.severity,
+      title: item.title,
+      detail: item.detail,
+      createdAt: item.createdAt,
+      siteName: item.siteName,
+      accountLabel: item.accountLabel
+    }))
+  ].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
+
+  function handleTestNotification(kind: "down" | "recovered") {
+    const notification = buildServiceStatusTestNotification(kind);
+    pushAppNotification(notification);
+    void sendAppNotification(notification);
+  }
 
   useEffect(() => {
     if (!selectedAccountId) {
@@ -267,7 +311,8 @@ export function MainWindowApp() {
       return;
     }
     void accountWorkspace.handleRefreshAccount(selectedAccount.id, {
-      silent: true
+      silent: true,
+      triggerSource: "stale_auto"
     });
   }, [nav, selectedAccount]);
 
@@ -342,11 +387,8 @@ export function MainWindowApp() {
           accounts={accounts}
           selectedSite={selectedSite}
           visibleSnapshot={visibleSnapshot}
-          visibleHistory={visibleHistory}
-          latestHistory={settingsWorkspace.latestHistory}
-          selectedHistoryRow={settingsWorkspace.selectedHistoryRow}
-          onSelectHistoryRow={settingsWorkspace.setSelectedHistoryRow}
           onOpenNewSite={accountWorkspace.openNewSite}
+          onSelectSite={setSelectedSiteId}
           onOpenSiteAccountManager={accountWorkspace.openSiteAccountManager}
           onOpenEditSite={accountWorkspace.openEditSite}
           onRemoveSite={(siteId) => void accountWorkspace.handleRemoveSite(siteId)}
@@ -444,6 +486,7 @@ export function MainWindowApp() {
           desktopUiLoading={desktopUi.loading}
           onLaunchModeChange={(value) => void desktopUi.handleSwitchMode(value)}
           onFloatingVisibleChange={(value) => void desktopUi.handleFloatingVisible(value)}
+          onFloatingPanelPinnedChange={(value) => void desktopUi.patchPrefs({ keepFloatingPanelVisible: value })}
           onCloseBehaviorChange={(value) => void desktopUi.handleRememberCloseBehavior(value)}
         />
       )}
@@ -482,6 +525,11 @@ export function MainWindowApp() {
                       successMessage: "总览已刷新"
                     })
               }
+              serviceStatus={topbarServiceStatusWorkspace.status}
+              serviceStatusRefreshing={topbarServiceStatusWorkspace.refreshing}
+              topbarServiceStatusExpanded={shellWorkspace.topbarServiceStatusExpanded}
+              setTopbarServiceStatusExpanded={shellWorkspace.setTopbarServiceStatusExpanded}
+              topbarServiceStatusRef={shellWorkspace.topbarServiceStatusRef}
               alertCount={alertCount}
               topbarAlertsExpanded={shellWorkspace.topbarAlertsExpanded}
               setTopbarAlertsExpanded={shellWorkspace.setTopbarAlertsExpanded}
@@ -491,12 +539,17 @@ export function MainWindowApp() {
               setTopbarSubscriptionsExpanded={shellWorkspace.setTopbarSubscriptionsExpanded}
               topbarSubscriptionsExpanded={shellWorkspace.topbarSubscriptionsExpanded}
               topbarSubscriptionsRef={shellWorkspace.topbarSubscriptionsRef}
+              previewTopbarPeek={shellWorkspace.previewTopbarPeek}
+              clearTopbarPeekPreview={shellWorkspace.clearTopbarPeekPreview}
+              toggleTopbarPeek={shellWorkspace.toggleTopbarPeek}
               usageStatusLabel={usageStatusLabel}
               usageStatusHint={usageStatusHint}
               subscriptionSpend={subscriptionSpend}
               subscriptionCount={subscriptionCount}
               subscriptionPreviewRecords={mergedTopbarSubscriptions}
               closeTopbarPeekPanels={shellWorkspace.closeTopbarPeekPanels}
+              onRefreshServiceStatus={() => void topbarServiceStatusWorkspace.refreshNow()}
+              onTriggerTestNotification={handleTestNotification}
               onOpenAlerts={() => {
                 shellWorkspace.closeTopbarPeekPanels();
                 setAlertInboxOpen(true);
@@ -584,7 +637,7 @@ export function MainWindowApp() {
         />
         {alertInboxOpen && (
           <AlertInboxModal
-            alerts={alertInboxItems}
+            items={inboxItems}
             onClose={() => setAlertInboxOpen(false)}
           />
         )}
