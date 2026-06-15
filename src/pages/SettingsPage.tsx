@@ -28,12 +28,28 @@ export function runSiteCardAction({
   onSelectSite(site.id);
 }
 
+export function runSiteAccountRowAction({
+  account,
+  onSelectAccount,
+  onEditAccount
+}: {
+  account: AccountRuntime;
+  onSelectAccount: (account: AccountRuntime) => void;
+  onEditAccount: (account: AccountRuntime) => void;
+}) {
+  return {
+    handleClick: () => onSelectAccount(account),
+    handleDoubleClick: () => onEditAccount(account)
+  };
+}
+
 export function SettingsPage({
   siteSearch,
   onSiteSearchChange,
   filteredSites,
   accounts,
   selectedSite,
+  selectedAccountId,
   visibleSnapshot,
   onOpenNewSite,
   onSelectSite,
@@ -41,7 +57,8 @@ export function SettingsPage({
   onOpenEditSite,
   onRemoveSite,
   onOpenNewAccount,
-  onOpenAccountManager,
+  onSelectAccount,
+  onEditAccount,
   handleActionKey
 }: {
   siteSearch: string;
