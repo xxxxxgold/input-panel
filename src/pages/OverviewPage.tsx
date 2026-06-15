@@ -192,7 +192,7 @@ function buildOverviewBalanceHint(overview: OverviewPayload) {
     return "当前没有可展示的账号余额";
   }
 
-  return `${richestAccount.label} 余额最高, $${richestAccount.snapshot.balance.toFixed(2)}`;
+  return `${richestAccount.label} $${richestAccount.snapshot.balance.toFixed(2)}`;
 }
 
 function buildOverviewAlertsHint(overview: OverviewPayload) {
