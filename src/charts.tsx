@@ -306,11 +306,11 @@ function readChartPalette() {
   if (typeof window === "undefined") {
     return {
       accent: "#68c4ba",
-      secondary: "#7aa2ff",
-      warning: "#eab308",
+      secondary: "#5e8cff",
+      warning: "#e3a62c",
       rose: "#d6455f",
-      indigo: "#7c3aed",
-      sky: "#0ea5e9",
+      indigo: "#8d78ff",
+      sky: "#4fc8f0",
       textSoft: "#6a778d",
       border: "rgba(16, 24, 38, 0.12)",
       grid: "rgba(16, 24, 38, 0.08)"
@@ -319,11 +319,11 @@ function readChartPalette() {
   const style = getComputedStyle(document.documentElement);
   return {
     accent: style.getPropertyValue("--accent").trim() || "#68c4ba",
-    secondary: "#7aa2ff",
-    warning: "#eab308",
+    secondary: style.getPropertyValue("--chart-2").trim() || "#5e8cff",
+    warning: style.getPropertyValue("--chart-3").trim() || "#e3a62c",
     rose: style.getPropertyValue("--danger").trim() || "#d6455f",
-    indigo: "#7c3aed",
-    sky: "#0ea5e9",
+    indigo: style.getPropertyValue("--chart-5").trim() || "#8d78ff",
+    sky: style.getPropertyValue("--chart-4").trim() || "#4fc8f0",
     textSoft: style.getPropertyValue("--text-subtle").trim() || "#6a778d",
     border: style.getPropertyValue("--border").trim() || "rgba(16, 24, 38, 0.12)",
     grid: style.getPropertyValue("--border-strong").trim() || "rgba(16, 24, 38, 0.08)"

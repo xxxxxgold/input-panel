@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { getOverview } from "../../api";
 import type { AppNotificationItem } from "../../features/service-status/notifications";
 import { formatAppErrorMessage } from "../lib/error-display";
+import { DEFAULT_THEME_ID, type ThemeId } from "../lib/theme";
 import type {
   AccountRuntime,
   NavKey,
@@ -9,8 +10,8 @@ import type {
   SiteRecord
 } from "../../types";
 
-const INFO_TOAST_DURATION_MS = 2400;
-const ERROR_TOAST_DURATION_MS = 4200;
+export const INFO_TOAST_DURATION_MS = 2400;
+export const ERROR_TOAST_DURATION_MS = 4200;
 
 export type MonitorToastTone = "error" | "info";
 
@@ -36,24 +37,28 @@ interface LoadOverviewOptions {
 
 interface MonitorStore {
   nav: NavKey;
-  theme: "light" | "dark" | "deep-blue";
+  theme: ThemeId;
   overview: OverviewPayload | null;
   loading: boolean;
   busyText: string | null;
   error: string | null;
   toasts: MonitorToast[];
   appNotifications: AppNotificationItem[];
+  dismissedOverviewAlertIds: string[];
+  readNotificationKeys: string[];
   activeBusyToastId: string | null;
   selectedSiteId: string | null;
   selectedAccountId: string | null;
   setNav: (nav: NavKey) => void;
-  setTheme: (theme: "light" | "dark" | "deep-blue") => void;
+  setTheme: (theme: ThemeId) => void;
   setBusyText: (text: string | null) => void;
   setError: (text: string | null) => void;
   pushToast: (toast: ToastInput) => string;
   pushAppNotification: (notification: AppNotificationItem) => void;
+  markNotificationsRead: (keys: string[]) => void;
   dismissToast: (toastId: string) => void;
   dismissAppNotification: (notificationId: string) => void;
+  acknowledgeOverviewAlert: (alertId: string) => void;
   setSelectedSiteId: (siteId: string | null) => void;
   setSelectedAccountId: (accountId: string | null) => void;
   loadOverview: (options?: LoadOverviewOptions) => Promise<void>;
@@ -122,15 +127,39 @@ export function appendToastDeduped(
   };
 }
 
+export function pruneDismissedOverviewAlertIds(
+  dismissedOverviewAlertIds: string[],
+  activeOverviewAlertIds: string[]
+) {
+  if (dismissedOverviewAlertIds.length === 0 || activeOverviewAlertIds.length === 0) {
+    return activeOverviewAlertIds.length === 0 ? [] : dismissedOverviewAlertIds.filter((id) => activeOverviewAlertIds.includes(id));
+  }
+  const activeIdSet = new Set(activeOverviewAlertIds);
+  return dismissedOverviewAlertIds.filter((id) => activeIdSet.has(id));
+}
+
+export function pruneReadNotificationKeys(
+  readNotificationKeys: string[],
+  activeNotificationKeys: string[]
+) {
+  if (readNotificationKeys.length === 0 || activeNotificationKeys.length === 0) {
+    return activeNotificationKeys.length === 0 ? [] : readNotificationKeys.filter((key) => activeNotificationKeys.includes(key));
+  }
+  const activeKeySet = new Set(activeNotificationKeys);
+  return readNotificationKeys.filter((key) => activeKeySet.has(key));
+}
+
 export const useMonitorStore = create<MonitorStore>((set, get) => ({
   nav: "overview",
-  theme: "light",
+  theme: DEFAULT_THEME_ID,
   overview: null,
   loading: true,
   busyText: null,
   error: null,
   toasts: [],
   appNotifications: [],
+  dismissedOverviewAlertIds: [],
+  readNotificationKeys: [],
   activeBusyToastId: null,
   selectedSiteId: null,
   selectedAccountId: null,
@@ -197,6 +226,19 @@ export const useMonitorStore = create<MonitorStore>((set, get) => ({
         appNotifications: [notification, ...state.appNotifications].slice(0, 50)
       };
     }),
+  markNotificationsRead: (keys) =>
+    set((state) => {
+      if (keys.length === 0) {
+        return state;
+      }
+      const next = new Set(state.readNotificationKeys);
+      for (const key of keys) {
+        next.add(key);
+      }
+      return {
+        readNotificationKeys: Array.from(next)
+      };
+    }),
   dismissToast: (toastId) =>
     set((state) => ({
       toasts: state.toasts.filter((item) => item.id !== toastId)
@@ -205,9 +247,29 @@ export const useMonitorStore = create<MonitorStore>((set, get) => ({
     set((state) => ({
       appNotifications: state.appNotifications.filter((item) => item.id !== notificationId)
     })),
+  acknowledgeOverviewAlert: (alertId) =>
+    set((state) => ({
+      dismissedOverviewAlertIds: state.dismissedOverviewAlertIds.includes(alertId)
+        ? state.dismissedOverviewAlertIds
+        : [...state.dismissedOverviewAlertIds, alertId]
+    })),
   setSelectedSiteId: (selectedSiteId) => set({ selectedSiteId }),
   setSelectedAccountId: (selectedAccountId) => set({ selectedAccountId }),
-  replaceOverview: (overview) => set({ overview }),
+  replaceOverview: (overview) =>
+    set((state) => ({
+      overview,
+      dismissedOverviewAlertIds: pruneDismissedOverviewAlertIds(
+        state.dismissedOverviewAlertIds,
+        overview.alerts.map((alert) => alert.id)
+      ),
+      readNotificationKeys: pruneReadNotificationKeys(
+        state.readNotificationKeys,
+        [
+          ...state.appNotifications.map((item) => `service-status:${item.id}`),
+          ...overview.alerts.map((alert) => `overview-alert:${alert.id}`)
+        ]
+      )
+    })),
   loadOverview: async (options) => {
     const nextBusyText = options?.busyText?.trim() || null;
     if (nextBusyText) {
@@ -222,11 +284,22 @@ export const useMonitorStore = create<MonitorStore>((set, get) => ({
         selectedAccountId: get().selectedAccountId,
         selectedSiteId: get().selectedSiteId
       });
-      set({
+      set((state) => ({
         overview: next,
         selectedSiteId: selection.selectedSiteId,
-        selectedAccountId: selection.selectedAccountId
-      });
+        selectedAccountId: selection.selectedAccountId,
+        dismissedOverviewAlertIds: pruneDismissedOverviewAlertIds(
+          state.dismissedOverviewAlertIds,
+          next.alerts.map((alert) => alert.id)
+        ),
+        readNotificationKeys: pruneReadNotificationKeys(
+          state.readNotificationKeys,
+          [
+            ...state.appNotifications.map((item) => `service-status:${item.id}`),
+            ...next.alerts.map((alert) => `overview-alert:${alert.id}`)
+          ]
+        )
+      }));
       if (options?.successMessage) {
         get().pushToast({
           tone: "info",

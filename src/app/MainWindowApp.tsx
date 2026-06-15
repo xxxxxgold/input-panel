@@ -1,4 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { emitTo } from "@tauri-apps/api/event";
 import { useEffect, useState, type KeyboardEvent } from "react";
 
 import { DesktopModeCloseDialog } from "./DesktopModeCloseDialog";
@@ -11,9 +12,11 @@ import { WorkspaceFrame } from "./WorkspaceFrame";
 import { buildWorkspaceSummaryTexts } from "./workspace-summary";
 import { navTitle as workspaceNavTitle } from "./navigation";
 import { useShellWorkspace } from "./useShellWorkspace";
+import { THEME_IDS, normalizeThemeId, type ThemeId } from "../shared/lib/theme";
 import { useAccountScopedWorkspace } from "../features/accounts/useAccountScopedWorkspace";
 import { AccountWorkspaceModals } from "../features/accounts/components/AccountWorkspaceModals";
 import { useAccountWorkspace } from "../features/accounts/useAccountWorkspace";
+import { pushFloatingPanelToast } from "../features/desktop-ui/client";
 import { AlertInboxModal, type AlertInboxItem } from "../features/overview/components/AlertInboxModal";
 import type { NotificationInboxItem } from "../features/overview/components/AlertInboxModal";
 import { useProfileWorkspace } from "../features/profile/useProfileWorkspace";
@@ -53,13 +56,17 @@ import { SubscriptionsPage } from "../pages/SubscriptionsPage";
 import { SystemSettingsPage } from "../pages/SystemSettingsPage";
 import { UsagePage } from "../pages/UsagePage";
 import { ProfileWorkspaceModal } from "../features/profile/components/ProfileWorkspaceModal";
-import { useMonitorStore } from "../store/monitor-store";
+import {
+  ERROR_TOAST_DURATION_MS,
+  INFO_TOAST_DURATION_MS,
+  useMonitorStore
+} from "../store/monitor-store";
 import type {
   AccountRuntime,
   NavKey
 } from "../types";
 
-const ALLOWED_THEMES = new Set(["light", "dark", "deep-blue"]);
+const ALLOWED_THEMES = new Set<string>(THEME_IDS);
 
 export function MainWindowApp() {
   const [alertInboxOpen, setAlertInboxOpen] = useState(false);
@@ -75,8 +82,14 @@ export function MainWindowApp() {
   const setError = useMonitorStore((state) => state.setError);
   const toasts = useMonitorStore((state) => state.toasts);
   const appNotifications = useMonitorStore((state) => state.appNotifications);
+  const dismissedOverviewAlertIds = useMonitorStore((state) => state.dismissedOverviewAlertIds);
+  const readNotificationKeys = useMonitorStore((state) => state.readNotificationKeys);
   const pushAppNotification = useMonitorStore((state) => state.pushAppNotification);
+  const pushToast = useMonitorStore((state) => state.pushToast);
+  const markNotificationsRead = useMonitorStore((state) => state.markNotificationsRead);
   const dismissToast = useMonitorStore((state) => state.dismissToast);
+  const dismissAppNotification = useMonitorStore((state) => state.dismissAppNotification);
+  const acknowledgeOverviewAlert = useMonitorStore((state) => state.acknowledgeOverviewAlert);
   const selectedSiteId = useMonitorStore((state) => state.selectedSiteId);
   const setSelectedSiteId = useMonitorStore((state) => state.setSelectedSiteId);
   const selectedAccountId = useMonitorStore((state) => state.selectedAccountId);
@@ -115,6 +128,17 @@ export function MainWindowApp() {
       const record = buildServiceStatusNotificationRecord(event);
       pushAppNotification(record);
       void sendAppNotification(record);
+      const toastPayload = {
+        tone: event.kind === "down" ? "error" : "info",
+        message: event.title,
+        durationMs: event.kind === "down" ? ERROR_TOAST_DURATION_MS : INFO_TOAST_DURATION_MS
+      } as const;
+      pushToast(toastPayload);
+      if (isTauriRuntime()) {
+        void emitTo("floating-panel", "floating-panel-toast", toastPayload);
+      } else {
+        void pushFloatingPanelToast(toastPayload);
+      }
       if (event.kind === "down") {
         setError(event.detail);
       }
@@ -160,12 +184,12 @@ export function MainWindowApp() {
 
   useEffect(() => {
     if (ALLOWED_THEMES.has(desktopUi.prefs.theme) && theme !== desktopUi.prefs.theme) {
-      setTheme(desktopUi.prefs.theme as "light" | "dark" | "deep-blue");
+      setTheme(normalizeThemeId(desktopUi.prefs.theme));
     }
   }, [desktopUi.prefs.theme, setTheme, theme]);
 
   useEffect(() => {
-    document.documentElement.classList.remove("light", "dark", "deep-blue");
+    document.documentElement.classList.remove(...THEME_IDS);
     document.documentElement.classList.add(theme);
   }, [theme]);
 
@@ -253,17 +277,20 @@ export function MainWindowApp() {
     fallbackAccountLabel: selectedAccount?.label ?? null,
     fallbackSiteName: selectedSite?.name ?? null
   });
-  const alertInboxItems: AlertInboxItem[] = (overview?.alerts ?? []).map((alert) => {
-    const account = accounts.find((item) => item.id === alert.accountId) ?? null;
-    const site = sites.find((item) => item.id === alert.siteId) ?? account?.site ?? null;
-    return {
-      ...alert,
-      accountLabel: account?.label ?? null,
-      siteName: site?.name ?? null
-    };
-  });
+  const alertInboxItems: AlertInboxItem[] = (overview?.alerts ?? [])
+    .filter((alert) => !dismissedOverviewAlertIds.includes(alert.id))
+    .map((alert) => {
+      const account = accounts.find((item) => item.id === alert.accountId) ?? null;
+      const site = sites.find((item) => item.id === alert.siteId) ?? account?.site ?? null;
+      return {
+        ...alert,
+        accountLabel: account?.label ?? null,
+        siteName: site?.name ?? null
+      };
+    });
   const inboxItems: NotificationInboxItem[] = [
     ...appNotifications.map((item) => ({
+      notificationKey: `service-status:${item.id}`,
       source: "service-status" as const,
       id: item.id,
       severity: item.severity,
@@ -273,6 +300,7 @@ export function MainWindowApp() {
       models: item.models
     })),
     ...alertInboxItems.map((item) => ({
+      notificationKey: `overview-alert:${item.id}`,
       source: "overview-alert" as const,
       id: item.id,
       severity: item.severity,
@@ -283,6 +311,8 @@ export function MainWindowApp() {
       accountLabel: item.accountLabel
     }))
   ].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
+  const unreadInboxItems = inboxItems.filter((item) => !readNotificationKeys.includes(item.notificationKey));
+  const latestUnreadInboxItem = unreadInboxItems[0] ?? null;
   const alertCount = inboxItems.length;
   const topbarAlertPreview = inboxItems.slice(0, 3).map((item) => ({
     id: item.id,
@@ -302,6 +332,31 @@ export function MainWindowApp() {
     const notification = buildServiceStatusTestNotification(kind);
     pushAppNotification(notification);
     void sendAppNotification(notification);
+    const toastPayload = {
+      tone: kind === "down" ? "error" : "info",
+      message: notification.title,
+      durationMs: kind === "down" ? ERROR_TOAST_DURATION_MS : INFO_TOAST_DURATION_MS
+    } as const;
+    pushToast(toastPayload);
+    if (isTauriRuntime()) {
+      void emitTo("floating-panel", "floating-panel-toast", toastPayload);
+    } else {
+      void pushFloatingPanelToast(toastPayload);
+    }
+  }
+
+  function handleAcknowledgeInboxItem(item: NotificationInboxItem) {
+    if (item.source === "service-status") {
+      dismissAppNotification(item.id);
+    } else {
+      acknowledgeOverviewAlert(item.id);
+    }
+  }
+
+  function handleOpenAlertInbox() {
+    shellWorkspace.closeTopbarPeekPanels();
+    markNotificationsRead(inboxItems.map((item) => item.notificationKey));
+    setAlertInboxOpen(true);
   }
 
   useEffect(() => {
@@ -364,7 +419,7 @@ export function MainWindowApp() {
     shellWorkspace.closeTopbarAccountMenu();
   }
 
-  function handleThemeChange(nextTheme: "light" | "dark" | "deep-blue") {
+  function handleThemeChange(nextTheme: ThemeId) {
     setTheme(nextTheme);
     void desktopUi.patchPrefs({ theme: nextTheme });
   }
@@ -390,7 +445,11 @@ export function MainWindowApp() {
   const pageContent = (
     <>
       {nav === "overview" && overview && (
-        <OverviewPage overview={overview} visibleSnapshot={visibleSnapshot} alertCount={alertCount} />
+        <OverviewPage
+          overview={overview}
+          visibleSnapshot={visibleSnapshot}
+          usageStats={usageStats}
+        />
       )}
       {nav === "serviceStatus" && <ServiceStatusPage setError={setError} />}
       {nav === "settings" && (
@@ -570,13 +629,13 @@ export function MainWindowApp() {
               onRefreshServiceStatus={() => void topbarServiceStatusWorkspace.refreshNow()}
               onTriggerTestNotification={handleTestNotification}
               onOpenAlerts={() => {
-                shellWorkspace.closeTopbarPeekPanels();
-                setAlertInboxOpen(true);
+                handleOpenAlertInbox();
               }}
               onOpenSubscriptions={() => {
                 shellWorkspace.closeTopbarPeekPanels();
                 setNav("subscriptions");
               }}
+              latestUnreadAlertSeverity={latestUnreadInboxItem?.severity ?? null}
               selectedAccount={selectedAccount}
               topbarAccountMenuOpen={shellWorkspace.topbarAccountMenuOpen}
               setTopbarAccountMenuOpen={shellWorkspace.setTopbarAccountMenuOpen}
@@ -658,6 +717,7 @@ export function MainWindowApp() {
           <AlertInboxModal
             items={inboxItems}
             onClose={() => setAlertInboxOpen(false)}
+            onAcknowledge={handleAcknowledgeInboxItem}
           />
         )}
         {desktopUi.closeDialogOpen && (
