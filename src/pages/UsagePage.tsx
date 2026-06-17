@@ -1,13 +1,16 @@
 import {
+  ArrowDown,
+  ArrowUp,
   BadgeDollarSign,
   CalendarDays,
   ChevronDown,
   ChevronRight,
   LayoutDashboard,
   MonitorDot,
-  RefreshCcw
+  RefreshCcw,
+  Timer
 } from "lucide-react";
-import type { MutableRefObject } from "react";
+import type { MutableRefObject, ReactNode } from "react";
 
 import type {
   DashboardModelsPayload,
@@ -31,16 +34,12 @@ import { EmptyState } from "../shared/ui/EmptyState";
 import { MetricCard } from "../shared/ui/MetricCard";
 import { SectionCard } from "../shared/ui/SectionCard";
 import { UsageDetailPopover } from "../shared/ui/UsageDetailPopover";
+import { UsageTrendSection } from "../features/usage/components/UsageTrendSection";
 import {
   UsageModelRequestDetails,
   UsageTokenMetricDetails
 } from "../features/usage/components/UsageMetricDetails";
 import { summarizeUsageRowsByModel, type UsageModelSummary } from "../features/usage/model-summary";
-import {
-  buildTrendAreaChartOption,
-  EChartCard,
-  normalizeTrendChartData
-} from "../charts";
 
 const USAGE_RANGE_PRESETS = [
   { key: "today", label: "今天" },
@@ -83,6 +82,42 @@ function findTopUsageModel(
 
 function buildUsageModelHint(prefix: string, model?: string | null) {
   return model ? `${prefix}: ${model}` : "当前没有模型数据";
+}
+
+function findTopUsageRow(
+  rows: UsageRow[],
+  valueSelector: (row: UsageRow) => number | null | undefined
+) {
+  return rows.reduce<UsageRow | null>((best, row) => {
+    if (!best) {
+      return row;
+    }
+    const nextValue = Number(valueSelector(row) ?? 0);
+    const bestValue = Number(valueSelector(best) ?? 0);
+    if (nextValue !== bestValue) {
+      return nextValue > bestValue ? row : best;
+    }
+    const nextCost = Number(row.actualCost ?? 0);
+    const bestCost = Number(best.actualCost ?? 0);
+    if (nextCost !== bestCost) {
+      return nextCost > bestCost ? row : best;
+    }
+    const nextTokens = Number(row.totalTokens ?? 0);
+    const bestTokens = Number(best.totalTokens ?? 0);
+    if (nextTokens !== bestTokens) {
+      return nextTokens > bestTokens ? row : best;
+    }
+    return row.createdAt > best.createdAt ? row : best;
+  }, null);
+}
+
+function formatUsageExtremeContext(row: UsageRow) {
+  const keyLabel = row.apiKeyName ?? (row.apiKeyId ? `#${row.apiKeyId}` : "未知 Key");
+  return `${keyLabel} / ${row.model}`;
+}
+
+function formatUsageApiKeyLabel(row: UsageRow) {
+  return row.apiKeyName ?? (row.apiKeyId ? `#${row.apiKeyId}` : "未知 Key");
 }
 
 function normalizeReasoningEffort(value?: string | null) {
@@ -132,6 +167,103 @@ function getUsageRequestTypeTone(row: UsageRow) {
     return "usage-pill-batch";
   }
   return "usage-pill-standard";
+}
+
+function UsageDetailSection({
+  title,
+  children
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="usage-detail-section">
+      <div className="usage-detail-section-title">{title}</div>
+      <div className="usage-detail-section-grid">{children}</div>
+    </section>
+  );
+}
+
+function UsageExtremeDetail({
+  row,
+  highlightLabel,
+  highlightValue
+}: {
+  row: UsageRow;
+  highlightLabel: string;
+  highlightValue: string;
+}) {
+  const cacheInputTokens = getCacheInputTokens(undefined, row.cacheCreationTokens, row.cacheReadTokens);
+  return (
+    <>
+      <UsageDetailSection title="极值命中">
+        <DetailItem label={highlightLabel} value={highlightValue} />
+        <DetailItem label="API Key" value={formatUsageApiKeyLabel(row)} />
+        <DetailItem label="模型" value={row.model} />
+        <DetailItem label="时间" value={formatDateTimeFull(row.createdAt)} />
+      </UsageDetailSection>
+      <UsageDetailSection title="性能">
+        <DetailItem label="首 Token" value={formatDurationSeconds(row.firstTokenMs, 2, "秒")} />
+        <DetailItem label="总耗时" value={formatDurationSeconds(row.durationMs, 2, "秒")} />
+        <DetailItem label="请求类型" value={formatUsageRequestTypeLabel(row)} />
+        <DetailItem label="USER-AGENT" value={row.userAgent ?? "-"} />
+      </UsageDetailSection>
+      <UsageDetailSection title="成本与 Token">
+        <DetailItem label="实际成本" value={formatUsd(row.actualCost, 4)} />
+        <DetailItem label="标准成本" value={formatUsd(row.totalCost, 4)} />
+        <DetailItem label="输入 Token" value={compact(row.inputTokens)} />
+        <DetailItem label="输出 Token" value={compact(row.outputTokens)} />
+        <DetailItem label="缓存输入" value={compact(cacheInputTokens)} />
+        <DetailItem label="总 Token" value={compact(row.totalTokens)} />
+      </UsageDetailSection>
+    </>
+  );
+}
+
+function UsageCostDetail({
+  row,
+  title = "请求信息",
+  highlightLabel = "实际成本",
+  highlightValue
+}: {
+  row: UsageRow;
+  title?: string;
+  highlightLabel?: string;
+  highlightValue?: string;
+}) {
+  return (
+    <>
+      <UsageDetailSection title={title}>
+        <DetailItem label={highlightLabel} value={highlightValue ?? formatUsd(row.actualCost, 4)} />
+        <DetailItem label="API Key" value={formatUsageApiKeyLabel(row)} />
+        <DetailItem label="模型" value={row.model} />
+        <DetailItem label="时间" value={formatDateTimeFull(row.createdAt)} />
+      </UsageDetailSection>
+      <UsageDetailSection title="模型价格">
+        <DetailItem label="输入单价" value={formatUsdPerMillion(row.inputCost, row.inputTokens)} />
+        <DetailItem label="输出单价" value={formatUsdPerMillion(row.outputCost, row.outputTokens)} />
+        <DetailItem label="缓存写入单价" value={formatUsdPerMillion(row.cacheCreationCost, row.cacheCreationTokens)} />
+        <DetailItem label="缓存读取单价" value={formatUsdPerMillion(row.cacheReadCost, row.cacheReadTokens)} />
+        <DetailItem label="服务档位" value={row.groupName ?? row.subscriptionName ?? "-"} />
+        <DetailItem label="倍率" value={`${Number(row.rateMultiplier ?? 1).toFixed(2)}x`} />
+      </UsageDetailSection>
+      <UsageDetailSection title="成本">
+        <DetailItem label="输入成本" value={formatUsd(row.inputCost)} />
+        <DetailItem label="输出成本" value={formatUsd(row.outputCost)} />
+        <DetailItem label="缓存写入成本" value={formatUsd(row.cacheCreationCost)} />
+        <DetailItem label="缓存读取成本" value={formatUsd(row.cacheReadCost)} />
+        <DetailItem label="原始" value={formatUsd(row.totalCost)} />
+        <DetailItem label="计费" value={formatUsd(row.actualCost)} />
+      </UsageDetailSection>
+      <UsageDetailSection title="Token">
+        <DetailItem label="输入 Token" value={compact(row.inputTokens)} />
+        <DetailItem label="输出 Token" value={compact(row.outputTokens)} />
+        <DetailItem label="缓存写入 Token" value={compact(row.cacheCreationTokens ?? 0)} />
+        <DetailItem label="缓存读取 Token" value={compact(row.cacheReadTokens ?? 0)} />
+        <DetailItem label="总 Token" value={compact(row.totalTokens)} />
+      </UsageDetailSection>
+    </>
+  );
 }
 
 export function UsagePage({
@@ -184,8 +316,13 @@ export function UsagePage({
     : (usageStats?.totalRequests ?? 0) > 0
       ? usageModelSummaries
       : [];
+  const scopedUsageRows = usageScopeRows.length > 0 ? usageScopeRows : (usageRecords?.items ?? []);
   const topRequestModel = findTopUsageModel(scopedModelSummaries, (summary) => summary.requests);
   const topOutputModel = findTopUsageModel(scopedModelSummaries, (summary) => summary.outputTokens);
+  const longestFirstTokenRow = findTopUsageRow(scopedUsageRows, (row) => row.firstTokenMs);
+  const highestCostRow = findTopUsageRow(scopedUsageRows, (row) => row.actualCost);
+  const highestInputRow = findTopUsageRow(scopedUsageRows, (row) => row.inputTokens);
+  const highestOutputRow = findTopUsageRow(scopedUsageRows, (row) => row.outputTokens);
   const totalCacheInputTokens = getCacheInputTokens(
     usageStats?.totalCacheTokens,
     usageStats?.totalCacheCreationTokens,
@@ -325,9 +462,88 @@ export function UsagePage({
                   <DetailItem label="缓存总 Token" value={compact(usageStats.totalCacheTokens ?? 0)} />
                   <DetailItem label="缓存写入 Token" value={compact(usageStats.totalCacheCreationTokens ?? 0)} />
                   <DetailItem label="缓存读取 Token" value={compact(usageStats.totalCacheReadTokens ?? 0)} />
-                  <DetailItem label="RPM" value={usageStats.rpm ? usageStats.rpm.toFixed(2) : "-"} />
-                  <DetailItem label="TPM" value={usageStats.tpm ? compact(usageStats.tpm) : "-"} />
+                  <DetailItem
+                    label="RPM"
+                    value={usageStats.rpm === null || usageStats.rpm === undefined ? "-" : usageStats.rpm.toFixed(2)}
+                  />
+                  <DetailItem
+                    label="TPM"
+                    value={usageStats.tpm === null || usageStats.tpm === undefined ? "-" : compact(usageStats.tpm)}
+                  />
                 </>
+              }
+            />
+          </div>
+        )}
+        {scopedUsageRows.length > 0 && (
+          <div className="metric-grid usage-extreme-grid">
+            <MetricCard
+              label="最长首 Token"
+              value={longestFirstTokenRow ? formatDurationSeconds(longestFirstTokenRow.firstTokenMs, 2, "秒") : "-"}
+              hint={longestFirstTokenRow ? formatUsageExtremeContext(longestFirstTokenRow) : "当前没有极值样本"}
+              accent="amber"
+              icon={<Timer size={18} />}
+              detailTitle="最长首 Token 请求"
+              detail={
+                longestFirstTokenRow ? (
+                  <UsageExtremeDetail
+                    row={longestFirstTokenRow}
+                    highlightLabel="首 Token"
+                    highlightValue={formatDurationSeconds(longestFirstTokenRow.firstTokenMs, 2, "秒")}
+                  />
+                ) : null
+              }
+            />
+            <MetricCard
+              label="最高消费"
+              value={highestCostRow ? formatUsd(highestCostRow.actualCost, 4) : "-"}
+              hint={highestCostRow ? formatUsageExtremeContext(highestCostRow) : "当前没有极值样本"}
+              accent="rose"
+              icon={<BadgeDollarSign size={18} />}
+              detailTitle="最高消费请求"
+              detail={
+                highestCostRow ? (
+                  <UsageCostDetail
+                    row={highestCostRow}
+                    title="极值命中"
+                    highlightLabel="最高消费"
+                    highlightValue={formatUsd(highestCostRow.actualCost, 4)}
+                  />
+                ) : null
+              }
+            />
+            <MetricCard
+              label="最高输入"
+              value={highestInputRow ? compact(highestInputRow.inputTokens) : "-"}
+              hint={highestInputRow ? formatUsageExtremeContext(highestInputRow) : "当前没有极值样本"}
+              accent="emerald"
+              icon={<ArrowDown size={18} />}
+              detailTitle="最高输入请求"
+              detail={
+                highestInputRow ? (
+                  <UsageExtremeDetail
+                    row={highestInputRow}
+                    highlightLabel="输入 Token"
+                    highlightValue={compact(highestInputRow.inputTokens)}
+                  />
+                ) : null
+              }
+            />
+            <MetricCard
+              label="最高输出"
+              value={highestOutputRow ? compact(highestOutputRow.outputTokens) : "-"}
+              hint={highestOutputRow ? formatUsageExtremeContext(highestOutputRow) : "当前没有极值样本"}
+              accent="indigo"
+              icon={<ArrowUp size={18} />}
+              detailTitle="最高输出请求"
+              detail={
+                highestOutputRow ? (
+                  <UsageExtremeDetail
+                    row={highestOutputRow}
+                    highlightLabel="输出 Token"
+                    highlightValue={compact(highestOutputRow.outputTokens)}
+                  />
+                ) : null
               }
             />
           </div>
@@ -433,22 +649,7 @@ export function UsagePage({
                       )}
                       title="成本明细"
                     >
-                      <DetailItem label="输入成本" value={formatUsd(row.inputCost)} />
-                      <DetailItem label="输出成本" value={formatUsd(row.outputCost)} />
-                      <DetailItem label="缓存写入成本" value={formatUsd(row.cacheCreationCost)} />
-                      <DetailItem label="缓存读取成本" value={formatUsd(row.cacheReadCost)} />
-                      <DetailItem label="输入 Token" value={compact(row.inputTokens)} />
-                      <DetailItem label="输出 Token" value={compact(row.outputTokens)} />
-                      <DetailItem label="缓存写入 Token" value={compact(row.cacheCreationTokens ?? 0)} />
-                      <DetailItem label="缓存读取 Token" value={compact(row.cacheReadTokens ?? 0)} />
-                      <DetailItem label="总 Token" value={compact(row.totalTokens)} />
-                      <DetailItem label="输入单价" value={formatUsdPerMillion(row.inputCost, row.inputTokens)} />
-                      <DetailItem label="输出单价" value={formatUsdPerMillion(row.outputCost, row.outputTokens)} />
-                      <DetailItem label="缓存读单价" value={formatUsdPerMillion(row.cacheReadCost, row.cacheReadTokens)} />
-                      <DetailItem label="服务档位" value={row.groupName ?? row.subscriptionName ?? "-"} />
-                      <DetailItem label="倍率" value={`${Number(row.rateMultiplier ?? 1).toFixed(2)}x`} />
-                      <DetailItem label="原始" value={formatUsd(row.totalCost)} />
-                      <DetailItem label="计费" value={formatUsd(row.actualCost)} />
+                      <UsageCostDetail row={row} />
                     </UsageDetailPopover>
                   </td>
                   <td>{formatDurationSeconds(row.firstTokenMs, 2, "秒")}</td>
@@ -491,20 +692,10 @@ export function UsagePage({
         )}
       </SectionCard>
       <div className="usage-insights-grid">
-        <SectionCard title="趋势" subtitle="对齐 dashboard/trend 接口的成本、请求与缓存表现">
-          {usageTrend?.trend?.length ? (
-            <div className="chart-wrap tall">
-              <EChartCard
-                option={buildTrendAreaChartOption({
-                  data: normalizeTrendChartData(usageTrend.trend),
-                  series: ["actualCost", "requests", "cacheCreationTokens", "cacheReadTokens", "cacheHitRate"]
-                })}
-              />
-            </div>
-          ) : (
-            <EmptyState title="当前没有趋势数据" detail="站点未返回 dashboard/trend 数据。" compact />
-          )}
-        </SectionCard>
+        <UsageTrendSection
+          subtitle="对齐 dashboard/trend 接口的成本、请求与缓存表现"
+          points={usageTrend?.trend ?? []}
+        />
         <SectionCard title="模型分布" subtitle="对齐 dashboard/models 接口">
           <div className="table-list">
             {usageModels?.models.map((model) => (
