@@ -793,7 +793,9 @@ export function MainWindowApp() {
         </WorkspaceFrame>
       </AppShell>
 
-      <ToastHost toasts={toasts} onDismiss={dismissToast} />
+      <div className="main-window-toast-layer">
+        <ToastHost toasts={toasts} onDismiss={dismissToast} />
+      </div>
 
       <ModalHost>
         <AccountWorkspaceModals

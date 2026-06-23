@@ -927,6 +927,10 @@ html.audit-archive-room {
   gap: 16px;
 }
 
+.main-window-toast-layer {
+  --toast-host-top: 88px;
+}
+
 .global-topbar {
   position: relative;
   z-index: 40;
@@ -4190,7 +4194,7 @@ html.audit-archive-room {
 
 .toast-host {
   position: fixed;
-  top: 22px;
+  top: var(--toast-host-top, 22px);
   right: 22px;
   z-index: 80;
   display: flex;
@@ -5748,7 +5752,7 @@ html.audit-archive-room {
   }
 
   .toast-host {
-    top: 14px;
+    top: var(--toast-host-top, 14px);
     right: 14px;
     left: 14px;
     width: auto;
