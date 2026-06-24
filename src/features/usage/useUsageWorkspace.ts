@@ -34,8 +34,11 @@ const USAGE_RANGE_PRESETS = [
   { key: "lastMonth", label: "上月" }
 ] as const;
 
+const DEFAULT_USAGE_PAGE_SIZE = 20;
+const USAGE_PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
 const ANALYTICS_USAGE_PAGE_SIZE = 500;
 const ANALYTICS_USAGE_BATCH_SIZE = 4;
+const ANALYTICS_SAMPLE_PAGE_SIZE = 20;
 
 type UsageRangePreset = (typeof USAGE_RANGE_PRESETS)[number]["key"];
 
@@ -54,6 +57,7 @@ export function useUsageWorkspace({
 }) {
   const [usageRecords, setUsageRecords] = useState<PaginatedResult<UsageRow> | null>(null);
   const [usagePage, setUsagePage] = useState(1);
+  const [usagePageSize, setUsagePageSize] = useState<number>(DEFAULT_USAGE_PAGE_SIZE);
   const [usageStats, setUsageStats] = useState<UsageStatsRecord | null>(null);
   const [usageTrend, setUsageTrend] = useState<UsageTrendPayload | null>(null);
   const [usageModels, setUsageModels] = useState<DashboardModelsPayload | null>(null);
@@ -76,9 +80,10 @@ export function useUsageWorkspace({
   const [keyUsageKeyId, setKeyUsageKeyId] = useState<string>("");
   const [keyUsageRows, setKeyUsageRows] = useState<DailyUsagePoint[]>([]);
   const usageRequestSequenceRef = useRef(0);
+  const blockingUsageRequestCountRef = useRef(0);
   const usageFeaturesActive = nav === "usage" || nav === "trends" || nav === "keyUsage";
-  const overviewUsageStatsActive = nav === "overview";
-  const keyUsageActive = nav === "keyUsage" || nav === "trends";
+  const analyticsLabActive = nav === "trends";
+  const keyUsageActive = nav === "keyUsage" || (nav === "trends" && Boolean(keyUsageKeyId));
 
   function beginUsageRequest() {
     usageRequestSequenceRef.current += 1;
@@ -87,6 +92,18 @@ export function useUsageWorkspace({
 
   function isLatestUsageRequest(sequence: number) {
     return usageRequestSequenceRef.current === sequence;
+  }
+
+  function beginBlockingUsageRequest() {
+    blockingUsageRequestCountRef.current += 1;
+  }
+
+  function endBlockingUsageRequest() {
+    blockingUsageRequestCountRef.current = Math.max(0, blockingUsageRequestCountRef.current - 1);
+  }
+
+  function hasBlockingUsageRequest() {
+    return blockingUsageRequestCountRef.current > 0;
   }
 
   useEffect(() => {
@@ -101,6 +118,7 @@ export function useUsageWorkspace({
       setUsageModelSummariesLoading(false);
       setUsageApiKeyFilter("");
       setUsagePage(1);
+      setUsagePageSize(DEFAULT_USAGE_PAGE_SIZE);
       setKeyUsageKeyId("");
       setKeyUsageRows([]);
       return;
@@ -126,17 +144,6 @@ export function useUsageWorkspace({
 
     void loadUsageWorkspace(selectedAccountId, effectiveStart, effectiveEnd);
   }, [selectedAccountId, usageFeaturesActive]);
-
-  useEffect(() => {
-    if (!selectedAccountId) {
-      return;
-    }
-    if (!overviewUsageStatsActive) {
-      return;
-    }
-
-    void loadOverviewUsageStats(selectedAccountId);
-  }, [selectedAccountId, overviewUsageStatsActive]);
 
   useEffect(() => {
     if (!usageRangePickerOpen) {
@@ -167,6 +174,14 @@ export function useUsageWorkspace({
     }
     setUsageApiKeyFilter("");
   }, [managedKeys, usageApiKeyFilter]);
+
+  useEffect(() => {
+    if (nav !== "trends") {
+      return;
+    }
+    setKeyUsageKeyId("");
+    setKeyUsageRows([]);
+  }, [nav]);
 
   useEffect(() => {
     if (!selectedAccountId) {
@@ -202,9 +217,39 @@ export function useUsageWorkspace({
   const usageRangeLabel = formatUsageRangeLabel(usageRangePreset, usageStartDate, usageEndDate);
 
   async function loadUsageWorkspace(accountId: string, startDate: string, endDate: string) {
+    beginBlockingUsageRequest();
     const requestSequence = beginUsageRequest();
     setUsageModelSummariesLoading(true);
+    setUsageScopeRows([]);
+    setUsageScopeMeta(null);
+    if (analyticsLabActive) {
+      setUsageRecords(null);
+      setUsageStats(null);
+      setUsageTrend(null);
+      setUsageModels(null);
+    }
+    const scopeRowsPromise = startUsageScopeRowsRefresh(
+      accountId,
+      startDate,
+      endDate,
+      usageApiKeyFilter,
+      requestSequence,
+      analyticsLabActive
+    );
     try {
+      if (analyticsLabActive) {
+        const nextScopeRows = await scopeRowsPromise;
+        if (!isLatestUsageRequest(requestSequence)) {
+          return;
+        }
+        setUsageStats(null);
+        setUsageTrend(null);
+        setUsageModels(null);
+        setUsageModelSummaries(summarizeDashboardModels(buildModelsPayloadFromRows(nextScopeRows)));
+        setError(null);
+        return;
+      }
+
       const loadOptional = async <T,>(loader: () => Promise<T>, fallback: T) => {
         try {
           return await loader();
@@ -232,7 +277,16 @@ export function useUsageWorkspace({
           tpm: 0
         }),
         loadOptional(() => getDashboardTrend(accountId, 7), null),
-        loadOptional(() => getDashboardModels(accountId, 7), null)
+        loadOptional(() => getDashboardModels(accountId, 7), null),
+        loadUsageRecordsForFilters(
+          accountId,
+          startDate,
+          endDate,
+          usageApiKeyFilter,
+          usagePage,
+          usagePageSize,
+          requestSequence
+        )
       ]);
 
       if (!isLatestUsageRequest(requestSequence)) {
@@ -248,14 +302,6 @@ export function useUsageWorkspace({
       setUsageTrend(nextUsageTrend);
       setUsageModels(nextUsageModels);
       setUsageModelSummaries(summarizeDashboardModels(nextUsageModels));
-
-      await Promise.all([
-        loadUsageRecordsForFilters(accountId, startDate, endDate, usageApiKeyFilter, usagePage, requestSequence),
-        loadUsageScopeRowsForFilters(accountId, startDate, endDate, usageApiKeyFilter, requestSequence)
-      ]);
-      if (!isLatestUsageRequest(requestSequence)) {
-        return;
-      }
       setError(null);
     } catch (cause) {
       if (!isLatestUsageRequest(requestSequence)) {
@@ -266,22 +312,8 @@ export function useUsageWorkspace({
       if (isLatestUsageRequest(requestSequence)) {
         setUsageModelSummariesLoading(false);
       }
-    }
-  }
-
-  async function loadOverviewUsageStats(accountId: string) {
-    const requestSequence = beginUsageRequest();
-    try {
-      const nextUsageStats = await getUsageStats(accountId, { period: "today" });
-      if (!isLatestUsageRequest(requestSequence)) {
-        return;
-      }
-      setUsageStats(applyUsageRateFallback(nextUsageStats, { period: "today" }));
-    } catch (cause) {
-      if (!isLatestUsageRequest(requestSequence)) {
-        return;
-      }
-      setError((cause as Error).message);
+      endBlockingUsageRequest();
+      void scopeRowsPromise;
     }
   }
 
@@ -291,9 +323,24 @@ export function useUsageWorkspace({
     endDate: string,
     apiKeyId: string,
     page = 1,
+    pageSize = usagePageSize,
     requestSequence = usageRequestSequenceRef.current
   ) {
-    const next = await fetchUsageRecordsPage(accountId, startDate, endDate, apiKeyId, page, 20);
+    let next = await fetchUsageRecordsPage(accountId, startDate, endDate, apiKeyId, page, pageSize);
+    const safePage = Math.max(1, page);
+    const lastPage = Math.max(next.pages, 1);
+    const needsFallbackPage =
+      safePage > lastPage ||
+      (next.total > 0 && next.items.length === 0 && safePage > 1);
+
+    if (needsFallbackPage) {
+      next = await fetchUsageRecordsPage(accountId, startDate, endDate, apiKeyId, lastPage, pageSize);
+      if (!isLatestUsageRequest(requestSequence)) {
+        return next;
+      }
+      setUsagePage(lastPage);
+    }
+
     if (!isLatestUsageRequest(requestSequence)) {
       return next;
     }
@@ -323,7 +370,8 @@ export function useUsageWorkspace({
     startDate: string,
     endDate: string,
     apiKeyId: string,
-    requestSequence = usageRequestSequenceRef.current
+    requestSequence = usageRequestSequenceRef.current,
+    populateAnalyticsSample = false
   ) {
     const firstPage = await fetchUsageRecordsPage(
       accountId,
@@ -367,6 +415,9 @@ export function useUsageWorkspace({
     if (!isLatestUsageRequest(requestSequence)) {
       return rows;
     }
+    if (populateAnalyticsSample) {
+      setUsageRecords(buildAnalyticsSampleUsagePage(rows, firstPage.total));
+    }
     setUsageScopeRows(rows);
     setUsageScopeMeta({
       total: firstPage.total,
@@ -382,20 +433,56 @@ export function useUsageWorkspace({
       return;
     }
 
+    beginBlockingUsageRequest();
     setBusyText("正在刷新用量明细...");
     setError(null);
     setUsageModelSummariesLoading(true);
     const requestSequence = beginUsageRequest();
+    setUsageScopeRows([]);
+    setUsageScopeMeta(null);
+    if (analyticsLabActive) {
+      setUsageRecords(null);
+      setUsageStats(null);
+      setUsageTrend(null);
+      setUsageModels(null);
+    }
+    const scopeRowsPromise = startUsageScopeRowsRefresh(
+      selectedAccountId,
+      usageStartDate,
+      usageEndDate,
+      usageApiKeyFilter,
+      requestSequence,
+      analyticsLabActive
+    );
     try {
       setUsagePage(1);
-      const [stats, , , trend, models] = await Promise.all([
+      if (analyticsLabActive) {
+        const nextScopeRows = await scopeRowsPromise;
+        if (!isLatestUsageRequest(requestSequence)) {
+          return;
+        }
+        setUsageStats(null);
+        setUsageTrend(null);
+        setUsageModels(null);
+        setUsageModelSummaries(summarizeDashboardModels(buildModelsPayloadFromRows(nextScopeRows)));
+        return;
+      }
+
+      const [stats, , trend, models] = await Promise.all([
         getUsageStats(selectedAccountId, {
           startDate: usageStartDate,
           endDate: usageEndDate,
           apiKeyId: usageApiKeyFilter || null
         }),
-        loadUsageRecordsForFilters(selectedAccountId, usageStartDate, usageEndDate, usageApiKeyFilter, 1, requestSequence),
-        loadUsageScopeRowsForFilters(selectedAccountId, usageStartDate, usageEndDate, usageApiKeyFilter, requestSequence),
+        loadUsageRecordsForFilters(
+          selectedAccountId,
+          usageStartDate,
+          usageEndDate,
+          usageApiKeyFilter,
+          1,
+          usagePageSize,
+          requestSequence
+        ),
         getDashboardTrend(selectedAccountId, 7).catch((cause) => {
           if (isOptionalEndpointUnavailable(cause)) {
             return null;
@@ -431,6 +518,8 @@ export function useUsageWorkspace({
         setUsageModelSummariesLoading(false);
         setBusyText(null);
       }
+      endBlockingUsageRequest();
+      void scopeRowsPromise;
     }
   }
 
@@ -439,6 +528,7 @@ export function useUsageWorkspace({
       return;
     }
 
+    beginBlockingUsageRequest();
     const safePage = Math.min(Math.max(1, nextPage), Math.max(usageRecords.pages, 1));
     setBusyText(`正在加载第 ${safePage} 页用量记录...`);
     setError(null);
@@ -450,6 +540,7 @@ export function useUsageWorkspace({
         usageEndDate,
         usageApiKeyFilter,
         safePage,
+        usagePageSize,
         requestSequence
       );
       if (!isLatestUsageRequest(requestSequence)) {
@@ -465,6 +556,49 @@ export function useUsageWorkspace({
       if (isLatestUsageRequest(requestSequence)) {
         setBusyText(null);
       }
+      endBlockingUsageRequest();
+    }
+  }
+
+  async function handleUsagePageSizeChange(nextPageSize: number) {
+    if (!selectedAccountId) {
+      return;
+    }
+
+    const safePageSize = normalizeUsagePageSize(nextPageSize);
+    if (safePageSize === usagePageSize) {
+      return;
+    }
+
+    beginBlockingUsageRequest();
+    setUsagePageSize(safePageSize);
+    setUsagePage(1);
+    setBusyText(`正在切换为每页 ${safePageSize} 条...`);
+    setError(null);
+    const requestSequence = beginUsageRequest();
+    try {
+      await loadUsageRecordsForFilters(
+        selectedAccountId,
+        usageStartDate,
+        usageEndDate,
+        usageApiKeyFilter,
+        1,
+        safePageSize,
+        requestSequence
+      );
+      if (!isLatestUsageRequest(requestSequence)) {
+        return;
+      }
+    } catch (cause) {
+      if (!isLatestUsageRequest(requestSequence)) {
+        return;
+      }
+      setError((cause as Error).message);
+    } finally {
+      if (isLatestUsageRequest(requestSequence)) {
+        setBusyText(null);
+      }
+      endBlockingUsageRequest();
     }
   }
 
@@ -491,6 +625,7 @@ export function useUsageWorkspace({
       return;
     }
 
+    beginBlockingUsageRequest();
     const nextStart = usageDraftRange.startDate || usageStartDate;
     const nextEnd = usageDraftRange.endDate || usageEndDate;
     setUsageStartDate(nextStart);
@@ -501,15 +636,42 @@ export function useUsageWorkspace({
     setError(null);
     setUsageModelSummariesLoading(true);
     const requestSequence = beginUsageRequest();
+    setUsageScopeRows([]);
+    setUsageScopeMeta(null);
+    if (analyticsLabActive) {
+      setUsageRecords(null);
+      setUsageStats(null);
+      setUsageTrend(null);
+      setUsageModels(null);
+    }
+    const scopeRowsPromise = startUsageScopeRowsRefresh(
+      selectedAccountId,
+      nextStart,
+      nextEnd,
+      usageApiKeyFilter,
+      requestSequence,
+      analyticsLabActive
+    );
     try {
-      const [stats, , , trend, models] = await Promise.all([
+      if (analyticsLabActive) {
+        const nextScopeRows = await scopeRowsPromise;
+        if (!isLatestUsageRequest(requestSequence)) {
+          return;
+        }
+        setUsageStats(null);
+        setUsageTrend(null);
+        setUsageModels(null);
+        setUsageModelSummaries(summarizeDashboardModels(buildModelsPayloadFromRows(nextScopeRows)));
+        return;
+      }
+
+      const [stats, , trend, models] = await Promise.all([
         getUsageStats(selectedAccountId, {
           startDate: nextStart,
           endDate: nextEnd,
           apiKeyId: usageApiKeyFilter || null
         }),
         loadUsageRecordsForFilters(selectedAccountId, nextStart, nextEnd, usageApiKeyFilter, 1, requestSequence),
-        loadUsageScopeRowsForFilters(selectedAccountId, nextStart, nextEnd, usageApiKeyFilter, requestSequence),
         getDashboardTrend(selectedAccountId, 7).catch((cause) => {
           if (isOptionalEndpointUnavailable(cause)) {
             return null;
@@ -545,6 +707,8 @@ export function useUsageWorkspace({
         setUsageModelSummariesLoading(false);
         setBusyText(null);
       }
+      endBlockingUsageRequest();
+      void scopeRowsPromise;
     }
   }
 
@@ -581,9 +745,23 @@ export function useUsageWorkspace({
     if (!selectedAccountId) {
       return;
     }
+    if (hasBlockingUsageRequest()) {
+      return;
+    }
 
     const requestSequence = beginUsageRequest();
     setUsageModelSummariesLoading(true);
+    const scopeRowsPromise: Promise<UsageRow[]> =
+      nav === "overview"
+        ? Promise.resolve([])
+        : startUsageScopeRowsRefresh(
+            selectedAccountId,
+            usageStartDate || toDateValue(new Date()),
+            usageEndDate || toDateValue(new Date()),
+            usageApiKeyFilter,
+            requestSequence,
+            analyticsLabActive
+          );
     try {
       if (nav === "overview") {
         const stats = await getUsageStats(selectedAccountId, { period: "today" });
@@ -595,11 +773,31 @@ export function useUsageWorkspace({
         return;
       }
 
+      if (analyticsLabActive) {
+        const nextScopeRows = await scopeRowsPromise;
+        if (!isLatestUsageRequest(requestSequence)) {
+          return;
+        }
+        setUsageStats(null);
+        setUsageTrend(null);
+        setUsageModels(null);
+        setUsageModelSummaries(summarizeDashboardModels(buildModelsPayloadFromRows(nextScopeRows)));
+        if (keyUsageKeyId) {
+          const daily = await getApiKeyDailyUsage(selectedAccountId, keyUsageKeyId, 30);
+          if (!isLatestUsageRequest(requestSequence)) {
+            return;
+          }
+          setKeyUsageRows(daily);
+        }
+        setError(null);
+        return;
+      }
+
       const effectiveStart = usageStartDate || toDateValue(new Date());
       const effectiveEnd = usageEndDate || toDateValue(new Date());
       const targetUsagePage = usageRecords?.page ?? usagePage;
 
-      const [stats, records, scopeRows, trend, models] = await Promise.all([
+      const [stats, records, trend, models] = await Promise.all([
         getUsageStats(selectedAccountId, {
           startDate: effectiveStart,
           endDate: effectiveEnd,
@@ -611,13 +809,7 @@ export function useUsageWorkspace({
           effectiveEnd,
           usageApiKeyFilter,
           targetUsagePage,
-          requestSequence
-        ),
-        loadUsageScopeRowsForFilters(
-          selectedAccountId,
-          effectiveStart,
-          effectiveEnd,
-          usageApiKeyFilter,
+          usagePageSize,
           requestSequence
         ),
         getDashboardTrend(selectedAccountId, 7).catch((cause) => {
@@ -645,12 +837,11 @@ export function useUsageWorkspace({
         })
       );
       setUsageRecords(records ?? null);
-      setUsageScopeRows(scopeRows ?? []);
       setUsageTrend(trend);
       setUsageModels(models);
       setUsageModelSummaries(summarizeDashboardModels(models));
 
-      if ((nav === "keyUsage" || nav === "trends") && keyUsageKeyId) {
+      if (nav === "keyUsage" && keyUsageKeyId) {
         const daily = await getApiKeyDailyUsage(selectedAccountId, keyUsageKeyId, 30);
         if (!isLatestUsageRequest(requestSequence)) {
           return;
@@ -668,7 +859,32 @@ export function useUsageWorkspace({
       if (isLatestUsageRequest(requestSequence)) {
         setUsageModelSummariesLoading(false);
       }
+      void scopeRowsPromise;
     }
+  }
+
+  function startUsageScopeRowsRefresh(
+    accountId: string,
+    startDate: string,
+    endDate: string,
+    apiKeyId: string,
+    requestSequence: number,
+    populateAnalyticsSample = false
+  ) {
+    return loadUsageScopeRowsForFilters(
+      accountId,
+      startDate,
+      endDate,
+      apiKeyId,
+      requestSequence,
+      populateAnalyticsSample
+    ).catch((cause) => {
+      if (!isLatestUsageRequest(requestSequence)) {
+        return [];
+      }
+      setError((cause as Error).message);
+      return [];
+    });
   }
 
   return {
@@ -687,8 +903,11 @@ export function useUsageWorkspace({
     usageModelSummaries,
     usageModelSummariesLoading,
     usageRecords,
+    usagePageSize,
+    usagePageSizeOptions: [...USAGE_PAGE_SIZE_OPTIONS],
     handleUsageSearch,
     handleUsagePageChange,
+    handleUsagePageSizeChange,
     usageTrend,
     usageModels,
     usageScopeRows,
@@ -816,4 +1035,70 @@ function pickDefaultKeyUsageKeyId(keys: ManagedKeyRecord[]) {
     return rightTime - leftTime;
   });
   return sorted[0]?.id ?? "";
+}
+
+function normalizeUsagePageSize(value: number) {
+  return USAGE_PAGE_SIZE_OPTIONS.includes(value as (typeof USAGE_PAGE_SIZE_OPTIONS)[number])
+    ? value
+    : DEFAULT_USAGE_PAGE_SIZE;
+}
+
+function buildAnalyticsSampleUsagePage(rows: UsageRow[], total: number): PaginatedResult<UsageRow> {
+  return {
+    items: rows.slice(0, ANALYTICS_SAMPLE_PAGE_SIZE),
+    page: 1,
+    pageSize: ANALYTICS_SAMPLE_PAGE_SIZE,
+    total,
+    pages: Math.max(1, Math.ceil(total / ANALYTICS_SAMPLE_PAGE_SIZE))
+  };
+}
+
+function buildModelsPayloadFromRows(rows: UsageRow[]): DashboardModelsPayload | null {
+  if (rows.length === 0) {
+    return null;
+  }
+
+  type UsageModelAggregate = {
+    model: string;
+    requests: number;
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationTokens: number;
+    cacheReadTokens: number;
+    totalTokens: number;
+    cost: number;
+    actualCost: number;
+  };
+
+  const bucket = new Map<string, UsageModelAggregate>();
+  for (const row of rows) {
+    const model = row.model || "unknown";
+    const current = bucket.get(model) ?? {
+      model,
+      requests: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      totalTokens: 0,
+      cost: 0,
+      actualCost: 0
+    };
+    current.requests += 1;
+    current.inputTokens += row.inputTokens ?? 0;
+    current.outputTokens += row.outputTokens ?? 0;
+    current.cacheCreationTokens += row.cacheCreationTokens ?? 0;
+    current.cacheReadTokens += row.cacheReadTokens ?? 0;
+    current.totalTokens += row.totalTokens ?? 0;
+    current.cost += row.totalCost ?? 0;
+    current.actualCost += row.actualCost ?? 0;
+    bucket.set(model, current);
+  }
+
+  const sortedRows = [...rows].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  return {
+    startDate: sortedRows[0]?.createdAt.slice(0, 10) ?? "",
+    endDate: sortedRows[sortedRows.length - 1]?.createdAt.slice(0, 10) ?? "",
+    models: [...bucket.values()].sort((left, right) => (right.actualCost ?? 0) - (left.actualCost ?? 0))
+  };
 }
