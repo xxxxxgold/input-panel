@@ -1,6 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emitTo } from "@tauri-apps/api/event";
-import { useEffect, useEffectEvent, useState, type KeyboardEvent } from "react";
+import { useEffect, useEffectEvent, useRef, useState, type KeyboardEvent } from "react";
 
 import { DesktopModeCloseDialog } from "./DesktopModeCloseDialog";
 import { AppShell } from "./AppShell";
@@ -32,10 +32,11 @@ import { useDesktopUiPrefs } from "../features/desktop-ui/useDesktopUiPrefs";
 import {
   DEFAULT_AUTO_REFRESH_INTERVAL_SECONDS,
   isSnapshotStaleForToday,
+  isAutoRefreshScopeEnabled,
   normalizeAutoRefreshIntervalSeconds,
   resolveAutoRefreshScope,
+  resolveAutoRefreshIntervalSecondsForScope,
   shouldAutoRefreshSelectedAccountData,
-  shouldRefreshAccountScopedData,
   shouldRefreshSnapshotForNav
 } from "./refresh-policy";
 import {
@@ -74,9 +75,15 @@ const ALLOWED_THEMES = new Set<string>(THEME_IDS);
 
 export function MainWindowApp() {
   const [alertInboxOpen, setAlertInboxOpen] = useState(false);
+  const [profileWorkspaceRequested, setProfileWorkspaceRequested] = useState(false);
   const [pageVisible, setPageVisible] = useState(
     typeof document === "undefined" ? true : document.visibilityState === "visible"
   );
+  const [pageMotionNav, setPageMotionNav] = useState<NavKey>("overview");
+  const [pageMotionPhase, setPageMotionPhase] = useState<"idle" | "enter">("idle");
+  const lastServiceStatusNavRef = useRef<NavKey | null>(null);
+  const lastServiceStatusPeekRef = useRef(false);
+  const lastPageVisibleRef = useRef(pageVisible);
   const nav = useMonitorStore((state) => state.nav);
   const setNav = useMonitorStore((state) => state.setNav);
   const theme = useMonitorStore((state) => state.theme);
@@ -106,9 +113,23 @@ export function MainWindowApp() {
   const sites = overview?.sites ?? [];
   const accounts = overview?.accounts ?? [];
   const hasAnyAccount = accounts.length > 0;
+  const serviceStatusEnabled = desktopUi.prefs.autoRefreshEnabled && hasAnyAccount;
+  const serviceStatusRefreshIntervalSeconds = normalizeAutoRefreshIntervalSeconds(
+    desktopUi.prefs.autoRefreshIntervalSeconds
+  );
   const shellWorkspace = useShellWorkspace({ accounts });
+  const accountScopedResources = {
+    groups: nav === "keys",
+    managedKeys: nav === "keys" || nav === "usage" || nav === "keyUsage" || nav === "trends",
+    subscriptionSummary: nav === "subscriptions",
+    profileRecord: profileWorkspaceRequested,
+    platformQuotas: profileWorkspaceRequested
+  };
+  const accountScopedEnabled = Object.values(accountScopedResources).some(Boolean);
   const accountScopedWorkspace = useAccountScopedWorkspace({
     selectedAccountId,
+    resources: accountScopedResources,
+    enabled: accountScopedEnabled,
     setError
   });
   const accountWorkspace = useAccountWorkspace({
@@ -132,7 +153,7 @@ export function MainWindowApp() {
   });
   const topbarServiceStatusWorkspace = useServiceStatusWorkspace({
     setError,
-    enabled: desktopUi.prefs.autoRefreshEnabled,
+    enabled: serviceStatusEnabled,
     notifyStatusTransition: (event) => {
       const record = buildServiceStatusNotificationRecord(event);
       pushAppNotification(record);
@@ -152,8 +173,8 @@ export function MainWindowApp() {
         setError(event.detail);
       }
     },
-    refreshIntervalMs: desktopUi.prefs.autoRefreshEnabled
-      ? normalizeAutoRefreshIntervalSeconds(desktopUi.prefs.autoRefreshIntervalSeconds) * 1000
+    refreshIntervalMs: serviceStatusEnabled
+      ? serviceStatusRefreshIntervalSeconds * 1000
       : DEFAULT_AUTO_REFRESH_INTERVAL_SECONDS * 1000
   });
   const {
@@ -172,8 +193,11 @@ export function MainWindowApp() {
     usageModelSummaries,
     usageModelSummariesLoading,
     usageRecords,
+    usagePageSize,
+    usagePageSizeOptions,
     handleUsageSearch,
     handleUsagePageChange,
+    handleUsagePageSizeChange,
     usageTrend,
     usageModels,
     usageScopeRows,
@@ -249,12 +273,32 @@ export function MainWindowApp() {
   }, [nav, setNav]);
 
   useEffect(() => {
+    if (nav === pageMotionNav) {
+      return;
+    }
+    setPageMotionNav(nav);
+    setPageMotionPhase("enter");
+    const timerId = window.setTimeout(() => {
+      setPageMotionPhase("idle");
+    }, 340);
+    return () => window.clearTimeout(timerId);
+  }, [nav, pageMotionNav]);
+
+  useEffect(() => {
     if (nav !== "profile") {
       return;
     }
+    setProfileWorkspaceRequested(true);
     profileWorkspace.openProfileModal();
     setNav("overview");
   }, [nav, setNav, profileWorkspace]);
+
+  useEffect(() => {
+    if (selectedAccountId) {
+      return;
+    }
+    setProfileWorkspaceRequested(false);
+  }, [selectedAccountId]);
 
   const selectedSiteAccounts = selectedSiteId
     ? accounts.filter((item) => item.siteId === selectedSiteId)
@@ -386,16 +430,6 @@ export function MainWindowApp() {
   }
 
   useEffect(() => {
-    if (!selectedAccountId) {
-      return;
-    }
-    if (!shouldRefreshAccountScopedData(nav)) {
-      return;
-    }
-    void accountScopedWorkspace.refreshAccountScopedData();
-  }, [nav, selectedAccountId]);
-
-  useEffect(() => {
     if (!selectedAccount) {
       return;
     }
@@ -413,19 +447,20 @@ export function MainWindowApp() {
 
   const refreshSelectedPageSilently = useEffectEvent(async () => {
     const autoRefreshEnabled = desktopUi.prefs.autoRefreshEnabled;
-    const intervalSeconds = normalizeAutoRefreshIntervalSeconds(desktopUi.prefs.autoRefreshIntervalSeconds);
+    const scope = resolveAutoRefreshScope(nav);
     const canRefreshSelectedAccount = shouldAutoRefreshSelectedAccountData({
       nav,
       autoRefreshEnabled,
       pageVisible,
-      selectedAccount
+      selectedAccount,
+      prefs: desktopUi.prefs
     });
 
     if (!canRefreshSelectedAccount) {
       return;
     }
 
-    switch (resolveAutoRefreshScope(nav)) {
+    switch (scope) {
       case "snapshot":
         if (selectedAccount) {
           await accountWorkspace.handleRefreshAccount(selectedAccount.id, {
@@ -444,13 +479,24 @@ export function MainWindowApp() {
         break;
     }
 
-    return intervalSeconds;
+    if (scope !== "none" && isAutoRefreshScopeEnabled(desktopUi.prefs, scope)) {
+      return resolveAutoRefreshIntervalSecondsForScope(desktopUi.prefs, scope);
+    }
   });
 
   useEffect(() => {
     let cancelled = false;
     let timerId: number | null = null;
     let running = false;
+
+    const scheduleNextTick = (intervalSeconds?: number) => {
+      if (cancelled || typeof intervalSeconds !== "number") {
+        return;
+      }
+      timerId = window.setTimeout(() => {
+        void tick();
+      }, intervalSeconds * 1000);
+    };
 
     const tick = async () => {
       if (cancelled || running) {
@@ -462,17 +508,26 @@ export function MainWindowApp() {
         if (cancelled) {
           return;
         }
-        if (typeof intervalSeconds === "number") {
-          timerId = window.setTimeout(() => {
-            void tick();
-          }, intervalSeconds * 1000);
-        }
+        scheduleNextTick(intervalSeconds);
       } finally {
         running = false;
       }
     };
 
-    void tick();
+    if (
+      shouldAutoRefreshSelectedAccountData({
+        nav,
+        autoRefreshEnabled: desktopUi.prefs.autoRefreshEnabled,
+        pageVisible,
+        selectedAccount,
+        prefs: desktopUi.prefs
+      })
+    ) {
+      const scope = resolveAutoRefreshScope(nav);
+      if (scope !== "none" && isAutoRefreshScopeEnabled(desktopUi.prefs, scope)) {
+        scheduleNextTick(resolveAutoRefreshIntervalSecondsForScope(desktopUi.prefs, scope));
+      }
+    }
 
     return () => {
       cancelled = true;
@@ -480,7 +535,28 @@ export function MainWindowApp() {
         window.clearTimeout(timerId);
       }
     };
-  }, [pageVisible, refreshSelectedPageSilently]);
+  }, [desktopUi.prefs, nav, pageVisible, refreshSelectedPageSilently, selectedAccount]);
+
+  useEffect(() => {
+    const enteredServiceStatusPage = nav === "serviceStatus" && lastServiceStatusNavRef.current !== "serviceStatus";
+    const openedServiceStatusPeek = shellWorkspace.topbarServiceStatusExpanded && !lastServiceStatusPeekRef.current;
+    const pageBecameVisible = pageVisible && !lastPageVisibleRef.current;
+
+    lastServiceStatusNavRef.current = nav;
+    lastServiceStatusPeekRef.current = shellWorkspace.topbarServiceStatusExpanded;
+    lastPageVisibleRef.current = pageVisible;
+
+    if (!serviceStatusEnabled || !pageVisible) {
+      return;
+    }
+    if (
+      enteredServiceStatusPage ||
+      openedServiceStatusPeek ||
+      (pageBecameVisible && (nav === "serviceStatus" || shellWorkspace.topbarServiceStatusExpanded))
+    ) {
+      void topbarServiceStatusWorkspace.refreshNow();
+    }
+  }, [nav, pageVisible, serviceStatusEnabled, shellWorkspace.topbarServiceStatusExpanded]);
 
   useEffect(() => {
     if (!selectedSiteId) return;
@@ -502,12 +578,21 @@ export function MainWindowApp() {
   }
 
   function handleNavChange(nextNav: NavKey) {
+    if (nextNav === nav) {
+      return;
+    }
     setNav(nextNav);
   }
 
   function openProfileModal() {
     shellWorkspace.closeTopbarAccountMenu();
+    setProfileWorkspaceRequested(true);
     profileWorkspace.openProfileModal();
+  }
+
+  function closeProfileModal() {
+    setProfileWorkspaceRequested(false);
+    profileWorkspace.closeProfileModal();
   }
 
   function handleTopbarAccountSelect(account: AccountRuntime) {
@@ -542,19 +627,19 @@ export function MainWindowApp() {
   );
 
   const pageContent = (
-    <>
+    <div className={`page-stack page-stack-${nav}`}>
       {nav === "overview" && overview && (
         <OverviewPage
           overview={overview}
           visibleSnapshot={visibleSnapshot}
-          usageStats={usageStats}
+          usageStats={null}
         />
       )}
       {nav === "serviceStatus" && (
         <ServiceStatusPage
           workspace={topbarServiceStatusWorkspace}
-          enabled={desktopUi.prefs.autoRefreshEnabled}
-          refreshIntervalSeconds={normalizeAutoRefreshIntervalSeconds(desktopUi.prefs.autoRefreshIntervalSeconds)}
+          enabled={serviceStatusEnabled}
+          refreshIntervalSeconds={serviceStatusRefreshIntervalSeconds}
         />
       )}
       {nav === "settings" && (
@@ -613,9 +698,12 @@ export function MainWindowApp() {
           usageModelSummaries={usageModelSummaries}
           usageModelSummariesLoading={usageModelSummariesLoading}
           usageRecords={usageRecords}
+          usagePageSize={usagePageSize}
+          usagePageSizeOptions={usagePageSizeOptions}
           usageScopeRows={usageScopeRows}
           handleUsageSearch={handleUsageSearch}
           handleUsagePageChange={handleUsagePageChange}
+          handleUsagePageSizeChange={handleUsagePageSizeChange}
           usageTrend={usageTrend}
           usageModels={usageModels}
         />
@@ -670,16 +758,51 @@ export function MainWindowApp() {
           onLaunchModeChange={(value) => void desktopUi.handleSwitchMode(value)}
           onFloatingVisibleChange={(value) => void desktopUi.handleFloatingVisible(value)}
           onFloatingPanelPinnedChange={(value) => void desktopUi.patchPrefs({ keepFloatingPanelVisible: value })}
+          onFloatingPanelOpacityChange={(value) =>
+            void desktopUi.patchPrefs({
+              floatingPanelOpacity: value
+            })
+          }
           onCloseBehaviorChange={(value) => void desktopUi.handleRememberCloseBehavior(value)}
           onAutoRefreshEnabledChange={(value) => void desktopUi.patchPrefs({ autoRefreshEnabled: value })}
-          onAutoRefreshIntervalSecondsChange={(value) =>
+          onServiceStatusRefreshIntervalSecondsChange={(value) =>
             void desktopUi.patchPrefs({
               autoRefreshIntervalSeconds: normalizeAutoRefreshIntervalSeconds(value)
             })
           }
+          onAutoRefreshSnapshotEnabledChange={(value) =>
+            void desktopUi.patchPrefs({
+              autoRefreshSnapshotEnabled: value
+            })
+          }
+          onAutoRefreshSnapshotIntervalSecondsChange={(value) =>
+            void desktopUi.patchPrefs({
+              autoRefreshSnapshotIntervalSeconds: normalizeAutoRefreshIntervalSeconds(value)
+            })
+          }
+          onAutoRefreshAccountScopedEnabledChange={(value) =>
+            void desktopUi.patchPrefs({
+              autoRefreshAccountScopedEnabled: value
+            })
+          }
+          onAutoRefreshAccountScopedIntervalSecondsChange={(value) =>
+            void desktopUi.patchPrefs({
+              autoRefreshAccountScopedIntervalSeconds: normalizeAutoRefreshIntervalSeconds(value)
+            })
+          }
+          onAutoRefreshUsageEnabledChange={(value) =>
+            void desktopUi.patchPrefs({
+              autoRefreshUsageEnabled: value
+            })
+          }
+          onAutoRefreshUsageIntervalSecondsChange={(value) =>
+            void desktopUi.patchPrefs({
+              autoRefreshUsageIntervalSeconds: normalizeAutoRefreshIntervalSeconds(value)
+            })
+          }
         />
       )}
-    </>
+    </div>
   );
 
   return (
@@ -715,6 +838,7 @@ export function MainWindowApp() {
                     })
               }
               serviceStatus={topbarServiceStatusWorkspace.status}
+              serviceStatusLastSyncedAt={topbarServiceStatusWorkspace.lastSyncedAt}
               serviceStatusRefreshing={topbarServiceStatusWorkspace.refreshing}
               topbarServiceStatusExpanded={shellWorkspace.topbarServiceStatusExpanded}
               setTopbarServiceStatusExpanded={shellWorkspace.setTopbarServiceStatusExpanded}
@@ -738,7 +862,7 @@ export function MainWindowApp() {
               subscriptionPreviewRecords={mergedTopbarSubscriptions}
               closeTopbarPeekPanels={shellWorkspace.closeTopbarPeekPanels}
               onRefreshServiceStatus={() => void topbarServiceStatusWorkspace.refreshNow()}
-              serviceStatusRefreshIntervalSeconds={normalizeAutoRefreshIntervalSeconds(desktopUi.prefs.autoRefreshIntervalSeconds)}
+              serviceStatusRefreshIntervalSeconds={serviceStatusRefreshIntervalSeconds}
               onTriggerTestNotification={handleTestNotification}
               onOpenAlerts={() => {
                 handleOpenAlertInbox();
@@ -788,6 +912,8 @@ export function MainWindowApp() {
           summary={workspaceSummary}
           loading={loading}
           ready={Boolean(overview)}
+          navKey={nav}
+          pageMotionPhase={pageMotionPhase}
         >
           {pageContent}
         </WorkspaceFrame>
@@ -815,7 +941,7 @@ export function MainWindowApp() {
           notifyEmailDraft={profileWorkspace.notifyEmailDraft}
           setNotifyEmailDraft={profileWorkspace.setNotifyEmailDraft}
           platformQuotas={accountScopedWorkspace.platformQuotas}
-          onClose={profileWorkspace.closeProfileModal}
+          onClose={closeProfileModal}
           onRefreshSelectedAccount={() => {
             if (selectedAccount) {
               void accountWorkspace.handleRefreshAccount(selectedAccount.id);

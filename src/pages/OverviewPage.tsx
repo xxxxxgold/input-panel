@@ -4,42 +4,39 @@ import {
   KeyRound,
   LayoutDashboard,
   MonitorDot,
-  ShieldAlert
+  TimerReset
 } from "lucide-react";
 
-import type { AccountRuntime, OverviewPayload, SnapshotAlert } from "../types";
-import { compact, formatTime } from "../shared/lib/formatters";
+import type { AccountRuntime, OverviewPayload, UsageStatsRecord } from "../types";
+import { compact, formatDurationSeconds, formatTime } from "../shared/lib/formatters";
 import { EmptyState } from "../shared/ui/EmptyState";
 import { DetailItem, UsageMetricDetailItem } from "../shared/ui/DetailItem";
 import { MetricCard } from "../shared/ui/MetricCard";
 import { SectionCard } from "../shared/ui/SectionCard";
 import { ApiKeyList } from "../features/keys/components/ApiKeyList";
 import { SubscriptionList } from "../features/subscriptions/components/SubscriptionList";
-import {
-  buildTrendAreaChartOption,
-  EChartCard,
-  normalizeTrendChartData
-} from "../charts";
+import { UsageTrendSection } from "../features/usage/components/UsageTrendSection";
 
 type OverviewMetricDetailKind =
   | "balance"
   | "todayRequests"
   | "todayActualCost"
   | "activeApiKeys"
-  | "todayTokens"
-  | "alerts";
+  | "todayTokens";
 
 export function OverviewPage({
   overview,
   visibleSnapshot,
-  alertCount
+  usageStats
 }: {
   overview: OverviewPayload;
   visibleSnapshot: AccountRuntime["snapshot"] | null;
-  alertCount: number;
+  usageStats: UsageStatsRecord | null;
 }) {
+  const effectiveUsageStats = usageStats ?? buildOverviewUsageStatsFromSnapshot(visibleSnapshot);
   const balanceHint = buildOverviewBalanceHint(overview);
-  const alertsHint = buildOverviewAlertsHint(overview);
+  const performanceValue = buildOverviewPerformanceValue(effectiveUsageStats);
+  const performanceHint = buildOverviewPerformanceHint(effectiveUsageStats);
   const platformCards = overview.platformSeries
     .slice()
     .sort((left, right) => {
@@ -49,9 +46,10 @@ export function OverviewPage({
       }
       return left.platform.localeCompare(right.platform, "zh-CN");
     });
+
   return (
     <>
-      <section className="metric-grid">
+      <section className="metric-grid motion-stagger-grid overview-metric-grid">
         <MetricCard
           label="总余额"
           value={`$${overview.totals.balance.toFixed(2)}`}
@@ -60,6 +58,9 @@ export function OverviewPage({
           hint={balanceHint}
           detailTitle="各账号余额"
           detail={renderOverviewMetricDetails(overview, "balance")}
+          className="motion-stagger-item"
+          animationKey={`overview-balance:${overview.totals.balance}`}
+          style={{ ["--motion-order" as string]: 0 }}
         />
         <MetricCard
           label="今日请求"
@@ -69,6 +70,9 @@ export function OverviewPage({
           hint={`累计 ${overview.totals.totalRequests.toLocaleString()}`}
           detailTitle="各账号今日请求"
           detail={renderOverviewMetricDetails(overview, "todayRequests")}
+          className="motion-stagger-item"
+          animationKey={`overview-requests:${overview.totals.todayRequests}`}
+          style={{ ["--motion-order" as string]: 1 }}
         />
         <MetricCard
           label="今日实际成本"
@@ -79,6 +83,9 @@ export function OverviewPage({
           detailTitle="各账号今日实际成本"
           detail={renderOverviewMetricDetails(overview, "todayActualCost")}
           detailPanelAlign="end"
+          className="motion-stagger-item"
+          animationKey={`overview-actual-cost:${overview.totals.todayActualCost}`}
+          style={{ ["--motion-order" as string]: 2 }}
         />
         <MetricCard
           label="活跃 Keys"
@@ -88,6 +95,9 @@ export function OverviewPage({
           hint={`总数 ${overview.totals.totalApiKeys}`}
           detailTitle="各账号 Key 状态"
           detail={renderOverviewMetricDetails(overview, "activeApiKeys")}
+          className="motion-stagger-item"
+          animationKey={`overview-active-keys:${overview.totals.activeApiKeys}`}
+          style={{ ["--motion-order" as string]: 3 }}
         />
         <MetricCard
           label="今日 Tokens"
@@ -97,36 +107,43 @@ export function OverviewPage({
           hint={`累计 ${compact(overview.totals.totalTokens)}`}
           detailTitle="各账号今日 Tokens"
           detail={renderOverviewMetricDetails(overview, "todayTokens")}
+          className="motion-stagger-item"
+          animationKey={`overview-tokens:${overview.totals.todayTokens}`}
+          style={{ ["--motion-order" as string]: 4 }}
         />
         <MetricCard
-          label="异常数"
-          value={String(alertCount)}
-          accent="rose"
-          icon={<ShieldAlert size={18} />}
-          hint={alertsHint}
-          detailTitle="各账号异常数"
-          detail={renderOverviewMetricDetails(overview, "alerts")}
+          label="性能指标"
+          value={performanceValue}
+          accent="sky"
+          icon={<TimerReset size={18} />}
+          hint={performanceHint}
+          detailTitle="当前账号性能指标"
+          detail={renderOverviewPerformanceDetails(effectiveUsageStats)}
           detailPanelAlign="end"
+          className="motion-stagger-item"
+          animationKey={`overview-performance:${performanceValue}`}
+          style={{ ["--motion-order" as string]: 5 }}
         />
       </section>
 
-      <section className="content-grid">
-        <SectionCard title="近 7 天趋势" subtitle="按全部账号聚合 actual cost / requests / cache">
-          <div className="chart-wrap tall">
-            <EChartCard
-              option={buildTrendAreaChartOption({
-                data: normalizeTrendChartData(overview.trend),
-                series: ["actualCost", "requests", "cacheCreationTokens", "cacheReadTokens", "cacheHitRate"]
-              })}
-            />
-          </div>
-        </SectionCard>
+      <section className="content-grid overview-content-grid">
+        <UsageTrendSection
+          title="近 7 天趋势"
+          subtitle="对齐 dashboard/trend 接口, 聚合全部账号的成本、请求与缓存表现"
+          points={overview.trend}
+          emptyTitle="当前没有总览趋势数据"
+          emptyDetail="至少刷新一个账号后, 这里才会出现全部账号的聚合趋势。"
+        />
 
         <SectionCard title="平台分布" subtitle="按平台汇总实际成本与 tokens">
           {platformCards.length > 0 ? (
-            <div className="platform-distribution-grid">
+            <div className="platform-distribution-grid motion-stagger-grid">
               {platformCards.map((item, index) => (
-                <article key={item.platform} className="platform-distribution-card">
+                <article
+                  key={item.platform}
+                  className="platform-distribution-card motion-stagger-item"
+                  style={{ ["--motion-order" as string]: index }}
+                >
                   <div className="platform-distribution-head">
                     <div className="platform-distribution-copy">
                       <span className="platform-distribution-rank">TOP {index + 1}</span>
@@ -161,7 +178,7 @@ export function OverviewPage({
         </SectionCard>
       </section>
 
-      <section className="content-grid">
+      <section className="content-grid overview-content-grid">
         <SectionCard title="全部订阅" subtitle="当前账号返回的全部套餐与额度窗口">
           {visibleSnapshot ? (
             <SubscriptionList subscriptions={visibleSnapshot.subscriptions} />
@@ -179,11 +196,15 @@ export function OverviewPage({
         </SectionCard>
       </section>
 
-      <section className="content-grid">
+      <section className="content-grid overview-content-grid">
         <SectionCard title="最近使用" subtitle="当前选中账号的近期调用">
           <div className="table-list">
-            {visibleSnapshot?.recentUsage.slice(0, 8).map((row) => (
-              <div key={row.id} className="table-row">
+            {visibleSnapshot?.recentUsage.slice(0, 8).map((row, index) => (
+              <div
+                key={row.id}
+                className="table-row table-row-motion"
+                style={{ ["--motion-order" as string]: index }}
+              >
                 <div>
                   <strong>{row.model}</strong>
                   <p>{row.apiKeyName ?? "未知 Key"} / {row.endpoint ?? "-"}</p>
@@ -226,41 +247,93 @@ function buildOverviewBalanceHint(overview: OverviewPayload) {
   return `${richestAccount.label} $${richestAccount.snapshot.balance.toFixed(2)}`;
 }
 
-function buildOverviewAlertsHint(overview: OverviewPayload) {
-  const latestAlert = overview.alerts[0];
-  if (!latestAlert) {
-    return "当前没有新的异常通知";
+function formatOverviewPerformanceNumber(value?: number | null, digits = 0) {
+  if (value === null || value === undefined || !Number.isFinite(value) || value < 0) {
+    return "-";
+  }
+  return digits > 0 ? Number(value).toFixed(digits) : Math.round(value).toLocaleString();
+}
+
+function buildOverviewPerformanceValue(usageStats: UsageStatsRecord | null) {
+  if (usageStats?.rpm === null || usageStats?.rpm === undefined || !Number.isFinite(usageStats.rpm) || usageStats.rpm < 0) {
+    return "- RPM";
+  }
+  return `${formatOverviewPerformanceNumber(usageStats.rpm)} RPM`;
+}
+
+function buildOverviewPerformanceHint(usageStats: UsageStatsRecord | null) {
+  if (usageStats?.tpm === null || usageStats?.tpm === undefined || !Number.isFinite(usageStats.tpm) || usageStats.tpm < 0) {
+    return "TPM -";
+  }
+  return `${compact(usageStats.tpm)} TPM`;
+}
+
+function renderOverviewPerformanceDetails(usageStats: UsageStatsRecord | null) {
+  return (
+    <>
+      <DetailItem
+        label="RPM"
+        value={usageStats ? formatOverviewPerformanceNumber(usageStats.rpm) : "-"}
+      />
+      <DetailItem
+        label="TPM"
+        value={usageStats?.tpm === null || usageStats?.tpm === undefined ? "-" : compact(usageStats.tpm)}
+      />
+      <DetailItem
+        label="平均耗时"
+        value={usageStats ? formatDurationSeconds(usageStats.averageDurationMs) : "-"}
+      />
+      <DetailItem
+        label="今日请求"
+        value={usageStats ? usageStats.totalRequests.toLocaleString() : "-"}
+      />
+      <DetailItem
+        label="今日总 Tokens"
+        value={usageStats ? compact(usageStats.totalTokens) : "-"}
+      />
+    </>
+  );
+}
+
+function buildOverviewUsageStatsFromSnapshot(
+  snapshot: AccountRuntime["snapshot"] | null
+): UsageStatsRecord | null {
+  if (!snapshot) {
+    return null;
   }
 
-  return `最新: ${latestAlert.title}`;
+  const windowMinutes = Math.max(inferOverviewTodayWindowMinutes(), 1);
+  const totalRequests = snapshot.stats.todayRequests;
+  const totalTokens = snapshot.stats.todayTokens;
+
+  return {
+    totalRequests,
+    totalInputTokens: snapshot.stats.todayInputTokens,
+    totalOutputTokens: snapshot.stats.todayOutputTokens,
+    totalCacheTokens: null,
+    totalCacheCreationTokens: null,
+    totalCacheReadTokens: null,
+    totalTokens,
+    totalCost: snapshot.stats.todayCost,
+    totalActualCost: snapshot.stats.todayActualCost,
+    averageDurationMs: snapshot.stats.averageDurationMs,
+    rpm: totalRequests / windowMinutes,
+    tpm: totalTokens / windowMinutes
+  };
+}
+
+function inferOverviewTodayWindowMinutes(now: Date = new Date()) {
+  const startOfDay = new Date(now);
+  startOfDay.setHours(0, 0, 0, 0);
+  return Math.max((now.getTime() - startOfDay.getTime()) / 60000, 1);
 }
 
 function buildOverviewMetricDetails(overview: OverviewPayload, kind: OverviewMetricDetailKind) {
-  const alertsByAccount = overview.alerts.reduce<Map<string, SnapshotAlert[]>>((memo, alert) => {
-    const current = memo.get(alert.accountId) ?? [];
-    current.push(alert);
-    memo.set(alert.accountId, current);
-    return memo;
-  }, new Map());
-
   return overview.accounts
     .map((account) => {
       const source = formatOverviewAccountSource(account);
       const snapshot = account.snapshot;
       const unavailableLabel = account.lastError ? "同步失败" : account.sessionState === "expired" ? "会话失效" : "未登录";
-
-      if (kind === "alerts") {
-        const accountAlerts = alertsByAccount.get(account.id) ?? [];
-        const latestAlert = accountAlerts[0] ?? null;
-        return {
-          accountId: account.id,
-          label: account.label,
-          value: accountAlerts.length.toLocaleString(),
-          description: latestAlert
-            ? `${source} · ${latestAlert.title} · ${formatTime(latestAlert.createdAt)}`
-            : `${source} · ${account.sessionState === "ready" ? "当前无异常" : unavailableLabel}`
-        };
-      }
 
       if (!snapshot) {
         return {

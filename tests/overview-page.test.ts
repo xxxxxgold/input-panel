@@ -6,7 +6,7 @@ import { OverviewPage } from "../src/pages/OverviewPage";
 import type { OverviewPayload } from "../src/types";
 
 describe("OverviewPage metric hints", () => {
-  it("shows the richest account and latest alert in card hints", () => {
+  it("shows the richest account in card hints and does not render an alert metric card", () => {
     const overview = {
       sites: [],
       accounts: [
@@ -175,13 +175,66 @@ describe("OverviewPage metric hints", () => {
       createElement(OverviewPage, {
         overview,
         visibleSnapshot: overview.accounts[0].snapshot,
-        alertCount: overview.alerts.length
+        usageStats: null
       })
     );
 
     expect(html).toContain("主账号 $42.50");
-    expect(html).toContain("最新: 主账号 余额偏低, 需要尽快补充避免影响后续调用");
+    expect(html).not.toContain("异常数");
+    expect(html).not.toContain("最新: 主账号 余额已耗尽");
+    expect(html).not.toContain("主账号 余额偏低, 需要尽快补充避免影响后续调用");
   });
+
+  it("renders the shared trend section with all-account subtitle", () => {
+    const overview = {
+      sites: [],
+      accounts: [],
+      totals: {
+        balance: 0,
+        totalSites: 1,
+        totalAccounts: 0,
+        totalApiKeys: 0,
+        activeApiKeys: 0,
+        todayRequests: 12,
+        totalRequests: 34,
+        todayActualCost: 1.2,
+        totalActualCost: 5.6,
+        todayTokens: 7890,
+        totalTokens: 12345
+      },
+      alerts: [],
+      platformSeries: [],
+      trend: [
+        {
+          bucket: "2026-06-14",
+          actualCost: 1.2,
+          totalCost: 1.2,
+          requests: 12,
+          inputTokens: 3000,
+          outputTokens: 800,
+          cacheCreationTokens: 1200,
+          cacheReadTokens: 500,
+          totalTokens: 5500
+        }
+      ],
+      recentUsage: [],
+      subscriptions: [],
+      keys: [],
+      generatedAt: "2026-06-15T10:47:34Z"
+    } satisfies OverviewPayload;
+
+    const html = renderToStaticMarkup(
+      createElement(OverviewPage, {
+        overview,
+        visibleSnapshot: null,
+        usageStats: null
+      })
+    );
+
+    expect(html).toContain("对齐 dashboard/trend 接口, 聚合全部账号的成本、请求与缓存表现");
+    expect(html).toContain("echart-card-shell");
+  });
+
   it("renders platform distribution as summary cards instead of a donut chart", () => {
     const overview = {
       sites: [],
@@ -220,7 +273,7 @@ describe("OverviewPage metric hints", () => {
       createElement(OverviewPage, {
         overview,
         visibleSnapshot: null,
-        alertCount: 0
+        usageStats: null
       })
     );
 
@@ -229,5 +282,193 @@ describe("OverviewPage metric hints", () => {
     expect(html).toContain("$5.6000");
     expect(html).toContain("12.3K");
     expect(html).not.toContain("当前没有平台汇总数据");
+  });
+
+  it("renders performance metric card from usage stats", () => {
+    const overview = {
+      sites: [],
+      accounts: [],
+      totals: {
+        balance: 0,
+        totalSites: 1,
+        totalAccounts: 0,
+        totalApiKeys: 0,
+        activeApiKeys: 0,
+        todayRequests: 12,
+        totalRequests: 34,
+        todayActualCost: 1.2,
+        totalActualCost: 5.6,
+        todayTokens: 7890,
+        totalTokens: 12345
+      },
+      alerts: [],
+      platformSeries: [],
+      trend: [],
+      recentUsage: [],
+      subscriptions: [],
+      keys: [],
+      generatedAt: "2026-06-15T10:47:34Z"
+    } satisfies OverviewPayload;
+
+    const html = renderToStaticMarkup(
+      createElement(OverviewPage, {
+        overview,
+        visibleSnapshot: null,
+        usageStats: {
+          totalRequests: 2241,
+          totalInputTokens: 42600000,
+          totalOutputTokens: 2600000,
+          totalCacheTokens: 0,
+          totalCacheCreationTokens: 0,
+          totalCacheReadTokens: 0,
+          totalTokens: 116700,
+          totalCost: 0,
+          totalActualCost: 0,
+          averageDurationMs: 23220,
+          rpm: 5,
+          tpm: 116700
+        }
+      })
+    );
+
+    expect(html).toContain("性能指标");
+    expect(html).toContain("5 RPM");
+    expect(html).toContain("116.7K TPM");
+    expect(html).toContain("当前账号性能指标");
+  });
+
+  it("keeps zero performance values visible instead of falling back to placeholders", () => {
+    const overview = {
+      sites: [],
+      accounts: [],
+      totals: {
+        balance: 0,
+        totalSites: 1,
+        totalAccounts: 0,
+        totalApiKeys: 0,
+        activeApiKeys: 0,
+        todayRequests: 12,
+        totalRequests: 34,
+        todayActualCost: 1.2,
+        totalActualCost: 5.6,
+        todayTokens: 7890,
+        totalTokens: 12345
+      },
+      alerts: [],
+      platformSeries: [],
+      trend: [],
+      recentUsage: [],
+      subscriptions: [],
+      keys: [],
+      generatedAt: "2026-06-15T10:47:34Z"
+    } satisfies OverviewPayload;
+
+    const html = renderToStaticMarkup(
+      createElement(OverviewPage, {
+        overview,
+        visibleSnapshot: null,
+        usageStats: {
+          totalRequests: 0,
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          totalCacheTokens: 0,
+          totalCacheCreationTokens: 0,
+          totalCacheReadTokens: 0,
+          totalTokens: 0,
+          totalCost: 0,
+          totalActualCost: 0,
+          averageDurationMs: 0,
+          rpm: 0,
+          tpm: 0
+        }
+      })
+    );
+
+    expect(html).toContain("0 RPM");
+    expect(html).toContain("0 TPM");
+    expect(html).not.toContain("- RPM");
+    expect(html).not.toContain("TPM -");
+  });
+
+  it("falls back to the selected snapshot when overview performance stats are not separately loaded", () => {
+    const overview = {
+      sites: [],
+      accounts: [],
+      totals: {
+        balance: 0,
+        totalSites: 1,
+        totalAccounts: 0,
+        totalApiKeys: 0,
+        activeApiKeys: 0,
+        todayRequests: 0,
+        totalRequests: 0,
+        todayActualCost: 0,
+        totalActualCost: 0,
+        todayTokens: 0,
+        totalTokens: 0
+      },
+      alerts: [],
+      platformSeries: [],
+      trend: [],
+      recentUsage: [],
+      subscriptions: [],
+      keys: [],
+      generatedAt: "2026-06-15T10:47:34Z"
+    } satisfies OverviewPayload;
+
+    const html = renderToStaticMarkup(
+      createElement(OverviewPage, {
+        overview,
+        visibleSnapshot: {
+          fetchedAt: "2026-06-15T10:00:00Z",
+          online: true,
+          siteName: "AI INPUT",
+          siteUrl: "https://example.com",
+          accountLabel: "主账号",
+          emailMasked: "m***@example.com",
+          balance: 42.5,
+          currency: "USD",
+          stats: {
+            totalApiKeys: 2,
+            activeApiKeys: 1,
+            todayRequests: 120,
+            totalRequests: 300,
+            todayActualCost: 2.4,
+            totalActualCost: 6.8,
+            todayCost: 2.4,
+            totalCost: 6.8,
+            todayTokens: 36000,
+            totalTokens: 80000,
+            todayInputTokens: 12000,
+            todayOutputTokens: 24000,
+            averageDurationMs: 1500,
+            byPlatform: []
+          },
+          usageSummary: {
+            totalRequests: 300,
+            totalTokens: 80000,
+            totalInputTokens: 30000,
+            totalOutputTokens: 50000,
+            totalActualCost: 6.8,
+            totalCost: 6.8,
+            averageDurationMs: 1500
+          },
+          recentUsage: [],
+          requestHistory: [],
+          trend: [],
+          keys: [],
+          subscriptions: [],
+          activeSubscription: null,
+          alerts: []
+        },
+        usageStats: null
+      })
+    );
+
+    expect(html).toContain("性能指标");
+    expect(html).not.toContain("- RPM");
+    expect(html).not.toContain("TPM -");
+    expect(html).toContain("1.50 s");
+    expect(html).toContain("36.0K");
   });
 });

@@ -47,6 +47,8 @@ interface AnalyticsLabProps {
   onKeyUsageSelect: (keyId: string) => void;
 }
 
+const ANALYTICS_SAMPLE_ROWS = 20;
+
 export function AnalyticsLab(props: AnalyticsLabProps) {
   const {
     overview,
@@ -76,8 +78,9 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
   const palette = readChartPalette();
   const selectedSnapshot = selectedAccount?.snapshot ?? null;
   const keys = managedKeys?.items ?? [];
-  const sampleRows = usageRecords?.items ?? [];
   const scopedRows = usageScopeRows;
+  const effectiveUsageStats = usageStats ?? (scopedRows.length > 0 ? buildUsageStatsFromRows(scopedRows, usageStartDate, usageEndDate) : null);
+  const sampleRows = usageRecords?.items ?? scopedRows.slice(0, ANALYTICS_SAMPLE_ROWS);
   const selectedKey = keys.find((item) => item.id === keyUsageKeyId) ?? null;
   const platformSeries = selectedSnapshot?.stats.byPlatform ?? overview?.platformSeries ?? [];
   const scopedTrend = scopedRows.length > 0 ? buildScopedTrendPayload(scopedRows) : usageTrend;
@@ -130,7 +133,9 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
     : "请先选择账号";
   const sampleFootnote = usageRecords
     ? `当前样本为第 ${usageRecords.page} / ${usageRecords.pages} 页，共 ${usageRecords.total} 条明细。`
-    : "尚未加载 usage 明细。";
+    : usageScopeMeta
+      ? `当前样本使用筛选范围前 ${ANALYTICS_SAMPLE_ROWS} 条，共 ${usageScopeMeta.total} 条明细。`
+      : "尚未加载 usage 明细。";
   const scopedFootnote = usageScopeMeta
     ? `当前筛选范围已聚合 ${usageScopeMeta.loadedPages} / ${usageScopeMeta.pages} 页，共 ${usageScopeMeta.total} 条 usage 明细。`
     : "当前还没有筛选范围聚合数据。";
@@ -233,11 +238,15 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
           </div>
         </div>
         <div className="analytics-kpi-grid">
-          <AnalyticsStatCard label="当前总请求" value={usageStats?.totalRequests.toLocaleString() ?? "-"} hint="基于当前筛选条件" />
-          <AnalyticsStatCard label="当前实际成本" value={formatUsd(usageStats?.totalActualCost, 4)} hint={formatUsdPerMillion(usageStats?.totalActualCost, usageStats?.totalTokens)} />
-          <AnalyticsStatCard label="当前总 Tokens" value={usageStats ? compact(usageStats.totalTokens) : "-"} hint={`输入 ${compact(usageStats?.totalInputTokens ?? 0)} / 输出 ${compact(usageStats?.totalOutputTokens ?? 0)}`} />
-          <AnalyticsStatCard label="缓存命中" value={usageStats ? compact((usageStats.totalCacheReadTokens ?? 0) + (usageStats.totalCacheCreationTokens ?? 0)) : "-"} hint={`读取 ${compact(usageStats?.totalCacheReadTokens ?? 0)} / 写入 ${compact(usageStats?.totalCacheCreationTokens ?? 0)}`} />
-          <AnalyticsStatCard label="平均耗时" value={formatDurationSeconds(usageStats?.averageDurationMs)} hint={`RPM ${formatNumber(usageStats?.rpm)} / TPM ${usageStats?.tpm ? compact(usageStats.tpm) : "-"}`} />
+          <AnalyticsStatCard label="当前总请求" value={effectiveUsageStats?.totalRequests.toLocaleString() ?? "-"} hint="基于当前筛选条件" />
+          <AnalyticsStatCard label="当前实际成本" value={formatUsd(effectiveUsageStats?.totalActualCost, 4)} hint={formatUsdPerMillion(effectiveUsageStats?.totalActualCost, effectiveUsageStats?.totalTokens)} />
+          <AnalyticsStatCard label="当前总 Tokens" value={effectiveUsageStats ? compact(effectiveUsageStats.totalTokens) : "-"} hint={`输入 ${compact(effectiveUsageStats?.totalInputTokens ?? 0)} / 输出 ${compact(effectiveUsageStats?.totalOutputTokens ?? 0)}`} />
+          <AnalyticsStatCard label="缓存命中" value={effectiveUsageStats ? compact((effectiveUsageStats.totalCacheReadTokens ?? 0) + (effectiveUsageStats.totalCacheCreationTokens ?? 0)) : "-"} hint={`读取 ${compact(effectiveUsageStats?.totalCacheReadTokens ?? 0)} / 写入 ${compact(effectiveUsageStats?.totalCacheCreationTokens ?? 0)}`} />
+          <AnalyticsStatCard
+            label="平均耗时"
+            value={formatDurationSeconds(effectiveUsageStats?.averageDurationMs)}
+            hint={`RPM ${formatNumber(effectiveUsageStats?.rpm)} / TPM ${effectiveUsageStats?.tpm === null || effectiveUsageStats?.tpm === undefined ? "-" : compact(effectiveUsageStats.tpm)}`}
+          />
           <AnalyticsStatCard label="活跃订阅" value={String(subscriptionSummary?.activeCount ?? selectedSnapshot?.subscriptions.length ?? 0)} hint={`已用 ${formatUsd(subscriptionSummary?.totalUsedUsd ?? 0, 2)}`} />
           <AnalyticsStatCard label="可管理 Key" value={String(keys.length)} hint={`活跃 ${String(keys.filter((item) => item.status === "active").length)}`} />
           <AnalyticsStatCard label="身份绑定" value={`${identityRows.filter((item) => item.bound).length} / ${identityRows.length}`} hint={profileRecord ? maskEmail(profileRecord.email) : "等待资料接口"} />
@@ -1967,6 +1976,41 @@ function buildScopedModelsPayload(rows: UsageRow[]): DashboardModelsPayload | nu
   };
 }
 
+function buildUsageStatsFromRows(
+  rows: UsageRow[],
+  startDate: string,
+  endDate: string
+): UsageStatsRecord {
+  const totalRequests = rows.length;
+  const totalInputTokens = rows.reduce((sum, row) => sum + (row.inputTokens ?? 0), 0);
+  const totalOutputTokens = rows.reduce((sum, row) => sum + (row.outputTokens ?? 0), 0);
+  const totalCacheCreationTokens = rows.reduce((sum, row) => sum + (row.cacheCreationTokens ?? 0), 0);
+  const totalCacheReadTokens = rows.reduce((sum, row) => sum + (row.cacheReadTokens ?? 0), 0);
+  const totalTokens = rows.reduce((sum, row) => sum + (row.totalTokens ?? 0), 0);
+  const totalCost = rows.reduce((sum, row) => sum + (row.totalCost ?? 0), 0);
+  const totalActualCost = rows.reduce((sum, row) => sum + (row.actualCost ?? 0), 0);
+  const durations = rows.map((row) => row.durationMs ?? 0).filter((value) => value > 0);
+  const averageDurationMs = durations.length > 0
+    ? durations.reduce((sum, value) => sum + value, 0) / durations.length
+    : 0;
+  const windowMinutes = inferUsageWindowMinutes(startDate, endDate);
+
+  return {
+    totalRequests,
+    totalInputTokens,
+    totalOutputTokens,
+    totalCacheTokens: totalCacheCreationTokens + totalCacheReadTokens,
+    totalCacheCreationTokens,
+    totalCacheReadTokens,
+    totalTokens,
+    totalCost,
+    totalActualCost,
+    averageDurationMs,
+    rpm: totalRequests / windowMinutes,
+    tpm: totalTokens / windowMinutes
+  };
+}
+
 function buildScopedPlatformRows(rows: UsageRow[]) {
   return buildUsageAggregateRows(rows, (row) => row.platform ?? "unknown").map((row) => ({
     platform: row.name,
@@ -1992,6 +2036,16 @@ function percentile(values: number[], ratio: number) {
   }
   const index = Math.min(values.length - 1, Math.max(0, Math.round((values.length - 1) * ratio)));
   return values[index] ?? 0;
+}
+
+function inferUsageWindowMinutes(startDate: string, endDate: string, now: Date = new Date()) {
+  const today = now.toISOString().slice(0, 10);
+  const start = new Date(`${startDate}T00:00:00`);
+  const end = endDate >= today ? now : new Date(`${endDate}T23:59:59`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end.getTime() < start.getTime()) {
+    return 1;
+  }
+  return Math.max((end.getTime() - start.getTime()) / 60000, 1);
 }
 
 function buildSiteRankings(overview: OverviewPayload | null): RankingRow[] {

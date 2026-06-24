@@ -16,11 +16,23 @@ import {
   listManagedKeys
 } from "../../api";
 
+type AccountScopedResources = {
+  groups?: boolean;
+  managedKeys?: boolean;
+  subscriptionSummary?: boolean;
+  profileRecord?: boolean;
+  platformQuotas?: boolean;
+};
+
 export function useAccountScopedWorkspace({
   selectedAccountId,
+  resources,
+  enabled,
   setError
 }: {
   selectedAccountId: string | null;
+  resources: AccountScopedResources;
+  enabled: boolean;
   setError: (value: string | null) => void;
 }) {
   const [groups, setGroups] = useState<GroupRecord[]>([]);
@@ -28,6 +40,11 @@ export function useAccountScopedWorkspace({
   const [subscriptionSummary, setSubscriptionSummary] = useState<SubscriptionSummaryPayload | null>(null);
   const [profileRecord, setProfileRecord] = useState<UserProfileRecord | null>(null);
   const [platformQuotas, setPlatformQuotas] = useState<PlatformQuotaPayload | null>(null);
+  const groupsEnabled = resources.groups ?? false;
+  const managedKeysEnabled = resources.managedKeys ?? false;
+  const subscriptionSummaryEnabled = resources.subscriptionSummary ?? false;
+  const profileRecordEnabled = resources.profileRecord ?? false;
+  const platformQuotasEnabled = resources.platformQuotas ?? false;
 
   useEffect(() => {
     if (!selectedAccountId) {
@@ -39,13 +56,37 @@ export function useAccountScopedWorkspace({
       return;
     }
 
-    setGroups([]);
-    setManagedKeys(null);
-    setSubscriptionSummary(null);
-    setProfileRecord(null);
-    setPlatformQuotas(null);
+    if (!groupsEnabled) {
+      setGroups([]);
+    }
+    if (!managedKeysEnabled) {
+      setManagedKeys(null);
+    }
+    if (!subscriptionSummaryEnabled) {
+      setSubscriptionSummary(null);
+    }
+    if (!profileRecordEnabled) {
+      setProfileRecord(null);
+    }
+    if (!platformQuotasEnabled) {
+      setPlatformQuotas(null);
+    }
+  }, [selectedAccountId, groupsEnabled, managedKeysEnabled, subscriptionSummaryEnabled, profileRecordEnabled, platformQuotasEnabled]);
+
+  useEffect(() => {
+    if (!selectedAccountId || !enabled || !hasEnabledAccountScopedResources(resources)) {
+      return;
+    }
     void loadAccountScopedData(selectedAccountId);
-  }, [selectedAccountId]);
+  }, [
+    enabled,
+    groupsEnabled,
+    managedKeysEnabled,
+    platformQuotasEnabled,
+    profileRecordEnabled,
+    selectedAccountId,
+    subscriptionSummaryEnabled
+  ]);
 
   async function loadAccountScopedData(accountId: string) {
     try {
@@ -67,11 +108,11 @@ export function useAccountScopedWorkspace({
         nextPlatformQuotas,
         nextSubscriptionSummary
       ] = await Promise.all([
-        loadOptional(() => getAvailableGroups(accountId), []),
-        listManagedKeys(accountId, 1, 100),
-        getProfileRecord(accountId),
-        loadOptional(() => getPlatformQuotas(accountId), null),
-        loadOptional(() => getSubscriptionSummary(accountId), null)
+        groupsEnabled ? loadOptional(() => getAvailableGroups(accountId), []) : Promise.resolve([]),
+        managedKeysEnabled ? listManagedKeys(accountId, 1, 100) : Promise.resolve(null),
+        profileRecordEnabled ? getProfileRecord(accountId) : Promise.resolve(null),
+        platformQuotasEnabled ? loadOptional(() => getPlatformQuotas(accountId), null) : Promise.resolve(null),
+        subscriptionSummaryEnabled ? loadOptional(() => getSubscriptionSummary(accountId), null) : Promise.resolve(null)
       ]);
 
       setGroups(nextGroups);
@@ -86,7 +127,7 @@ export function useAccountScopedWorkspace({
   }
 
   async function refreshAccountScopedData() {
-    if (!selectedAccountId) {
+    if (!selectedAccountId || !enabled || !hasEnabledAccountScopedResources(resources)) {
       return;
     }
     await loadAccountScopedData(selectedAccountId);
@@ -106,4 +147,14 @@ export function useAccountScopedWorkspace({
 function isOptionalEndpointUnavailable(cause: unknown) {
   const message = (cause as Error)?.message ?? "";
   return message.includes("未找到可用的接口路径") || message.includes("404");
+}
+
+function hasEnabledAccountScopedResources(resources: AccountScopedResources) {
+  return Boolean(
+    resources.groups
+    || resources.managedKeys
+    || resources.subscriptionSummary
+    || resources.profileRecord
+    || resources.platformQuotas
+  );
 }
