@@ -7,7 +7,15 @@ import {
   TimerReset
 } from "lucide-react";
 
-import type { AccountRuntime, OverviewPayload, UsageStatsRecord } from "../types";
+import type {
+  AccountRuntime,
+  KeyRecord,
+  OverviewPayload,
+  SubscriptionRecord,
+  SubscriptionSummaryPayload,
+  UsageRow,
+  UsageStatsRecord
+} from "../types";
 import { compact, formatDurationSeconds, formatTime } from "../shared/lib/formatters";
 import { EmptyState } from "../shared/ui/EmptyState";
 import { DetailItem, UsageMetricDetailItem } from "../shared/ui/DetailItem";
@@ -16,6 +24,7 @@ import { SectionCard } from "../shared/ui/SectionCard";
 import { ApiKeyList } from "../features/keys/components/ApiKeyList";
 import { SubscriptionList } from "../features/subscriptions/components/SubscriptionList";
 import { UsageTrendSection } from "../features/usage/components/UsageTrendSection";
+import { mergeSubscriptionRecords } from "../subscription-view";
 
 type OverviewMetricDetailKind =
   | "balance"
@@ -26,14 +35,26 @@ type OverviewMetricDetailKind =
 
 export function OverviewPage({
   overview,
-  visibleSnapshot,
+  currentAccountStats,
+  currentAccountSubscriptions,
+  subscriptionSummary,
+  currentAccountKeys,
+  currentAccountRecentUsage,
   usageStats
 }: {
   overview: OverviewPayload;
-  visibleSnapshot: AccountRuntime["snapshot"] | null;
+  currentAccountStats: NonNullable<AccountRuntime["cacheView"]>["stats"] | null;
+  currentAccountSubscriptions: SubscriptionRecord[];
+  subscriptionSummary: SubscriptionSummaryPayload | null;
+  currentAccountKeys: KeyRecord[];
+  currentAccountRecentUsage: UsageRow[];
   usageStats: UsageStatsRecord | null;
 }) {
-  const effectiveUsageStats = usageStats ?? buildOverviewUsageStatsFromSnapshot(visibleSnapshot);
+  const effectiveUsageStats = usageStats ?? buildOverviewUsageStatsFromStats(currentAccountStats);
+  const mergedCurrentAccountSubscriptions = mergeSubscriptionRecords(
+    currentAccountSubscriptions,
+    subscriptionSummary
+  );
   const balanceHint = buildOverviewBalanceHint(overview);
   const performanceValue = buildOverviewPerformanceValue(effectiveUsageStats);
   const performanceHint = buildOverviewPerformanceHint(effectiveUsageStats);
@@ -180,26 +201,26 @@ export function OverviewPage({
 
       <section className="content-grid overview-content-grid">
         <SectionCard title="全部订阅" subtitle="当前账号返回的全部套餐与额度窗口">
-          {visibleSnapshot ? (
-            <SubscriptionList subscriptions={visibleSnapshot.subscriptions} />
+          {mergedCurrentAccountSubscriptions.length > 0 ? (
+            <SubscriptionList subscriptions={mergedCurrentAccountSubscriptions} />
           ) : (
             <EmptyState title="当前没有订阅数据" detail="该账号未返回有效订阅或套餐信息。" compact />
           )}
         </SectionCard>
 
         <SectionCard title="全部 API Keys" subtitle="状态、最近使用、额度与限流摘要">
-          {visibleSnapshot ? (
-            <ApiKeyList keys={visibleSnapshot.keys} />
+          {currentAccountKeys.length > 0 ? (
+            <ApiKeyList keys={currentAccountKeys} />
           ) : (
-            <EmptyState title="还没有 Key 快照" detail="登录并刷新后这里会展示 key 列表。" compact />
+            <EmptyState title="还没有 Key 数据" detail="登录并刷新后这里会展示 key 列表。" compact />
           )}
         </SectionCard>
       </section>
 
-      <section className="content-grid overview-content-grid">
+      <section className="stack-list">
         <SectionCard title="最近使用" subtitle="当前选中账号的近期调用">
           <div className="table-list">
-            {visibleSnapshot?.recentUsage.slice(0, 8).map((row, index) => (
+            {currentAccountRecentUsage.slice(0, 8).map((row, index) => (
               <div
                 key={row.id}
                 className="table-row table-row-motion"
@@ -215,8 +236,8 @@ export function OverviewPage({
                 </div>
               </div>
             ))}
-            {!visibleSnapshot && (
-              <EmptyState title="还没有账号快照" detail="先登录账号并刷新数据。" compact />
+            {currentAccountRecentUsage.length === 0 && (
+              <EmptyState title="还没有账号数据" detail="先登录账号并刷新数据。" compact />
             )}
           </div>
         </SectionCard>
@@ -226,25 +247,25 @@ export function OverviewPage({
 }
 
 function formatOverviewAccountSource(account: AccountRuntime) {
-  return `${account.site?.name ?? account.snapshot?.siteName ?? "未命名站点"} / ${account.label}`;
+  return `${account.site?.name ?? account.cacheView?.siteName ?? "未命名站点"} / ${account.label}`;
 }
 
 function buildOverviewBalanceHint(overview: OverviewPayload) {
   const richestAccount = overview.accounts
-    .filter((account) => account.snapshot)
+    .filter((account) => account.cacheView)
     .sort((left, right) => {
-      const balanceDiff = (right.snapshot?.balance ?? Number.NEGATIVE_INFINITY) - (left.snapshot?.balance ?? Number.NEGATIVE_INFINITY);
+      const balanceDiff = (right.cacheView?.balance ?? Number.NEGATIVE_INFINITY) - (left.cacheView?.balance ?? Number.NEGATIVE_INFINITY);
       if (balanceDiff !== 0) {
         return balanceDiff;
       }
       return left.label.localeCompare(right.label, "zh-CN");
     })[0];
 
-  if (!richestAccount?.snapshot) {
+  if (!richestAccount?.cacheView) {
     return "当前没有可展示的账号余额";
   }
 
-  return `${richestAccount.label} $${richestAccount.snapshot.balance.toFixed(2)}`;
+  return `${richestAccount.label} $${richestAccount.cacheView.balance.toFixed(2)}`;
 }
 
 function formatOverviewPerformanceNumber(value?: number | null, digits = 0) {
@@ -295,28 +316,28 @@ function renderOverviewPerformanceDetails(usageStats: UsageStatsRecord | null) {
   );
 }
 
-function buildOverviewUsageStatsFromSnapshot(
-  snapshot: AccountRuntime["snapshot"] | null
+function buildOverviewUsageStatsFromStats(
+  stats: NonNullable<AccountRuntime["cacheView"]>["stats"] | null
 ): UsageStatsRecord | null {
-  if (!snapshot) {
+  if (!stats) {
     return null;
   }
 
   const windowMinutes = Math.max(inferOverviewTodayWindowMinutes(), 1);
-  const totalRequests = snapshot.stats.todayRequests;
-  const totalTokens = snapshot.stats.todayTokens;
+  const totalRequests = stats.todayRequests;
+  const totalTokens = stats.todayTokens;
 
   return {
     totalRequests,
-    totalInputTokens: snapshot.stats.todayInputTokens,
-    totalOutputTokens: snapshot.stats.todayOutputTokens,
+    totalInputTokens: stats.todayInputTokens,
+    totalOutputTokens: stats.todayOutputTokens,
     totalCacheTokens: null,
     totalCacheCreationTokens: null,
     totalCacheReadTokens: null,
     totalTokens,
-    totalCost: snapshot.stats.todayCost,
-    totalActualCost: snapshot.stats.todayActualCost,
-    averageDurationMs: snapshot.stats.averageDurationMs,
+    totalCost: stats.todayCost,
+    totalActualCost: stats.todayActualCost,
+    averageDurationMs: stats.averageDurationMs,
     rpm: totalRequests / windowMinutes,
     tpm: totalTokens / windowMinutes
   };
@@ -332,10 +353,10 @@ function buildOverviewMetricDetails(overview: OverviewPayload, kind: OverviewMet
   return overview.accounts
     .map((account) => {
       const source = formatOverviewAccountSource(account);
-      const snapshot = account.snapshot;
+      const cacheView = account.cacheView;
       const unavailableLabel = account.lastError ? "同步失败" : account.sessionState === "expired" ? "会话失效" : "未登录";
 
-      if (!snapshot) {
+      if (!cacheView) {
         return {
           accountId: account.id,
           label: account.label,
@@ -349,36 +370,36 @@ function buildOverviewMetricDetails(overview: OverviewPayload, kind: OverviewMet
           return {
             accountId: account.id,
             label: account.label,
-            value: `$${snapshot.balance.toFixed(2)}`,
-            description: `${source} · 更新时间 ${formatTime(snapshot.fetchedAt)}`
+            value: `$${cacheView.balance.toFixed(2)}`,
+            description: `${source} · 更新时间 ${formatTime(cacheView.fetchedAt)}`
           };
         case "todayRequests":
           return {
             accountId: account.id,
             label: account.label,
-            value: snapshot.stats.todayRequests.toLocaleString(),
-            description: `${source} · 累计 ${snapshot.stats.totalRequests.toLocaleString()} 请求`
+            value: cacheView.stats.todayRequests.toLocaleString(),
+            description: `${source} · 累计 ${cacheView.stats.totalRequests.toLocaleString()} 请求`
           };
         case "todayActualCost":
           return {
             accountId: account.id,
             label: account.label,
-            value: `$${snapshot.stats.todayActualCost.toFixed(4)}`,
-            description: `${source} · 累计 $${snapshot.stats.totalActualCost.toFixed(4)}`
+            value: `$${cacheView.stats.todayActualCost.toFixed(4)}`,
+            description: `${source} · 累计 $${cacheView.stats.totalActualCost.toFixed(4)}`
           };
         case "activeApiKeys":
           return {
             accountId: account.id,
             label: account.label,
-            value: String(snapshot.stats.activeApiKeys),
-            description: `${source} · 总数 ${snapshot.stats.totalApiKeys}`
+            value: String(cacheView.stats.activeApiKeys),
+            description: `${source} · 总数 ${cacheView.stats.totalApiKeys}`
           };
         case "todayTokens":
           return {
             accountId: account.id,
             label: account.label,
-            value: compact(snapshot.stats.todayTokens),
-            description: `${source} · 累计 ${compact(snapshot.stats.totalTokens)} tokens`
+            value: compact(cacheView.stats.todayTokens),
+            description: `${source} · 累计 ${compact(cacheView.stats.totalTokens)} tokens`
           };
       }
     })
