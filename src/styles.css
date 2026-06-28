@@ -2789,6 +2789,12 @@ html.audit-archive-room {
   gap: 10px;
 }
 
+.account-detail-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .summary-stat {
   display: flex;
   min-height: 88px;

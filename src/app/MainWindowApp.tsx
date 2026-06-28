@@ -1,6 +1,14 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emitTo } from "@tauri-apps/api/event";
-import { useEffect, useEffectEvent, useRef, useState, type KeyboardEvent } from "react";
+import {
+  Suspense,
+  lazy,
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+  type KeyboardEvent
+} from "react";
 
 import { DesktopModeCloseDialog } from "./DesktopModeCloseDialog";
 import { AppShell } from "./AppShell";
@@ -10,11 +18,13 @@ import { ToastHost } from "./ToastHost";
 import { Topbar } from "./Topbar";
 import { WorkspaceFrame } from "./WorkspaceFrame";
 import { buildWorkspaceSummaryTexts } from "./workspace-summary";
+import { writeWindowSelection } from "./window-selection-sync";
 import { navTitle as workspaceNavTitle } from "./navigation";
 import { useShellWorkspace } from "./useShellWorkspace";
 import { THEME_IDS, normalizeThemeId, type ThemeId } from "../shared/lib/theme";
-import { useAccountScopedWorkspace } from "../features/accounts/useAccountScopedWorkspace";
+import { useAccountDataWorkspace } from "../features/accounts/useAccountDataWorkspace";
 import { AccountWorkspaceModals } from "../features/accounts/components/AccountWorkspaceModals";
+import { getAccountSyncStatus, syncAccountData } from "../features/accounts/client";
 import { useAccountWorkspace } from "../features/accounts/useAccountWorkspace";
 import { pushFloatingPanelToast } from "../features/desktop-ui/client";
 import { AlertInboxModal, type AlertInboxItem } from "../features/overview/components/AlertInboxModal";
@@ -31,13 +41,13 @@ import { useUsageWorkspace } from "../features/usage/useUsageWorkspace";
 import { useDesktopUiPrefs } from "../features/desktop-ui/useDesktopUiPrefs";
 import {
   DEFAULT_AUTO_REFRESH_INTERVAL_SECONDS,
-  isSnapshotStaleForToday,
+  isAccountDataStaleForToday,
   isAutoRefreshScopeEnabled,
   normalizeAutoRefreshIntervalSeconds,
   resolveAutoRefreshScope,
   resolveAutoRefreshIntervalSecondsForScope,
   shouldAutoRefreshSelectedAccountData,
-  shouldRefreshSnapshotForNav
+  shouldRefreshCoreForNav
 } from "./refresh-policy";
 import {
   formatTime,
@@ -49,7 +59,6 @@ import {
   buildTopbarSubscriptionPreviewRecords,
   mergeSubscriptionRecords
 } from "../subscription-view";
-import { AnalyticsLab } from "../analytics-lab";
 import projectLogo from "../assets/project-logo.webp";
 import { AlertsPage } from "../pages/AlertsPage";
 import { KeyUsagePage } from "../pages/KeyUsagePage";
@@ -67,15 +76,21 @@ import {
   useMonitorStore
 } from "../store/monitor-store";
 import type {
+  AccountSyncStatusRecord,
   AccountRuntime,
   NavKey
 } from "../types";
 
 const ALLOWED_THEMES = new Set<string>(THEME_IDS);
+const AnalyticsLab = lazy(async () => {
+  const module = await import("../features/analytics/AnalyticsLab");
+  return { default: module.AnalyticsLab };
+});
 
 export function MainWindowApp() {
   const [alertInboxOpen, setAlertInboxOpen] = useState(false);
   const [profileWorkspaceRequested, setProfileWorkspaceRequested] = useState(false);
+  const [accountSyncStatuses, setAccountSyncStatuses] = useState<AccountSyncStatusRecord[]>([]);
   const [pageVisible, setPageVisible] = useState(
     typeof document === "undefined" ? true : document.visibilityState === "visible"
   );
@@ -84,6 +99,7 @@ export function MainWindowApp() {
   const lastServiceStatusNavRef = useRef<NavKey | null>(null);
   const lastServiceStatusPeekRef = useRef(false);
   const lastPageVisibleRef = useRef(pageVisible);
+  const selectedAccountIdRef = useRef<string | null>(null);
   const nav = useMonitorStore((state) => state.nav);
   const setNav = useMonitorStore((state) => state.setNav);
   const theme = useMonitorStore((state) => state.theme);
@@ -109,6 +125,9 @@ export function MainWindowApp() {
   const selectedAccountId = useMonitorStore((state) => state.selectedAccountId);
   const setSelectedAccountId = useMonitorStore((state) => state.setSelectedAccountId);
   const loadOverview = useMonitorStore((state) => state.loadOverview);
+  useEffect(() => {
+    selectedAccountIdRef.current = selectedAccountId;
+  }, [selectedAccountId]);
   const desktopUi = useDesktopUiPrefs("main");
   const sites = overview?.sites ?? [];
   const accounts = overview?.accounts ?? [];
@@ -118,18 +137,22 @@ export function MainWindowApp() {
     desktopUi.prefs.autoRefreshIntervalSeconds
   );
   const shellWorkspace = useShellWorkspace({ accounts });
-  const accountScopedResources = {
+  const overviewSubscriptionPanelVisible =
+    nav === "subscriptions" || shellWorkspace.topbarSubscriptionsExpanded;
+  const subscriptionSummaryVisible =
+    overviewSubscriptionPanelVisible;
+  const keysResources = {
     groups: nav === "keys",
     managedKeys: nav === "keys" || nav === "usage" || nav === "keyUsage" || nav === "trends",
-    subscriptionSummary: nav === "subscriptions",
+    subscriptionSummary: subscriptionSummaryVisible,
     profileRecord: profileWorkspaceRequested,
     platformQuotas: profileWorkspaceRequested
   };
-  const accountScopedEnabled = Object.values(accountScopedResources).some(Boolean);
-  const accountScopedWorkspace = useAccountScopedWorkspace({
+  const keysEnabled = Object.values(keysResources).some(Boolean);
+  const accountDataWorkspace = useAccountDataWorkspace({
     selectedAccountId,
-    resources: accountScopedResources,
-    enabled: accountScopedEnabled,
+    resources: keysResources,
+    enabled: keysEnabled,
     setError
   });
   const accountWorkspace = useAccountWorkspace({
@@ -140,13 +163,18 @@ export function MainWindowApp() {
     setSelectedSiteId,
     setSelectedAccountId,
     loadOverview,
+    onSyncStatusChange: (accountId, statuses) => {
+      if (selectedAccountIdRef.current === accountId) {
+        setAccountSyncStatuses(statuses);
+      }
+    },
     setBusyText,
     setError
   });
   const profileWorkspace = useProfileWorkspace({
     selectedAccountId,
-    profileRecord: accountScopedWorkspace.profileRecord,
-    setProfileRecord: accountScopedWorkspace.setProfileRecord,
+    profileRecord: accountDataWorkspace.profileRecord,
+    setProfileRecord: accountDataWorkspace.setProfileRecord,
     loadOverview,
     setBusyText,
     setError
@@ -213,7 +241,7 @@ export function MainWindowApp() {
   } = useUsageWorkspace({
     nav,
     selectedAccountId,
-    managedKeys: accountScopedWorkspace.managedKeys,
+    managedKeys: accountDataWorkspace.managedKeys,
     setBusyText,
     setError
   });
@@ -267,6 +295,20 @@ export function MainWindowApp() {
   }, [setNav]);
 
   useEffect(() => {
+    if (!isTauriRuntime()) {
+      writeWindowSelection({
+        selectedSiteId,
+        selectedAccountId
+      });
+      return;
+    }
+    void emitTo("floating-panel", "floating-panel-selection-sync", {
+      selectedSiteId,
+      selectedAccountId
+    });
+  }, [selectedSiteId, selectedAccountId]);
+
+  useEffect(() => {
     if (nav === "sites" || nav === "accounts") {
       setNav("systemSettings");
     }
@@ -298,7 +340,53 @@ export function MainWindowApp() {
       return;
     }
     setProfileWorkspaceRequested(false);
+    setAccountSyncStatuses([]);
   }, [selectedAccountId]);
+
+  useEffect(() => {
+    if (!selectedAccountId) {
+      return;
+    }
+    let cancelled = false;
+    let timerId: number | null = null;
+
+    const loadSyncStatus = async () => {
+      try {
+        const payload = await getAccountSyncStatus(selectedAccountId);
+        if (cancelled) {
+          return;
+        }
+        setAccountSyncStatuses(payload.statuses);
+        if (payload.statuses.some((item) => item.state === "running")) {
+          timerId = window.setTimeout(() => {
+            void loadSyncStatus();
+          }, 1000);
+        }
+      } catch {
+        if (!cancelled) {
+          setAccountSyncStatuses([]);
+        }
+      }
+    };
+
+    void loadSyncStatus();
+    return () => {
+      cancelled = true;
+      if (timerId !== null) {
+        window.clearTimeout(timerId);
+      }
+    };
+  }, [selectedAccountId, overview?.generatedAt]);
+
+  useEffect(() => {
+    if (!selectedAccountId || nav !== "overview" || !overview?.generatedAt) {
+      return;
+    }
+    if (!keysEnabled) {
+      return;
+    }
+    void accountDataWorkspace.refreshAccountData();
+  }, [accountDataWorkspace, keysEnabled, nav, overview?.generatedAt, selectedAccountId]);
 
   const selectedSiteAccounts = selectedSiteId
     ? accounts.filter((item) => item.siteId === selectedSiteId)
@@ -311,20 +399,20 @@ export function MainWindowApp() {
   const selectedSite =
     sites.find((item) => item.id === selectedSiteId) ??
     (selectedAccount ? sites.find((item) => item.id === selectedAccount.siteId) ?? null : null);
-  const visibleSnapshot = selectedAccount?.snapshot ?? null;
+  const currentAccountCache = selectedAccount?.cacheView ?? null;
   const settingsWorkspace = useSettingsWorkspace({
     sites
   });
   const subscriptionCount =
-    accountScopedWorkspace.subscriptionSummary?.activeCount ?? visibleSnapshot?.subscriptions.length ?? 0;
-  const subscriptionSpend = accountScopedWorkspace.subscriptionSummary?.totalUsedUsd ?? 0;
-  const usageStatusLabel = accountScopedWorkspace.subscriptionSummary
+    accountDataWorkspace.subscriptionSummary?.activeCount ?? currentAccountCache?.subscriptions.length ?? 0;
+  const subscriptionSpend = accountDataWorkspace.subscriptionSummary?.totalUsedUsd ?? 0;
+  const usageStatusLabel = accountDataWorkspace.subscriptionSummary
     ? `${subscriptionCount} 个有效订阅`
-    : visibleSnapshot?.activeSubscription?.status ?? (subscriptionCount > 0 ? "已同步订阅" : "等待同步");
-  const usageStatusHint = accountScopedWorkspace.subscriptionSummary
+    : currentAccountCache?.activeSubscription?.status ?? (subscriptionCount > 0 ? "已同步订阅" : "等待同步");
+  const usageStatusHint = accountDataWorkspace.subscriptionSummary
     ? `已用 ${formatUsd(subscriptionSpend, 2)}`
-    : visibleSnapshot?.activeSubscription?.expiresAt
-      ? `到期 ${formatTime(visibleSnapshot.activeSubscription.expiresAt)}`
+    : currentAccountCache?.activeSubscription?.expiresAt
+      ? `到期 ${formatTime(currentAccountCache.activeSubscription.expiresAt)}`
       : subscriptionCount > 0
         ? "查看配额与到期时间"
         : "暂无订阅数据";
@@ -336,13 +424,13 @@ export function MainWindowApp() {
         : "未登录"
     : "未选择账号";
   const selectedAccountAvatarUrl = resolveAccountAvatarUrl({
-    profileRecord: accountScopedWorkspace.profileRecord
+    profileRecord: accountDataWorkspace.profileRecord
   });
   const mergedTopbarSubscriptions = buildTopbarSubscriptionPreviewRecords({
     overviewSubscriptions: [],
     fallbackSubscriptions: mergeSubscriptionRecords(
-      visibleSnapshot?.subscriptions ?? [],
-      accountScopedWorkspace.subscriptionSummary
+      currentAccountCache?.subscriptions ?? [],
+      accountDataWorkspace.subscriptionSummary
     ),
     fallbackAccountLabel: selectedAccount?.label ?? null,
     fallbackSiteName: selectedSite?.name ?? null
@@ -433,10 +521,10 @@ export function MainWindowApp() {
     if (!selectedAccount) {
       return;
     }
-    if (!shouldRefreshSnapshotForNav(nav)) {
+    if (!shouldRefreshCoreForNav(nav)) {
       return;
     }
-    if (!isSnapshotStaleForToday(selectedAccount.snapshot?.fetchedAt)) {
+    if (!isAccountDataStaleForToday(selectedAccount.cacheView?.fetchedAt)) {
       return;
     }
     void accountWorkspace.handleRefreshAccount(selectedAccount.id, {
@@ -461,19 +549,47 @@ export function MainWindowApp() {
     }
 
     switch (scope) {
-      case "snapshot":
+      case "core":
         if (selectedAccount) {
-          await accountWorkspace.handleRefreshAccount(selectedAccount.id, {
-            silent: true,
+          const syncStatus = await syncAccountData(selectedAccount.id, {
+            scope: "core",
             triggerSource: "stale_auto"
           });
+          if (selectedAccountIdRef.current === selectedAccount.id) {
+            setAccountSyncStatuses(syncStatus.statuses);
+          }
+          await loadOverview();
         }
         break;
-      case "accountScoped":
-        await accountScopedWorkspace.refreshAccountScopedData();
+      case "keys":
+        if (selectedAccount) {
+          const syncStatus = await syncAccountData(selectedAccount.id, {
+            scope: "keys",
+            triggerSource: "stale_auto"
+          });
+          if (selectedAccountIdRef.current === selectedAccount.id) {
+            setAccountSyncStatuses(syncStatus.statuses);
+          }
+          await Promise.all([
+            accountDataWorkspace.refreshAccountData(),
+            loadOverview()
+          ]);
+        }
         break;
       case "usage":
-        await refreshUsageWorkspaceSilently();
+        if (selectedAccount) {
+          const syncStatus = await syncAccountData(selectedAccount.id, {
+            scope: "usage",
+            triggerSource: "stale_auto"
+          });
+          if (selectedAccountIdRef.current === selectedAccount.id) {
+            setAccountSyncStatuses(syncStatus.statuses);
+          }
+          await Promise.all([
+            refreshUsageWorkspaceSilently(),
+            loadOverview()
+          ]);
+        }
         break;
       default:
         break;
@@ -504,11 +620,21 @@ export function MainWindowApp() {
       }
       running = true;
       try {
+        const scope = resolveAutoRefreshScope(nav);
+        const fallbackIntervalSeconds = scope !== "none" && isAutoRefreshScopeEnabled(desktopUi.prefs, scope)
+          ? resolveAutoRefreshIntervalSecondsForScope(desktopUi.prefs, scope)
+          : undefined;
         const intervalSeconds = await refreshSelectedPageSilently();
         if (cancelled) {
           return;
         }
-        scheduleNextTick(intervalSeconds);
+        scheduleNextTick(intervalSeconds ?? fallbackIntervalSeconds);
+      } catch {
+        const scope = resolveAutoRefreshScope(nav);
+        if (cancelled || scope === "none" || !isAutoRefreshScopeEnabled(desktopUi.prefs, scope)) {
+          return;
+        }
+        scheduleNextTick(resolveAutoRefreshIntervalSecondsForScope(desktopUi.prefs, scope));
       } finally {
         running = false;
       }
@@ -616,7 +742,8 @@ export function MainWindowApp() {
 
   const workspaceSummaryTexts = buildWorkspaceSummaryTexts({
     overview,
-    accounts
+    accounts,
+    syncStatuses: accountSyncStatuses
   });
   const workspaceSummary = (
     <>
@@ -631,7 +758,11 @@ export function MainWindowApp() {
       {nav === "overview" && overview && (
         <OverviewPage
           overview={overview}
-          visibleSnapshot={visibleSnapshot}
+          currentAccountStats={currentAccountCache?.stats ?? null}
+          currentAccountSubscriptions={currentAccountCache?.subscriptions ?? []}
+          subscriptionSummary={accountDataWorkspace.subscriptionSummary}
+          currentAccountKeys={currentAccountCache?.keys ?? []}
+          currentAccountRecentUsage={currentAccountCache?.recentUsage ?? []}
           usageStats={null}
         />
       )}
@@ -650,7 +781,12 @@ export function MainWindowApp() {
           accounts={accounts}
           selectedSite={selectedSite}
           selectedAccountId={selectedAccountId}
-          visibleSnapshot={visibleSnapshot}
+          currentAccountBalance={currentAccountCache?.balance ?? null}
+          currentAccountTotalKeys={currentAccountCache?.stats.totalApiKeys ?? 0}
+          currentAccountActiveKeys={currentAccountCache?.stats.activeApiKeys ?? 0}
+          currentAccountSubscriptions={currentAccountCache?.subscriptions ?? []}
+          currentAccountKeys={currentAccountCache?.keys ?? []}
+          currentAccountSyncStatuses={accountSyncStatuses}
           onOpenNewSite={accountWorkspace.openNewSite}
           onSelectSite={setSelectedSiteId}
           onOpenSiteAccountManager={accountWorkspace.openSiteAccountManager}
@@ -667,13 +803,13 @@ export function MainWindowApp() {
       )}
       {nav === "keys" && (
         <KeysPage
-          managedKeys={accountScopedWorkspace.managedKeys}
-          groups={accountScopedWorkspace.groups}
-          profileRecord={accountScopedWorkspace.profileRecord}
+          managedKeys={accountDataWorkspace.managedKeys}
+          groups={accountDataWorkspace.groups}
+          profileRecord={accountDataWorkspace.profileRecord}
           selectedAccountId={selectedAccountId}
           onRefresh={() => {
             if (selectedAccountId) {
-              void accountScopedWorkspace.refreshAccountScopedData();
+              void accountDataWorkspace.refreshAccountData();
             }
           }}
           onError={setError}
@@ -682,7 +818,7 @@ export function MainWindowApp() {
       )}
       {nav === "usage" && (
         <UsagePage
-          managedKeys={accountScopedWorkspace.managedKeys}
+          managedKeys={accountDataWorkspace.managedKeys}
           usageApiKeyFilter={usageApiKeyFilter}
           setUsageApiKeyFilter={setUsageApiKeyFilter}
           usageRangePickerRef={usageRangePickerRef}
@@ -710,43 +846,56 @@ export function MainWindowApp() {
       )}
       {nav === "subscriptions" && (
         <SubscriptionsPage
-          visibleSnapshot={visibleSnapshot}
-          subscriptionSummary={accountScopedWorkspace.subscriptionSummary}
+          subscriptions={currentAccountCache?.subscriptions ?? []}
+          subscriptionSummary={accountDataWorkspace.subscriptionSummary}
         />
       )}
       {nav === "keyUsage" && (
         <KeyUsagePage
           keyUsageRows={keyUsageRows}
           keyUsageKeyId={keyUsageKeyId}
-          managedKeys={accountScopedWorkspace.managedKeys}
+          managedKeys={accountDataWorkspace.managedKeys}
           onLoadKeyUsage={(keyId) => void loadKeyUsage(keyId)}
         />
       )}
       {nav === "trends" && (
-        <AnalyticsLab
-          overview={overview}
-          selectedAccount={selectedAccount}
-          managedKeys={accountScopedWorkspace.managedKeys}
-          usageStats={usageStats}
-          usageTrend={usageTrend}
-          usageModels={usageModels}
-          usageRecords={usageRecords}
-          usageScopeRows={usageScopeRows}
-          usageScopeMeta={usageScopeMeta}
-          subscriptionSummary={accountScopedWorkspace.subscriptionSummary}
-          profileRecord={accountScopedWorkspace.profileRecord}
-          platformQuotas={accountScopedWorkspace.platformQuotas}
-          keyUsageRows={keyUsageRows}
-          keyUsageKeyId={keyUsageKeyId}
-          usageApiKeyFilter={usageApiKeyFilter}
-          usageStartDate={usageStartDate}
-          usageEndDate={usageEndDate}
-          onUsageApiKeyFilterChange={setUsageApiKeyFilter}
-          onUsageStartDateChange={setUsageStartDate}
-          onUsageEndDateChange={setUsageEndDate}
-          onUsageSearch={() => void handleUsageSearch()}
-          onKeyUsageSelect={(keyId) => void loadKeyUsage(keyId)}
-        />
+        <Suspense
+          fallback={
+            <section className="section-card analytics-lab-empty-shell">
+              <header className="section-card-header">
+                <div>
+                  <h3>图表实验室</h3>
+                  <p>正在按需加载图表模块...</p>
+                </div>
+              </header>
+            </section>
+          }
+        >
+          <AnalyticsLab
+            overview={overview}
+            selectedAccount={selectedAccount}
+            managedKeys={accountDataWorkspace.managedKeys}
+            usageStats={usageStats}
+            usageTrend={usageTrend}
+            usageModels={usageModels}
+            usageRecords={usageRecords}
+            usageScopeRows={usageScopeRows}
+            usageScopeMeta={usageScopeMeta}
+            subscriptionSummary={accountDataWorkspace.subscriptionSummary}
+            profileRecord={accountDataWorkspace.profileRecord}
+            platformQuotas={accountDataWorkspace.platformQuotas}
+            keyUsageRows={keyUsageRows}
+            keyUsageKeyId={keyUsageKeyId}
+            usageApiKeyFilter={usageApiKeyFilter}
+            usageStartDate={usageStartDate}
+            usageEndDate={usageEndDate}
+            onUsageApiKeyFilterChange={setUsageApiKeyFilter}
+            onUsageStartDateChange={setUsageStartDate}
+            onUsageEndDateChange={setUsageEndDate}
+            onUsageSearch={() => void handleUsageSearch()}
+            onKeyUsageSelect={(keyId) => void loadKeyUsage(keyId)}
+          />
+        </Suspense>
       )}
       {nav === "alerts" && <AlertsPage alerts={overview?.alerts ?? []} />}
       {nav === "systemSettings" && (
@@ -770,24 +919,24 @@ export function MainWindowApp() {
               autoRefreshIntervalSeconds: normalizeAutoRefreshIntervalSeconds(value)
             })
           }
-          onAutoRefreshSnapshotEnabledChange={(value) =>
+          onAutoRefreshCoreEnabledChange={(value) =>
             void desktopUi.patchPrefs({
-              autoRefreshSnapshotEnabled: value
+              autoRefreshCoreEnabled: value
             })
           }
-          onAutoRefreshSnapshotIntervalSecondsChange={(value) =>
+          onAutoRefreshCoreIntervalSecondsChange={(value) =>
             void desktopUi.patchPrefs({
-              autoRefreshSnapshotIntervalSeconds: normalizeAutoRefreshIntervalSeconds(value)
+              autoRefreshCoreIntervalSeconds: normalizeAutoRefreshIntervalSeconds(value)
             })
           }
-          onAutoRefreshAccountScopedEnabledChange={(value) =>
+          onAutoRefreshKeysEnabledChange={(value) =>
             void desktopUi.patchPrefs({
-              autoRefreshAccountScopedEnabled: value
+              autoRefreshKeysEnabled: value
             })
           }
-          onAutoRefreshAccountScopedIntervalSecondsChange={(value) =>
+          onAutoRefreshKeysIntervalSecondsChange={(value) =>
             void desktopUi.patchPrefs({
-              autoRefreshAccountScopedIntervalSeconds: normalizeAutoRefreshIntervalSeconds(value)
+              autoRefreshKeysIntervalSeconds: normalizeAutoRefreshIntervalSeconds(value)
             })
           }
           onAutoRefreshUsageEnabledChange={(value) =>
@@ -829,6 +978,7 @@ export function MainWindowApp() {
               onReload={() =>
                 selectedAccount
                   ? void accountWorkspace.handleRefreshAccount(selectedAccount.id, {
+                      scope: "core",
                       busyText: "正在刷新当前账号数据...",
                       successMessage: "当前账号数据已刷新"
                     })
@@ -896,7 +1046,9 @@ export function MainWindowApp() {
               onRefreshSelectedAccount={() => {
                 shellWorkspace.closeTopbarAccountMenu();
                 if (selectedAccount) {
-                  void accountWorkspace.handleRefreshAccount(selectedAccount.id);
+                  void accountWorkspace.handleRefreshAccount(selectedAccount.id, {
+                    scope: "core"
+                  });
                 }
               }}
               onOpenSelectedAccountLogin={() => {
@@ -933,18 +1085,20 @@ export function MainWindowApp() {
         <ProfileWorkspaceModal
           open={profileWorkspace.profileModalOpen}
           selectedAccount={selectedAccount}
-          profileRecord={accountScopedWorkspace.profileRecord}
+          profileRecord={accountDataWorkspace.profileRecord}
           profileForm={profileWorkspace.profileForm}
           setProfileForm={profileWorkspace.setProfileForm}
           profilePassword={profileWorkspace.profilePassword}
           setProfilePassword={profileWorkspace.setProfilePassword}
           notifyEmailDraft={profileWorkspace.notifyEmailDraft}
           setNotifyEmailDraft={profileWorkspace.setNotifyEmailDraft}
-          platformQuotas={accountScopedWorkspace.platformQuotas}
+          platformQuotas={accountDataWorkspace.platformQuotas}
           onClose={closeProfileModal}
           onRefreshSelectedAccount={() => {
             if (selectedAccount) {
-              void accountWorkspace.handleRefreshAccount(selectedAccount.id);
+              void accountWorkspace.handleRefreshAccount(selectedAccount.id, {
+                scope: "core"
+              });
             }
           }}
           onProfileSave={() => void profileWorkspace.handleProfileSave()}
