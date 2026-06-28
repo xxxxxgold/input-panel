@@ -378,16 +378,6 @@ export function MainWindowApp() {
     };
   }, [selectedAccountId, overview?.generatedAt]);
 
-  useEffect(() => {
-    if (!selectedAccountId || nav !== "overview" || !overview?.generatedAt) {
-      return;
-    }
-    if (!keysEnabled) {
-      return;
-    }
-    void accountDataWorkspace.refreshAccountData();
-  }, [accountDataWorkspace, keysEnabled, nav, overview?.generatedAt, selectedAccountId]);
-
   const selectedSiteAccounts = selectedSiteId
     ? accounts.filter((item) => item.siteId === selectedSiteId)
     : accounts;
@@ -551,14 +541,18 @@ export function MainWindowApp() {
     switch (scope) {
       case "core":
         if (selectedAccount) {
-          const syncStatus = await syncAccountData(selectedAccount.id, {
-            scope: "core",
-            triggerSource: "stale_auto"
-          });
-          if (selectedAccountIdRef.current === selectedAccount.id) {
-            setAccountSyncStatuses(syncStatus.statuses);
+          if (nav === "overview") {
+            await refreshOverviewAccountSilently(selectedAccount.id, "stale_auto");
+          } else {
+            const syncStatus = await syncAccountData(selectedAccount.id, {
+              scope: "core",
+              triggerSource: "stale_auto"
+            });
+            if (selectedAccountIdRef.current === selectedAccount.id) {
+              setAccountSyncStatuses(syncStatus.statuses);
+            }
+            await loadOverview();
           }
-          await loadOverview();
         }
         break;
       case "keys":
@@ -730,6 +724,23 @@ export function MainWindowApp() {
   function handleThemeChange(nextTheme: ThemeId) {
     setTheme(nextTheme);
     void desktopUi.patchPrefs({ theme: nextTheme });
+  }
+
+  async function refreshOverviewAccountSilently(
+    accountId: string,
+    triggerSource: "manual" | "stale_auto"
+  ) {
+    const syncStatus = await syncAccountData(accountId, {
+      scope: "full",
+      triggerSource
+    });
+    if (selectedAccountIdRef.current === accountId) {
+      setAccountSyncStatuses(syncStatus.statuses);
+    }
+    await Promise.all([
+      loadOverview(),
+      accountDataWorkspace.refreshAccountData()
+    ]);
   }
 
   const workspaceSubtitle = nav === "serviceStatus"
@@ -977,11 +988,13 @@ export function MainWindowApp() {
             <Topbar
               onReload={() =>
                 selectedAccount
-                  ? void accountWorkspace.handleRefreshAccount(selectedAccount.id, {
-                      scope: "core",
-                      busyText: "正在刷新当前账号数据...",
-                      successMessage: "当前账号数据已刷新"
-                    })
+                  ? nav === "overview"
+                    ? void refreshOverviewAccountSilently(selectedAccount.id, "manual")
+                    : void accountWorkspace.handleRefreshAccount(selectedAccount.id, {
+                        scope: "core",
+                        busyText: "正在刷新当前账号数据...",
+                        successMessage: "当前账号数据已刷新"
+                      })
                   : void loadOverview({
                       busyText: "正在刷新总览...",
                       successMessage: "总览已刷新"
@@ -1046,9 +1059,13 @@ export function MainWindowApp() {
               onRefreshSelectedAccount={() => {
                 shellWorkspace.closeTopbarAccountMenu();
                 if (selectedAccount) {
-                  void accountWorkspace.handleRefreshAccount(selectedAccount.id, {
-                    scope: "core"
-                  });
+                  if (nav === "overview") {
+                    void refreshOverviewAccountSilently(selectedAccount.id, "manual");
+                  } else {
+                    void accountWorkspace.handleRefreshAccount(selectedAccount.id, {
+                      scope: "core"
+                    });
+                  }
                 }
               }}
               onOpenSelectedAccountLogin={() => {
@@ -1096,9 +1113,13 @@ export function MainWindowApp() {
           onClose={closeProfileModal}
           onRefreshSelectedAccount={() => {
             if (selectedAccount) {
-              void accountWorkspace.handleRefreshAccount(selectedAccount.id, {
-                scope: "core"
-              });
+              if (nav === "overview") {
+                void refreshOverviewAccountSilently(selectedAccount.id, "manual");
+              } else {
+                void accountWorkspace.handleRefreshAccount(selectedAccount.id, {
+                  scope: "core"
+                });
+              }
             }
           }}
           onProfileSave={() => void profileWorkspace.handleProfileSave()}

@@ -25,15 +25,11 @@ const account: AccountRuntime = {
   site,
   sessionState: "ready",
   lastError: null,
-  snapshot: {
+  cacheView: {
     fetchedAt: "2026-06-15T15:30:00.000Z",
     online: true,
     siteName: "AI INPUT",
-    siteUrl: "https://ai.input.im",
-    accountLabel: "主账号",
-    emailMasked: "m***@example.com",
     balance: 42.5,
-    currency: "USD",
     stats: {
       totalApiKeys: 9,
       activeApiKeys: 9,
@@ -50,17 +46,7 @@ const account: AccountRuntime = {
       averageDurationMs: 540,
       byPlatform: []
     },
-    usageSummary: {
-      totalRequests: 120,
-      totalTokens: 960000,
-      totalInputTokens: 600000,
-      totalOutputTokens: 360000,
-      totalActualCost: 22.8,
-      totalCost: 22.8,
-      averageDurationMs: 540
-    },
     recentUsage: [],
-    requestHistory: [],
     trend: [],
     keys: [],
     subscriptions: [],
@@ -78,7 +64,12 @@ describe("SettingsPage site detail panel", () => {
         filteredSites: [site],
         accounts: [account],
         selectedSite: site,
-        visibleSnapshot: account.snapshot,
+        currentAccountBalance: account.cacheView?.balance ?? null,
+        currentAccountTotalKeys: account.cacheView?.stats.totalApiKeys ?? 0,
+        currentAccountActiveKeys: account.cacheView?.stats.activeApiKeys ?? 0,
+        currentAccountSubscriptions: account.cacheView?.subscriptions ?? [],
+        currentAccountKeys: account.cacheView?.keys ?? [],
+        currentAccountSyncStatuses: [],
         onOpenNewSite: () => {},
         onSelectSite: () => {},
         onOpenSiteAccountManager: () => {},
@@ -96,6 +87,9 @@ describe("SettingsPage site detail panel", () => {
     expect(html).toContain("管理账号");
     expect(html).toContain("Keys 9 / 活跃 9");
     expect(html).toContain("打开");
+    expect(html).toContain("同步状态");
+    expect(html).toContain("从未同步");
+    expect(html).toContain("account-detail-summary-grid");
     expect(html).not.toContain("请求记录详情");
     expect(html).not.toContain("本地累计请求记录");
     expect(html).not.toContain("本次最新拉取");
@@ -139,3 +133,4 @@ describe("SettingsPage site detail panel", () => {
     expect(calls).toEqual([`select:${site.id}`]);
   });
 });
+

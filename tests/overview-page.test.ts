@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { OverviewPage } from "../src/pages/OverviewPage";
-import type { OverviewPayload } from "../src/types";
+import type { OverviewPayload, SubscriptionSummaryPayload } from "../src/types";
 
 describe("OverviewPage metric hints", () => {
   it("shows the richest account in card hints and does not render an alert metric card", () => {
@@ -22,16 +22,12 @@ describe("OverviewPage metric hints", () => {
           site: null,
           sessionState: "ready",
           lastError: null,
-          snapshot: {
+          cacheView: {
             fetchedAt: "2026-06-15T10:00:00Z",
             online: true,
             siteName: "AI INPUT",
-            siteUrl: "https://example.com",
-            accountLabel: "主账号",
-            emailMasked: "m***@example.com",
             balance: 42.5,
-            currency: "USD",
-            stats: {
+                  stats: {
               totalApiKeys: 2,
               activeApiKeys: 1,
               todayRequests: 123,
@@ -47,26 +43,7 @@ describe("OverviewPage metric hints", () => {
               averageDurationMs: 400,
               byPlatform: []
             },
-            usageSummary: {
-              windowStart: "2026-06-15T00:00:00Z",
-              windowEnd: "2026-06-15T23:59:59Z",
-              todayRequests: 123,
-              todayActualCost: 32.2293,
-              todayCost: 32.2293,
-              todayTokens: 54100000,
-              todayInputTokens: 1000,
-              todayOutputTokens: 2000,
-              totalRequests: 103576,
-              totalActualCost: 15701.5399,
-              totalCost: 15701.5399,
-              totalTokens: 21600700000,
-              totalInputTokens: 3000,
-              totalOutputTokens: 4000,
-              averageDurationMs: 400,
-              byPlatform: []
-            },
             recentUsage: [],
-            requestHistory: [],
             trend: [],
             keys: [],
             subscriptions: [],
@@ -86,16 +63,12 @@ describe("OverviewPage metric hints", () => {
           site: null,
           sessionState: "ready",
           lastError: null,
-          snapshot: {
+          cacheView: {
             fetchedAt: "2026-06-15T10:05:00Z",
             online: true,
             siteName: "AI INPUT",
-            siteUrl: "https://example.com",
-            accountLabel: "次账号",
-            emailMasked: "s***@example.com",
             balance: 18.2,
-            currency: "USD",
-            stats: {
+                  stats: {
               totalApiKeys: 1,
               activeApiKeys: 1,
               todayRequests: 8,
@@ -111,26 +84,7 @@ describe("OverviewPage metric hints", () => {
               averageDurationMs: 320,
               byPlatform: []
             },
-            usageSummary: {
-              windowStart: "2026-06-15T00:00:00Z",
-              windowEnd: "2026-06-15T23:59:59Z",
-              todayRequests: 8,
-              todayActualCost: 1.2,
-              todayCost: 1.2,
-              todayTokens: 1000,
-              todayInputTokens: 100,
-              todayOutputTokens: 200,
-              totalRequests: 50,
-              totalActualCost: 10.5,
-              totalCost: 10.5,
-              totalTokens: 2000,
-              totalInputTokens: 300,
-              totalOutputTokens: 500,
-              averageDurationMs: 320,
-              byPlatform: []
-            },
             recentUsage: [],
-            requestHistory: [],
             trend: [],
             keys: [],
             subscriptions: [],
@@ -174,7 +128,11 @@ describe("OverviewPage metric hints", () => {
     const html = renderToStaticMarkup(
       createElement(OverviewPage, {
         overview,
-        visibleSnapshot: overview.accounts[0].snapshot,
+        currentAccountStats: overview.accounts[0].cacheView?.stats ?? null,
+        currentAccountSubscriptions: overview.accounts[0].cacheView?.subscriptions ?? [],
+        subscriptionSummary: null,
+        currentAccountKeys: overview.accounts[0].cacheView?.keys ?? [],
+        currentAccountRecentUsage: overview.accounts[0].cacheView?.recentUsage ?? [],
         usageStats: null
       })
     );
@@ -226,7 +184,11 @@ describe("OverviewPage metric hints", () => {
     const html = renderToStaticMarkup(
       createElement(OverviewPage, {
         overview,
-        visibleSnapshot: null,
+        currentAccountStats: null,
+        currentAccountSubscriptions: [],
+        subscriptionSummary: null,
+        currentAccountKeys: [],
+        currentAccountRecentUsage: [],
         usageStats: null
       })
     );
@@ -272,7 +234,11 @@ describe("OverviewPage metric hints", () => {
     const html = renderToStaticMarkup(
       createElement(OverviewPage, {
         overview,
-        visibleSnapshot: null,
+        currentAccountStats: null,
+        currentAccountSubscriptions: [],
+        subscriptionSummary: null,
+        currentAccountKeys: [],
+        currentAccountRecentUsage: [],
         usageStats: null
       })
     );
@@ -313,7 +279,11 @@ describe("OverviewPage metric hints", () => {
     const html = renderToStaticMarkup(
       createElement(OverviewPage, {
         overview,
-        visibleSnapshot: null,
+        currentAccountStats: null,
+        currentAccountSubscriptions: [],
+        subscriptionSummary: null,
+        currentAccountKeys: [],
+        currentAccountRecentUsage: [],
         usageStats: {
           totalRequests: 2241,
           totalInputTokens: 42600000,
@@ -366,7 +336,11 @@ describe("OverviewPage metric hints", () => {
     const html = renderToStaticMarkup(
       createElement(OverviewPage, {
         overview,
-        visibleSnapshot: null,
+        currentAccountStats: null,
+        currentAccountSubscriptions: [],
+        subscriptionSummary: null,
+        currentAccountKeys: [],
+        currentAccountRecentUsage: [],
         usageStats: {
           totalRequests: 0,
           totalInputTokens: 0,
@@ -390,7 +364,7 @@ describe("OverviewPage metric hints", () => {
     expect(html).not.toContain("TPM -");
   });
 
-  it("falls back to the selected snapshot when overview performance stats are not separately loaded", () => {
+  it("falls back to the selected cacheView when overview performance stats are not separately loaded", () => {
     const overview = {
       sites: [],
       accounts: [],
@@ -419,48 +393,26 @@ describe("OverviewPage metric hints", () => {
     const html = renderToStaticMarkup(
       createElement(OverviewPage, {
         overview,
-        visibleSnapshot: {
-          fetchedAt: "2026-06-15T10:00:00Z",
-          online: true,
-          siteName: "AI INPUT",
-          siteUrl: "https://example.com",
-          accountLabel: "主账号",
-          emailMasked: "m***@example.com",
-          balance: 42.5,
-          currency: "USD",
-          stats: {
-            totalApiKeys: 2,
-            activeApiKeys: 1,
-            todayRequests: 120,
-            totalRequests: 300,
-            todayActualCost: 2.4,
-            totalActualCost: 6.8,
-            todayCost: 2.4,
-            totalCost: 6.8,
-            todayTokens: 36000,
-            totalTokens: 80000,
-            todayInputTokens: 12000,
-            todayOutputTokens: 24000,
-            averageDurationMs: 1500,
-            byPlatform: []
-          },
-          usageSummary: {
-            totalRequests: 300,
-            totalTokens: 80000,
-            totalInputTokens: 30000,
-            totalOutputTokens: 50000,
-            totalActualCost: 6.8,
-            totalCost: 6.8,
-            averageDurationMs: 1500
-          },
-          recentUsage: [],
-          requestHistory: [],
-          trend: [],
-          keys: [],
-          subscriptions: [],
-          activeSubscription: null,
-          alerts: []
+        currentAccountStats: {
+          totalApiKeys: 0,
+          activeApiKeys: 0,
+          todayRequests: 120,
+          totalRequests: 120,
+          todayActualCost: 2.4,
+          totalActualCost: 2.4,
+          todayCost: 2.4,
+          totalCost: 2.4,
+          todayTokens: 36000,
+          totalTokens: 36000,
+          todayInputTokens: 12000,
+          todayOutputTokens: 24000,
+          averageDurationMs: 1500,
+          byPlatform: []
         },
+        currentAccountSubscriptions: [],
+        subscriptionSummary: null,
+        currentAccountKeys: [],
+        currentAccountRecentUsage: [],
         usageStats: null
       })
     );
@@ -470,5 +422,252 @@ describe("OverviewPage metric hints", () => {
     expect(html).not.toContain("TPM -");
     expect(html).toContain("1.50 s");
     expect(html).toContain("36.0K");
+  });
+
+  it("merges subscription summary windows into the overview subscription cards", () => {
+    const overview = {
+      sites: [],
+      accounts: [],
+      totals: {
+        balance: 0,
+        totalSites: 1,
+        totalAccounts: 1,
+        totalApiKeys: 0,
+        activeApiKeys: 0,
+        todayRequests: 0,
+        totalRequests: 0,
+        todayActualCost: 0,
+        totalActualCost: 0,
+        todayTokens: 0,
+        totalTokens: 0
+      },
+      alerts: [],
+      platformSeries: [],
+      trend: [],
+      recentUsage: [],
+      subscriptions: [],
+      keys: [],
+      generatedAt: "2026-06-28T01:53:00+08:00"
+    } satisfies OverviewPayload;
+
+    const currentAccountSubscriptions = [
+      {
+        id: "sub-monthly",
+        groupId: 3,
+        name: "CodeX Plus 月度",
+        groupName: "CodeX Plus 月度",
+        status: "active",
+        expiresAt: "2027-06-13T13:54:40+08:00",
+        platform: "openai",
+        daily: null,
+        weekly: null,
+        monthly: null
+      }
+    ];
+
+    const subscriptionSummary = {
+      activeCount: 1,
+      totalUsedUsd: 169.66578825,
+      subscriptions: [
+        {
+          id: 3365,
+          groupId: 3,
+          groupName: "CodeX Plus 月度",
+          status: "active",
+          dailyUsedUsd: 169.66578825,
+          dailyLimitUsd: 500,
+          weeklyUsedUsd: 682.98767475,
+          monthlyUsedUsd: 4337.1385451,
+          expiresAt: "2027-06-13T13:54:40+08:00"
+        }
+      ]
+    } satisfies SubscriptionSummaryPayload;
+
+    const html = renderToStaticMarkup(
+      createElement(OverviewPage, {
+        overview,
+        currentAccountStats: {
+          totalApiKeys: 0,
+          activeApiKeys: 0,
+          todayRequests: 0,
+          totalRequests: 0,
+          todayActualCost: 0,
+          totalActualCost: 0,
+          todayCost: 0,
+          totalCost: 0,
+          todayTokens: 0,
+          totalTokens: 0,
+          todayInputTokens: 0,
+          todayOutputTokens: 0,
+          averageDurationMs: 0,
+          byPlatform: []
+        },
+        currentAccountSubscriptions,
+        subscriptionSummary,
+        currentAccountKeys: [],
+        currentAccountRecentUsage: [],
+        usageStats: null
+      })
+    );
+
+    expect(html).toContain("CodeX Plus 月度");
+    expect(html).toContain("每日额度");
+    expect(html).toContain("$169.67 / $500.00");
+    expect(html).toContain("33.9%");
+  });
+
+  it("renders keys and recent usage when overview account data comes through snapshot compatibility", () => {
+    const overview = {
+      sites: [],
+      accounts: [],
+      totals: {
+        balance: 42.5,
+        totalSites: 1,
+        totalAccounts: 1,
+        totalApiKeys: 9,
+        activeApiKeys: 9,
+        todayRequests: 3456,
+        totalRequests: 13052,
+        todayActualCost: 535.2615,
+        totalActualCost: 1966.8461,
+        todayTokens: 815397136,
+        totalTokens: 2565410987
+      },
+      alerts: [],
+      platformSeries: [],
+      trend: [],
+      recentUsage: [],
+      subscriptions: [],
+      keys: [],
+      generatedAt: "2026-06-28T03:43:55.880722700+00:00"
+    } satisfies OverviewPayload;
+
+    const html = renderToStaticMarkup(
+      createElement(OverviewPage, {
+        overview,
+        currentAccountStats: {
+          totalApiKeys: 9,
+          activeApiKeys: 9,
+          todayRequests: 3456,
+          totalRequests: 13052,
+          todayActualCost: 535.2615,
+          totalActualCost: 1966.8461,
+          todayCost: 535.2615,
+          totalCost: 1966.8461,
+          todayTokens: 815397136,
+          totalTokens: 2565410987,
+          todayInputTokens: 35164183,
+          todayOutputTokens: 3599620,
+          averageDurationMs: 27789.4,
+          byPlatform: []
+        },
+        currentAccountSubscriptions: [],
+        subscriptionSummary: null,
+        currentAccountKeys: [
+          {
+            id: "3641",
+            groupId: 3,
+            name: "codex",
+            status: "active",
+            platform: "openai",
+            groupName: "CodeX Plus 月度",
+            expiresAt: null,
+            lastUsedAt: "2026-06-28T11:43:00.813405+08:00",
+            quota: 0,
+            quotaUsed: 0,
+            rateLimit5h: 0,
+            rateLimit1d: 0,
+            rateLimit7d: 0,
+            usage5h: 0,
+            usage1d: 0,
+            usage7d: 0
+          }
+        ],
+        currentAccountRecentUsage: [
+          {
+            id: "36196842",
+            apiKeyId: 3641,
+            apiKeyName: "codex",
+            createdAt: "2026-06-28T11:43:28.205102+08:00",
+            model: "gpt-5.4",
+            reasoningEffort: "xhigh",
+            endpoint: "/responses",
+            upstreamEndpoint: "/v1/responses",
+            actualCost: 0.034639,
+            totalCost: 0.034639,
+            inputTokens: 644,
+            outputTokens: 651,
+            inputCost: 0.00161,
+            outputCost: 0.009765,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 93056,
+            cacheCreationCost: 0,
+            cacheReadCost: 0.023264,
+            totalTokens: 94351,
+            firstTokenMs: 11292,
+            durationMs: 23291,
+            billingMode: "token",
+            requestType: "stream",
+            stream: true,
+            billingType: 1,
+            rateMultiplier: 1,
+            userAgent: "Codex Desktop",
+            platform: "openai",
+            subscriptionName: "CodeX Plus 月度",
+            groupName: "CodeX Plus 月度",
+            subscriptionType: "subscription"
+          }
+        ],
+        usageStats: null
+      })
+    );
+
+    expect(html).toContain("codex");
+    expect(html).toContain("CodeX Plus 月度");
+    expect(html).not.toContain("还没有 Key 数据");
+    expect(html).toContain("gpt-5.4");
+    expect(html).toContain("/responses");
+    expect(html).not.toContain("还没有账号数据");
+  });
+
+  it("renders recent usage as a standalone full-width section", () => {
+    const overview = {
+      sites: [],
+      accounts: [],
+      totals: {
+        balance: 0,
+        totalSites: 1,
+        totalAccounts: 1,
+        totalApiKeys: 0,
+        activeApiKeys: 0,
+        todayRequests: 0,
+        totalRequests: 0,
+        todayActualCost: 0,
+        totalActualCost: 0,
+        todayTokens: 0,
+        totalTokens: 0
+      },
+      alerts: [],
+      platformSeries: [],
+      trend: [],
+      recentUsage: [],
+      subscriptions: [],
+      keys: [],
+      generatedAt: "2026-06-28T03:43:55.880722700+00:00"
+    } satisfies OverviewPayload;
+
+    const html = renderToStaticMarkup(
+      createElement(OverviewPage, {
+        overview,
+        currentAccountStats: null,
+        currentAccountSubscriptions: [],
+        subscriptionSummary: null,
+        currentAccountKeys: [],
+        currentAccountRecentUsage: [],
+        usageStats: null
+      })
+    );
+
+    expect(html).toContain('<section class="stack-list"><section class="section-card"><header class="section-card-header"><div><h3>最近使用</h3>');
   });
 });
