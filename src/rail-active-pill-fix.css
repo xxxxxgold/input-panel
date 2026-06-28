@@ -1,0 +1,4 @@
+.rail.expanded .rail-item {
+  justify-content: flex-start;
+  padding: 0 12px 0 20px;
+}
