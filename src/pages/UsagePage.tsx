@@ -52,6 +52,11 @@ const USAGE_RANGE_PRESETS = [
   { key: "lastMonth", label: "上月" }
 ] as const;
 
+const USAGE_IMAGE_SIZE_PRESETS = [
+  { label: "1K", resolution: "1024×1024", approxOutputTokensPerImage: 4200 },
+  { label: "2K", resolution: "2048×2048", approxOutputTokensPerImage: 6500 }
+] as const;
+
 function getCacheInputTokens(
   totalCacheTokens?: number | null,
   cacheCreationTokens?: number | null,
@@ -124,6 +129,10 @@ function normalizeReasoningEffort(value?: string | null) {
   return value?.trim().toLowerCase() ?? "";
 }
 
+function normalizeUsageBillingMode(value?: string | null) {
+  return value?.trim().toLowerCase() ?? "";
+}
+
 function formatUsageReasoningLabel(value?: string | null) {
   const normalized = normalizeReasoningEffort(value);
   return normalized || "-";
@@ -149,6 +158,9 @@ function formatUsageRequestTypeLabel(row: UsageRow) {
   if (row.stream || requestType === "stream") {
     return "流式";
   }
+  if (requestType === "sync") {
+    return "同步";
+  }
   if (!requestType || requestType === "standard" || requestType === "default") {
     return "标准";
   }
@@ -167,6 +179,111 @@ function getUsageRequestTypeTone(row: UsageRow) {
     return "usage-pill-batch";
   }
   return "usage-pill-standard";
+}
+
+function inferUsageImageBilling(row: UsageRow) {
+  if (normalizeUsageBillingMode(row.billingMode) !== "image") {
+    return null;
+  }
+
+  // UsageRow 里没有显式图片尺寸字段, 这里按现有图片请求的输出 Token 档位估算 1K / 2K.
+  const outputTokens = Math.max(Number(row.outputTokens ?? 0), 0);
+  let bestMatch: {
+    count: number;
+    error: number;
+    label: string;
+    resolution: string;
+    approxOutputTokensPerImage: number;
+  } | null = null;
+
+  for (const preset of USAGE_IMAGE_SIZE_PRESETS) {
+    for (let count = 1; count <= 4; count += 1) {
+      const predicted = preset.approxOutputTokensPerImage * count;
+      const error = Math.abs(predicted - outputTokens);
+      if (!bestMatch || error < bestMatch.error) {
+        bestMatch = {
+          count,
+          error,
+          label: preset.label,
+          resolution: preset.resolution,
+          approxOutputTokensPerImage: preset.approxOutputTokensPerImage
+        };
+      }
+    }
+  }
+
+  const matched = bestMatch && outputTokens > 0 &&
+    bestMatch.error <= Math.max(bestMatch.approxOutputTokensPerImage * 0.32, 600)
+    ? bestMatch
+    : null;
+  const imageCount = matched?.count ?? null;
+
+  return {
+    imageCount,
+    sizeLabel: matched?.label ?? null,
+    resolution: matched?.resolution ?? null,
+    sizeSourceLabel: matched ? "输出 Token 估算" : "当前未返回显式尺寸字段",
+    unitPrice: imageCount && imageCount > 0 ? row.actualCost / imageCount : null
+  };
+}
+
+function buildUsageBillingPresentation(row: UsageRow) {
+  const imageBilling = inferUsageImageBilling(row);
+  if (imageBilling) {
+    const secondary = imageBilling.imageCount && imageBilling.sizeLabel
+      ? `${imageBilling.imageCount}张 (${imageBilling.sizeLabel})`
+      : imageBilling.sizeLabel ?? null;
+    return {
+      primary: "按次(图片)",
+      secondary,
+      imageBilling
+    };
+  }
+
+  return {
+    primary: formatBillingMode(row.billingMode, row.billingType),
+    secondary: null,
+    imageBilling: null
+  };
+}
+
+function buildUsagePaginationItems(currentPage: number, totalPages: number) {
+  if (totalPages <= 1) {
+    return [1];
+  }
+
+  const pages = new Set<number>([
+    1,
+    2,
+    3,
+    totalPages - 2,
+    totalPages - 1,
+    totalPages,
+    currentPage - 1,
+    currentPage,
+    currentPage + 1
+  ]);
+  if (currentPage <= 3) {
+    pages.add(4);
+  }
+  if (currentPage >= totalPages - 2) {
+    pages.add(totalPages - 3);
+  }
+
+  const sorted = [...pages]
+    .filter((page) => page >= 1 && page <= totalPages)
+    .sort((left, right) => left - right);
+  const items: Array<number | "ellipsis"> = [];
+
+  for (const page of sorted) {
+    const previous = items[items.length - 1];
+    if (typeof previous === "number" && page - previous > 1) {
+      items.push("ellipsis");
+    }
+    items.push(page);
+  }
+
+  return items;
 }
 
 function UsageDetailSection({
@@ -231,6 +348,7 @@ function UsageCostDetail({
   highlightLabel?: string;
   highlightValue?: string;
 }) {
+  const imageBilling = inferUsageImageBilling(row);
   return (
     <>
       <UsageDetailSection title={title}>
@@ -239,21 +357,43 @@ function UsageCostDetail({
         <DetailItem label="模型" value={row.model} />
         <DetailItem label="时间" value={formatDateTimeFull(row.createdAt)} />
       </UsageDetailSection>
-      <UsageDetailSection title="模型价格">
-        <DetailItem label="输入单价" value={formatUsdPerMillion(row.inputCost, row.inputTokens)} />
-        <DetailItem label="输出单价" value={formatUsdPerMillion(row.outputCost, row.outputTokens)} />
-        <DetailItem label="缓存写入单价" value={formatUsdPerMillion(row.cacheCreationCost, row.cacheCreationTokens)} />
-        <DetailItem label="缓存读取单价" value={formatUsdPerMillion(row.cacheReadCost, row.cacheReadTokens)} />
-        <DetailItem label="服务档位" value={row.groupName ?? row.subscriptionName ?? "-"} />
-        <DetailItem label="倍率" value={`${Number(row.rateMultiplier ?? 1).toFixed(2)}x`} />
-      </UsageDetailSection>
+      {imageBilling ? (
+        <UsageDetailSection title="图片价格">
+          <DetailItem label="图片张数" value={imageBilling.imageCount ? `${imageBilling.imageCount}张` : "-"} />
+          <DetailItem label="计费尺寸" value={imageBilling.sizeLabel ?? "-"} />
+          <DetailItem label="尺寸来源" value={imageBilling.sizeSourceLabel} />
+          <DetailItem label="估算分辨率" value={imageBilling.resolution ?? "-"} />
+          <DetailItem label="单张价格" value={formatUsd(imageBilling.unitPrice)} />
+          <DetailItem label="服务档位" value={row.groupName ?? row.subscriptionName ?? "-"} />
+        </UsageDetailSection>
+      ) : (
+        <UsageDetailSection title="模型价格">
+          <DetailItem label="输入单价" value={formatUsdPerMillion(row.inputCost, row.inputTokens)} />
+          <DetailItem label="输出单价" value={formatUsdPerMillion(row.outputCost, row.outputTokens)} />
+          <DetailItem label="缓存写入单价" value={formatUsdPerMillion(row.cacheCreationCost, row.cacheCreationTokens)} />
+          <DetailItem label="缓存读取单价" value={formatUsdPerMillion(row.cacheReadCost, row.cacheReadTokens)} />
+          <DetailItem label="服务档位" value={row.groupName ?? row.subscriptionName ?? "-"} />
+          <DetailItem label="倍率" value={`${Number(row.rateMultiplier ?? 1).toFixed(2)}x`} />
+        </UsageDetailSection>
+      )}
       <UsageDetailSection title="成本">
-        <DetailItem label="输入成本" value={formatUsd(row.inputCost)} />
-        <DetailItem label="输出成本" value={formatUsd(row.outputCost)} />
-        <DetailItem label="缓存写入成本" value={formatUsd(row.cacheCreationCost)} />
-        <DetailItem label="缓存读取成本" value={formatUsd(row.cacheReadCost)} />
-        <DetailItem label="原始" value={formatUsd(row.totalCost)} />
-        <DetailItem label="计费" value={formatUsd(row.actualCost)} />
+        {imageBilling ? (
+          <>
+            <DetailItem label="图片总价" value={formatUsd(row.actualCost)} />
+            <DetailItem label="原始" value={formatUsd(row.totalCost)} />
+            <DetailItem label="计费" value={formatUsd(row.actualCost)} />
+            <DetailItem label="倍率" value={`${Number(row.rateMultiplier ?? 1).toFixed(2)}x`} />
+          </>
+        ) : (
+          <>
+            <DetailItem label="输入成本" value={formatUsd(row.inputCost)} />
+            <DetailItem label="输出成本" value={formatUsd(row.outputCost)} />
+            <DetailItem label="缓存写入成本" value={formatUsd(row.cacheCreationCost)} />
+            <DetailItem label="缓存读取成本" value={formatUsd(row.cacheReadCost)} />
+            <DetailItem label="原始" value={formatUsd(row.totalCost)} />
+            <DetailItem label="计费" value={formatUsd(row.actualCost)} />
+          </>
+        )}
       </UsageDetailSection>
       <UsageDetailSection title="Token">
         <DetailItem label="输入 Token" value={compact(row.inputTokens)} />
@@ -283,9 +423,12 @@ export function UsagePage({
   usageModelSummaries,
   usageModelSummariesLoading,
   usageRecords,
+  usagePageSize,
+  usagePageSizeOptions,
   usageScopeRows,
   handleUsageSearch,
   handleUsagePageChange,
+  handleUsagePageSizeChange,
   usageTrend,
   usageModels
 }: {
@@ -305,9 +448,12 @@ export function UsagePage({
   usageModelSummaries: UsageModelSummary[];
   usageModelSummariesLoading: boolean;
   usageRecords: PaginatedResult<UsageRow> | null;
+  usagePageSize: number;
+  usagePageSizeOptions: number[];
   usageScopeRows: UsageRow[];
   handleUsageSearch: () => Promise<void>;
   handleUsagePageChange: (page: number) => Promise<void>;
+  handleUsagePageSizeChange: (pageSize: number) => Promise<void>;
   usageTrend: UsageTrendPayload | null;
   usageModels: DashboardModelsPayload | null;
 }) {
@@ -323,6 +469,9 @@ export function UsagePage({
   const highestCostRow = findTopUsageRow(scopedUsageRows, (row) => row.actualCost);
   const highestInputRow = findTopUsageRow(scopedUsageRows, (row) => row.inputTokens);
   const highestOutputRow = findTopUsageRow(scopedUsageRows, (row) => row.outputTokens);
+  const usagePaginationItems = usageRecords
+    ? buildUsagePaginationItems(usageRecords.page, Math.max(usageRecords.pages, 1))
+    : [];
   const totalCacheInputTokens = getCacheInputTokens(
     usageStats?.totalCacheTokens,
     usageStats?.totalCacheCreationTokens,
@@ -330,7 +479,7 @@ export function UsagePage({
   );
 
   return (
-    <section className="usage-view">
+    <section className="usage-view motion-shell-section">
       <SectionCard
         title="用量明细"
         subtitle="按真实 usage 单条记录展示 API Key、模型、计费、耗时与 USER-AGENT"
@@ -340,7 +489,7 @@ export function UsagePage({
             重新查询
           </button>
         }
-      >
+        >
         <div className="filter-grid">
           <label className="field">
             <span>API Key</span>
@@ -357,7 +506,7 @@ export function UsagePage({
               ))}
             </select>
           </label>
-          <div className="field range-field" ref={usageRangePickerRef}>
+          <div className="field range-field animated-range-field" ref={usageRangePickerRef}>
             <span>时间范围</span>
             <div className="range-picker-shell">
               <button
@@ -370,7 +519,7 @@ export function UsagePage({
                 <ChevronDown size={16} className={`range-trigger-chevron ${usageRangePickerOpen ? "open" : ""}`} />
               </button>
               {usageRangePickerOpen && (
-                <div className="range-popover">
+                <div className="range-popover range-popover-visible">
                   <div className="range-presets">
                     {USAGE_RANGE_PRESETS.map((preset) => (
                       <button
@@ -419,7 +568,7 @@ export function UsagePage({
           </div>
         </div>
         {usageStats && (
-          <div className="metric-grid compact-metrics">
+          <div className="metric-grid compact-metrics motion-stagger-grid">
             <MetricCard
               label="请求数"
               value={usageStats.totalRequests.toLocaleString()}
@@ -428,6 +577,9 @@ export function UsagePage({
               icon={<LayoutDashboard size={18} />}
               detailTitle="模型请求次数"
               detail={<UsageModelRequestDetails models={scopedModelSummaries} loading={usageModelSummariesLoading} />}
+              className="motion-stagger-item"
+              animationKey={`usage-total-requests:${usageStats.totalRequests}`}
+              style={{ ["--motion-order" as string]: 0 }}
             />
             <MetricCard
               label="输入 Tokens"
@@ -437,6 +589,9 @@ export function UsagePage({
               icon={<MonitorDot size={18} />}
               detailTitle="输入 Token 明细"
               detail={<UsageTokenMetricDetails models={scopedModelSummaries} field="input" loading={usageModelSummariesLoading} />}
+              className="motion-stagger-item"
+              animationKey={`usage-input-tokens:${usageStats.totalInputTokens}`}
+              style={{ ["--motion-order" as string]: 1 }}
             />
             <MetricCard
               label="输出 Tokens"
@@ -446,6 +601,9 @@ export function UsagePage({
               icon={<MonitorDot size={18} />}
               detailTitle="输出 Token 明细"
               detail={<UsageTokenMetricDetails models={scopedModelSummaries} field="output" loading={usageModelSummariesLoading} />}
+              className="motion-stagger-item"
+              animationKey={`usage-output-tokens:${usageStats.totalOutputTokens}`}
+              style={{ ["--motion-order" as string]: 2 }}
             />
             <MetricCard
               label="实际成本"
@@ -472,11 +630,14 @@ export function UsagePage({
                   />
                 </>
               }
+              className="motion-stagger-item"
+              animationKey={`usage-actual-cost:${usageStats.totalActualCost}`}
+              style={{ ["--motion-order" as string]: 3 }}
             />
           </div>
         )}
         {scopedUsageRows.length > 0 && (
-          <div className="metric-grid usage-extreme-grid">
+          <div className="metric-grid usage-extreme-grid motion-stagger-grid">
             <MetricCard
               label="最长首 Token"
               value={longestFirstTokenRow ? formatDurationSeconds(longestFirstTokenRow.firstTokenMs, 2, "秒") : "-"}
@@ -493,6 +654,9 @@ export function UsagePage({
                   />
                 ) : null
               }
+              className="motion-stagger-item"
+              animationKey={`usage-longest-first-token:${longestFirstTokenRow?.id ?? "none"}`}
+              style={{ ["--motion-order" as string]: 0 }}
             />
             <MetricCard
               label="最高消费"
@@ -511,6 +675,9 @@ export function UsagePage({
                   />
                 ) : null
               }
+              className="motion-stagger-item"
+              animationKey={`usage-highest-cost:${highestCostRow?.id ?? "none"}`}
+              style={{ ["--motion-order" as string]: 1 }}
             />
             <MetricCard
               label="最高输入"
@@ -528,6 +695,9 @@ export function UsagePage({
                   />
                 ) : null
               }
+              className="motion-stagger-item"
+              animationKey={`usage-highest-input:${highestInputRow?.id ?? "none"}`}
+              style={{ ["--motion-order" as string]: 2 }}
             />
             <MetricCard
               label="最高输出"
@@ -545,9 +715,36 @@ export function UsagePage({
                   />
                 ) : null
               }
+              className="motion-stagger-item"
+              animationKey={`usage-highest-output:${highestOutputRow?.id ?? "none"}`}
+              style={{ ["--motion-order" as string]: 3 }}
             />
           </div>
         )}
+        <div className="usage-table-toolbar">
+          <div className="usage-table-meta">
+            {usageRecords ? (
+              <>
+                <span>共 {usageRecords.total.toLocaleString()} 条</span>
+                <span>第 {usageRecords.page} / {usageRecords.pages} 页</span>
+              </>
+            ) : (
+              <span>当前没有可展示的用量记录</span>
+            )}
+          </div>
+          {usageRecords && usageRecords.items.length > 0 && (
+            <label className="field usage-page-size-field">
+              <span>每页条数</span>
+              <select value={usagePageSize} onChange={(event) => void handleUsagePageSizeChange(Number(event.target.value))}>
+                {usagePageSizeOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {option} 条
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
         <div className="usage-table-wrap">
           <table className="usage-table">
             <colgroup>
@@ -581,8 +778,10 @@ export function UsagePage({
               </tr>
             </thead>
             <tbody>
-              {usageRecords?.items.map((row) => (
-                <tr key={row.id}>
+              {usageRecords?.items.map((row, index) => {
+                const billingPresentation = buildUsageBillingPresentation(row);
+                return (
+                <tr key={row.id} className="usage-row-motion" style={{ ["--motion-order" as string]: index }}>
                   <td>
                     <div className="usage-cell usage-cell-primary">
                       <strong>{row.apiKeyName ?? "未知 Key"}</strong>
@@ -615,7 +814,12 @@ export function UsagePage({
                       {formatUsageRequestTypeLabel(row)}
                     </span>
                   </td>
-                  <td>{formatBillingMode(row.billingMode, row.billingType)}</td>
+                  <td>
+                    <div className="usage-cell usage-cell-primary">
+                      <strong>{billingPresentation.primary}</strong>
+                      {billingPresentation.secondary ? <span>{billingPresentation.secondary}</span> : null}
+                    </div>
+                  </td>
                   <td>
                     <UsageDetailPopover
                       trigger={(
@@ -659,7 +863,8 @@ export function UsagePage({
                     {row.userAgent ?? "-"}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
           {(!usageRecords || usageRecords.items.length === 0) && (
@@ -668,10 +873,6 @@ export function UsagePage({
         </div>
         {usageRecords && usageRecords.items.length > 0 && (
           <div className="usage-pagination">
-            <div className="usage-pagination-meta">
-              <span>共 {usageRecords.total.toLocaleString()} 条</span>
-              <span>第 {usageRecords.page} / {usageRecords.pages} 页</span>
-            </div>
             <div className="usage-pagination-actions">
               <button
                 className="ghost-button"
@@ -688,6 +889,61 @@ export function UsagePage({
                 下一页
               </button>
             </div>
+            <div className="usage-pagination-pages" aria-label="用量页码">
+              {usagePaginationItems.map((item, index) =>
+                item === "ellipsis" ? (
+                  <span key={`ellipsis-${index}`} className="usage-pagination-ellipsis" aria-hidden="true">
+                    ...
+                  </span>
+                ) : (
+                  <button
+                    key={item}
+                    type="button"
+                    className={`usage-pagination-page ${item === usageRecords.page ? "active" : ""}`}
+                    aria-current={item === usageRecords.page ? "page" : undefined}
+                    onClick={() => void handleUsagePageChange(item)}
+                  >
+                    {item}
+                  </button>
+                )
+              )}
+            </div>
+            <div className="usage-pagination-jump">
+              <label className="field usage-page-jump-field">
+                <span>跳转页码</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={usageRecords.pages}
+                  defaultValue={usageRecords.page}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") {
+                      return;
+                    }
+                    const value = Number((event.currentTarget as HTMLInputElement).value);
+                    if (!Number.isFinite(value)) {
+                      return;
+                    }
+                    void handleUsagePageChange(value);
+                  }}
+                />
+              </label>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={(event) => {
+                  const container = (event.currentTarget as HTMLButtonElement).closest(".usage-pagination-jump");
+                  const input = container?.querySelector("input");
+                  const value = Number((input as HTMLInputElement | null)?.value);
+                  if (!Number.isFinite(value)) {
+                    return;
+                  }
+                  void handleUsagePageChange(value);
+                }}
+              >
+                跳转
+              </button>
+            </div>
           </div>
         )}
       </SectionCard>
@@ -698,8 +954,12 @@ export function UsagePage({
         />
         <SectionCard title="模型分布" subtitle="对齐 dashboard/models 接口">
           <div className="table-list">
-            {usageModels?.models.map((model) => (
-              <div key={model.model} className="table-row">
+            {usageModels?.models.map((model, index) => (
+              <div
+                key={model.model}
+                className="table-row table-row-motion"
+                style={{ ["--motion-order" as string]: index }}
+              >
                 <div>
                   <strong>{model.model}</strong>
                   <p>{model.requests.toLocaleString()} 请求 / {compact(model.totalTokens)} tokens</p>
