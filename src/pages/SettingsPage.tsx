@@ -294,17 +294,19 @@ export function SettingsPage({
           )}
           {currentAccountBalance !== null ? (
             <>
-              <div className="summary-stat">
-                <span>余额</span>
-                <strong>${currentAccountBalance.toFixed(2)}</strong>
-              </div>
-              <div className="summary-stat">
-                <span>订阅总数</span>
-                <strong>{currentAccountSubscriptions.length}</strong>
-              </div>
-              <div className="summary-stat">
-                <span>Key 总数 / 活跃</span>
-                <strong>{currentAccountTotalKeys} / {currentAccountActiveKeys}</strong>
+              <div className="account-detail-summary-grid">
+                <div className="summary-stat compact-stat">
+                  <span>余额</span>
+                  <strong>${currentAccountBalance.toFixed(2)}</strong>
+                </div>
+                <div className="summary-stat compact-stat">
+                  <span>订阅总数</span>
+                  <strong>{currentAccountSubscriptions.length}</strong>
+                </div>
+                <div className="summary-stat compact-stat">
+                  <span>Key 总数 / 活跃</span>
+                  <strong>{currentAccountTotalKeys} / {currentAccountActiveKeys}</strong>
+                </div>
               </div>
             <div className="stack-list account-detail-stack">
               <div className="account-detail-column">
