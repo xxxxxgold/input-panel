@@ -1,7 +1,7 @@
 import type { KeyboardEvent } from "react";
 import { Plus } from "lucide-react";
 
-import type { AccountRuntime, SiteRecord } from "../types";
+import type { AccountRuntime, AccountSyncStatusRecord, KeyRecord, SiteRecord, SubscriptionRecord } from "../types";
 import { formatTime } from "../shared/lib/formatters";
 import { DetailItem } from "../shared/ui/DetailItem";
 import { EmptyState } from "../shared/ui/EmptyState";
@@ -50,7 +50,12 @@ export function SettingsPage({
   accounts,
   selectedSite,
   selectedAccountId,
-  visibleSnapshot,
+  currentAccountBalance,
+  currentAccountTotalKeys,
+  currentAccountActiveKeys,
+  currentAccountSubscriptions,
+  currentAccountKeys,
+  currentAccountSyncStatuses,
   onOpenNewSite,
   onSelectSite,
   onOpenSiteAccountManager,
@@ -66,23 +71,31 @@ export function SettingsPage({
   filteredSites: SiteRecord[];
   accounts: AccountRuntime[];
   selectedSite: SiteRecord | null;
-  visibleSnapshot: AccountRuntime["snapshot"] | null;
+  selectedAccountId: string | null;
+  currentAccountBalance: number | null;
+  currentAccountTotalKeys: number;
+  currentAccountActiveKeys: number;
+  currentAccountSubscriptions: SubscriptionRecord[];
+  currentAccountKeys: KeyRecord[];
+  currentAccountSyncStatuses: AccountSyncStatusRecord[];
   onOpenNewSite: () => void;
   onSelectSite: (siteId: string) => void;
   onOpenSiteAccountManager: (site: SiteRecord) => void;
   onOpenEditSite: (site: SiteRecord) => void;
   onRemoveSite: (siteId: string) => void;
   onOpenNewAccount: (siteId?: string) => void;
-  onOpenAccountManager: (account: AccountRuntime) => void;
+  onSelectAccount: (account: AccountRuntime) => void;
+  onEditAccount: (account: AccountRuntime) => void;
   handleActionKey: (event: KeyboardEvent<HTMLElement>, action: () => void) => void;
 }) {
   const selectedSiteAccounts = selectedSite ? accounts.filter((item) => item.siteId === selectedSite.id) : [];
-  const selectedSiteBalance = selectedSiteAccounts.reduce((sum, item) => sum + (item.snapshot?.balance ?? 0), 0);
+  const selectedSiteBalance = selectedSiteAccounts.reduce((sum, item) => sum + (item.cacheView?.balance ?? 0), 0);
   const selectedSiteReadyCount = selectedSiteAccounts.filter((item) => item.sessionState === "ready").length;
   const selectedSiteLatestFetchedAt = selectedSiteAccounts
-    .map((item) => item.snapshot?.fetchedAt ?? null)
+    .map((item) => item.cacheView?.fetchedAt ?? null)
     .filter((value): value is string => Boolean(value))
     .sort((left, right) => right.localeCompare(left))[0] ?? null;
+  const currentAccountSyncSummary = buildCurrentAccountSyncSummary(currentAccountSyncStatuses);
 
   return (
     <>
@@ -106,7 +119,7 @@ export function SettingsPage({
             <div className="context-list">
               {filteredSites.map((site) => {
                 const siteAccounts = accounts.filter((item) => item.siteId === site.id);
-                const siteBalance = siteAccounts.reduce((sum, item) => sum + (item.snapshot?.balance ?? 0), 0);
+                const siteBalance = siteAccounts.reduce((sum, item) => sum + (item.cacheView?.balance ?? 0), 0);
                 const activeCount = siteAccounts.filter((item) => item.sessionState === "ready").length;
                 const siteCardSelected = selectedSite?.id === site.id;
                 const siteCardTitle = siteCardSelected
@@ -122,7 +135,7 @@ export function SettingsPage({
                 return (
                   <div
                     key={site.id}
-                    className={`context-card ${siteCardSelected ? "selected" : ""}`}
+                    className={`context-card motion-surface-card ${siteCardSelected ? "selected" : ""}`}
                     onClick={handleSiteCardAction}
                     onKeyDown={(event) => handleActionKey(event, handleSiteCardAction)}
                     role="button"
@@ -165,7 +178,7 @@ export function SettingsPage({
                 <EmptyState title="还没有站点" detail="先添加第一个 Sub2API 站点。" compact />
               )}
             </div>
-            <div className="request-detail-card site-detail-card">
+            <div className={`request-detail-card site-detail-card ${selectedSite ? "detail-reveal-visible" : ""}`.trim()}>
               {selectedSite ? (
                 <>
                   <div className="request-detail-head site-detail-head">
@@ -210,24 +223,33 @@ export function SettingsPage({
                   <div className="site-account-list">
                     <div className="section-mini-title">当前站点账号</div>
                     <div className="table-list wide">
-                      {selectedSiteAccounts.map((account) => (
+                      {selectedSiteAccounts.map((account) => {
+                        const isSelected = selectedAccountId === account.id;
+                        const siteAccountRowAction = runSiteAccountRowAction({
+                          account,
+                          onSelectAccount,
+                          onEditAccount
+                        });
+                        return (
                         <div
                           key={account.id}
-                          className="table-row wide account-row-trigger site-account-row"
-                          onClick={() => onOpenAccountManager(account)}
-                          onKeyDown={(event) => handleActionKey(event, () => onOpenAccountManager(account))}
+                          className={`table-row wide account-row-trigger site-account-row motion-surface-card ${isSelected ? "selected" : ""}`}
+                          onClick={siteAccountRowAction.handleClick}
+                          onDoubleClick={siteAccountRowAction.handleDoubleClick}
+                          onKeyDown={(event) => handleActionKey(event, siteAccountRowAction.handleClick)}
                           role="button"
+                          aria-pressed={isSelected}
                           tabIndex={0}
-                          title={`打开 ${account.label} 的账号管理`}
+                          title={`${account.label}: 单击选中, 双击编辑`}
                         >
                           <div className="row-main">
                             <strong>{account.label}</strong>
                             <p>{account.email}</p>
-                            <small>{account.snapshot ? `最近同步 ${formatTime(account.snapshot.fetchedAt)}` : "当前还没有同步"}</small>
+                            <small>{account.cacheView ? `最近同步 ${formatTime(account.cacheView.fetchedAt)}` : "当前还没有同步"}</small>
                           </div>
                           <div className="row-meta">
-                            <span>余额 {account.snapshot ? `$${account.snapshot.balance.toFixed(2)}` : "-"}</span>
-                            <span>Keys {account.snapshot?.stats.totalApiKeys ?? 0} / 活跃 {account.snapshot?.stats.activeApiKeys ?? 0}</span>
+                            <span>余额 {account.cacheView ? `$${account.cacheView.balance.toFixed(2)}` : "-"}</span>
+                            <span>Keys {account.cacheView?.stats.totalApiKeys ?? 0} / 活跃 {account.cacheView?.stats.activeApiKeys ?? 0}</span>
                           </div>
                           <div className="row-actions">
                             <StatusBadge state={account.sessionState} />
@@ -236,14 +258,14 @@ export function SettingsPage({
                               className="inline-text-button"
                               onClick={(event) => {
                                 event.stopPropagation();
-                                onOpenAccountManager(account);
+                                onEditAccount(account);
                               }}
                             >
-                              打开
+                              编辑
                             </button>
                           </div>
                         </div>
-                      ))}
+                      )})}
                       {selectedSiteAccounts.length === 0 && (
                         <EmptyState title="当前站点还没有账号" detail="先在这个站点下添加一个账号。" compact />
                       )}
@@ -259,35 +281,111 @@ export function SettingsPage({
       </section>
 
       <SectionCard title="当前账号详情" subtitle="当前所选账号的余额、全部订阅和全部 API Keys">
-        {visibleSnapshot ? (
-          <div className="stack-list">
+        <div className="stack-list">
+          <div className="summary-stat">
+            <span>同步状态</span>
+            <strong>{currentAccountSyncSummary.label}</strong>
+          </div>
+          {currentAccountSyncSummary.detail && (
             <div className="summary-stat">
-              <span>余额</span>
-              <strong>${visibleSnapshot.balance.toFixed(2)}</strong>
+              <span>{currentAccountSyncSummary.detailLabel}</span>
+              <strong>{currentAccountSyncSummary.detail}</strong>
             </div>
-            <div className="summary-stat">
-              <span>订阅总数</span>
-              <strong>{visibleSnapshot.subscriptions.length}</strong>
-            </div>
-            <div className="summary-stat">
-              <span>Key 总数 / 活跃</span>
-              <strong>{visibleSnapshot.stats.totalApiKeys} / {visibleSnapshot.stats.activeApiKeys}</strong>
-            </div>
-            <div className="account-detail-grid">
+          )}
+          {currentAccountBalance !== null ? (
+            <>
+              <div className="summary-stat">
+                <span>余额</span>
+                <strong>${currentAccountBalance.toFixed(2)}</strong>
+              </div>
+              <div className="summary-stat">
+                <span>订阅总数</span>
+                <strong>{currentAccountSubscriptions.length}</strong>
+              </div>
+              <div className="summary-stat">
+                <span>Key 总数 / 活跃</span>
+                <strong>{currentAccountTotalKeys} / {currentAccountActiveKeys}</strong>
+              </div>
+            <div className="stack-list account-detail-stack">
               <div className="account-detail-column">
                 <div className="section-mini-title">全部订阅</div>
-                <SubscriptionList subscriptions={visibleSnapshot.subscriptions} />
+                <SubscriptionList subscriptions={currentAccountSubscriptions} />
               </div>
               <div className="account-detail-column">
                 <div className="section-mini-title">全部 API Keys</div>
-                <ApiKeyList keys={visibleSnapshot.keys} />
+                <ApiKeyList keys={currentAccountKeys} />
               </div>
             </div>
-          </div>
-        ) : (
-          <EmptyState title="还没有当前账号详情" detail="先登录并刷新当前账号。" compact />
-        )}
+            </>
+          ) : (
+            <EmptyState
+              title="还没有当前账号详情"
+              detail={buildCurrentAccountEmptyStateDetail(currentAccountSyncSummary)}
+              compact
+            />
+          )}
+        </div>
       </SectionCard>
     </>
   );
+}
+
+function buildCurrentAccountSyncSummary(syncStatuses: AccountSyncStatusRecord[]) {
+  if (syncStatuses.length === 0) {
+    return {
+      label: "从未同步",
+      detailLabel: "",
+      detail: ""
+    };
+  }
+
+  const running = syncStatuses.filter((item) => item.state === "running");
+  if (running.length > 0) {
+    return {
+      label: `同步中 (${running.length})`,
+      detailLabel: "当前作用域",
+      detail: running.map((item) => item.scope).join(", ")
+    };
+  }
+
+  const failed = syncStatuses.find((item) => item.state === "failed");
+  if (failed) {
+    return {
+      label: `同步失败 (${failed.scope})`,
+      detailLabel: "失败原因",
+      detail: failed.lastError ?? "请稍后重试"
+    };
+  }
+
+  const latestSuccess = syncStatuses
+    .map((item) => item.lastSuccessAt)
+    .filter((value): value is string => Boolean(value))
+    .sort()
+    .at(-1);
+
+  return {
+    label: latestSuccess ? `最近成功 ${formatTime(latestSuccess)}` : "已同步",
+    detailLabel: "",
+    detail: ""
+  };
+}
+
+function buildCurrentAccountEmptyStateDetail(
+  syncSummary: ReturnType<typeof buildCurrentAccountSyncSummary>
+) {
+  if (syncSummary.label.startsWith("同步中")) {
+    return "当前账号正在同步, 完成后这里会展示余额、订阅和全部 API Keys。";
+  }
+
+  if (syncSummary.label.startsWith("同步失败")) {
+    return syncSummary.detail
+      ? `最近一次同步失败: ${syncSummary.detail}`
+      : "最近一次同步失败, 请稍后重试。";
+  }
+
+  if (syncSummary.label === "从未同步") {
+    return "先登录并触发同步后, 这里会展示当前账号的本地缓存数据。";
+  }
+
+  return "当前账号已有同步状态, 但还没有可展示的缓存详情。";
 }

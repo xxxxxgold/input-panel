@@ -42,6 +42,13 @@ const ANALYTICS_SAMPLE_PAGE_SIZE = 20;
 
 type UsageRangePreset = (typeof USAGE_RANGE_PRESETS)[number]["key"];
 
+type UsageDashboardQuery = {
+  days?: number;
+  apiKeyId?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+};
+
 export function useUsageWorkspace({
   nav,
   selectedAccountId,
@@ -83,6 +90,7 @@ export function useUsageWorkspace({
   const blockingUsageRequestCountRef = useRef(0);
   const usageFeaturesActive = nav === "usage" || nav === "trends" || nav === "keyUsage";
   const analyticsLabActive = nav === "trends";
+  const keyUsagePageActive = nav === "keyUsage";
   const keyUsageActive = nav === "keyUsage" || (nav === "trends" && Boolean(keyUsageKeyId));
 
   function beginUsageRequest() {
@@ -104,6 +112,15 @@ export function useUsageWorkspace({
 
   function hasBlockingUsageRequest() {
     return blockingUsageRequestCountRef.current > 0;
+  }
+
+  function buildUsageDashboardQuery(startDate: string, endDate: string): UsageDashboardQuery {
+    return {
+      days: 7,
+      apiKeyId: usageApiKeyFilter || null,
+      startDate,
+      endDate
+    };
   }
 
   useEffect(() => {
@@ -143,7 +160,7 @@ export function useUsageWorkspace({
     }));
 
     void loadUsageWorkspace(selectedAccountId, effectiveStart, effectiveEnd);
-  }, [selectedAccountId, usageFeaturesActive]);
+  }, [selectedAccountId, usageFeaturesActive, analyticsLabActive, nav]);
 
   useEffect(() => {
     if (!usageRangePickerOpen) {
@@ -220,23 +237,42 @@ export function useUsageWorkspace({
     beginBlockingUsageRequest();
     const requestSequence = beginUsageRequest();
     setUsageModelSummariesLoading(true);
-    setUsageScopeRows([]);
-    setUsageScopeMeta(null);
+    if (analyticsLabActive) {
+      setUsageScopeRows([]);
+      setUsageScopeMeta(null);
+    }
     if (analyticsLabActive) {
       setUsageRecords(null);
       setUsageStats(null);
       setUsageTrend(null);
       setUsageModels(null);
     }
-    const scopeRowsPromise = startUsageScopeRowsRefresh(
-      accountId,
-      startDate,
-      endDate,
-      usageApiKeyFilter,
-      requestSequence,
-      analyticsLabActive
-    );
+    const scopeRowsPromise = analyticsLabActive
+      ? startUsageScopeRowsRefresh(
+          accountId,
+          startDate,
+          endDate,
+          usageApiKeyFilter,
+          requestSequence,
+          true
+        )
+      : Promise.resolve<UsageRow[]>([]);
     try {
+      if (keyUsagePageActive) {
+        if (!isLatestUsageRequest(requestSequence)) {
+          return;
+        }
+        setUsageRecords(null);
+        setUsageStats(null);
+        setUsageTrend(null);
+        setUsageModels(null);
+        setUsageModelSummaries([]);
+        setUsageScopeRows([]);
+        setUsageScopeMeta(null);
+        setError(null);
+        return;
+      }
+
       if (analyticsLabActive) {
         const nextScopeRows = await scopeRowsPromise;
         if (!isLatestUsageRequest(requestSequence)) {
@@ -249,6 +285,9 @@ export function useUsageWorkspace({
         setError(null);
         return;
       }
+
+      setUsageScopeRows([]);
+      setUsageScopeMeta(null);
 
       const loadOptional = async <T,>(loader: () => Promise<T>, fallback: T) => {
         try {
@@ -276,8 +315,8 @@ export function useUsageWorkspace({
           rpm: 0,
           tpm: 0
         }),
-        loadOptional(() => getDashboardTrend(accountId, 7), null),
-        loadOptional(() => getDashboardModels(accountId, 7), null),
+        loadOptional(() => getDashboardTrend(accountId, buildUsageDashboardQuery(startDate, endDate)), null),
+        loadOptional(() => getDashboardModels(accountId, buildUsageDashboardQuery(startDate, endDate)), null),
         loadUsageRecordsForFilters(
           accountId,
           startDate,
@@ -438,22 +477,24 @@ export function useUsageWorkspace({
     setError(null);
     setUsageModelSummariesLoading(true);
     const requestSequence = beginUsageRequest();
-    setUsageScopeRows([]);
-    setUsageScopeMeta(null);
     if (analyticsLabActive) {
+      setUsageScopeRows([]);
+      setUsageScopeMeta(null);
       setUsageRecords(null);
       setUsageStats(null);
       setUsageTrend(null);
       setUsageModels(null);
     }
-    const scopeRowsPromise = startUsageScopeRowsRefresh(
-      selectedAccountId,
-      usageStartDate,
-      usageEndDate,
-      usageApiKeyFilter,
-      requestSequence,
-      analyticsLabActive
-    );
+    const scopeRowsPromise = analyticsLabActive
+      ? startUsageScopeRowsRefresh(
+          selectedAccountId,
+          usageStartDate,
+          usageEndDate,
+          usageApiKeyFilter,
+          requestSequence,
+          true
+        )
+      : Promise.resolve<UsageRow[]>([]);
     try {
       setUsagePage(1);
       if (analyticsLabActive) {
@@ -467,6 +508,9 @@ export function useUsageWorkspace({
         setUsageModelSummaries(summarizeDashboardModels(buildModelsPayloadFromRows(nextScopeRows)));
         return;
       }
+
+      setUsageScopeRows([]);
+      setUsageScopeMeta(null);
 
       const [stats, , trend, models] = await Promise.all([
         getUsageStats(selectedAccountId, {
@@ -483,13 +527,13 @@ export function useUsageWorkspace({
           usagePageSize,
           requestSequence
         ),
-        getDashboardTrend(selectedAccountId, 7).catch((cause) => {
+        getDashboardTrend(selectedAccountId, buildUsageDashboardQuery(usageStartDate, usageEndDate)).catch((cause) => {
           if (isOptionalEndpointUnavailable(cause)) {
             return null;
           }
           throw cause;
         }),
-        getDashboardModels(selectedAccountId, 7).catch((cause) => {
+        getDashboardModels(selectedAccountId, buildUsageDashboardQuery(usageStartDate, usageEndDate)).catch((cause) => {
           if (isOptionalEndpointUnavailable(cause)) {
             return null;
           }
@@ -636,22 +680,24 @@ export function useUsageWorkspace({
     setError(null);
     setUsageModelSummariesLoading(true);
     const requestSequence = beginUsageRequest();
-    setUsageScopeRows([]);
-    setUsageScopeMeta(null);
     if (analyticsLabActive) {
+      setUsageScopeRows([]);
+      setUsageScopeMeta(null);
       setUsageRecords(null);
       setUsageStats(null);
       setUsageTrend(null);
       setUsageModels(null);
     }
-    const scopeRowsPromise = startUsageScopeRowsRefresh(
-      selectedAccountId,
-      nextStart,
-      nextEnd,
-      usageApiKeyFilter,
-      requestSequence,
-      analyticsLabActive
-    );
+    const scopeRowsPromise = analyticsLabActive
+      ? startUsageScopeRowsRefresh(
+          selectedAccountId,
+          nextStart,
+          nextEnd,
+          usageApiKeyFilter,
+          requestSequence,
+          true
+        )
+      : Promise.resolve<UsageRow[]>([]);
     try {
       if (analyticsLabActive) {
         const nextScopeRows = await scopeRowsPromise;
@@ -665,20 +711,31 @@ export function useUsageWorkspace({
         return;
       }
 
+      setUsageScopeRows([]);
+      setUsageScopeMeta(null);
+
       const [stats, , trend, models] = await Promise.all([
         getUsageStats(selectedAccountId, {
           startDate: nextStart,
           endDate: nextEnd,
           apiKeyId: usageApiKeyFilter || null
         }),
-        loadUsageRecordsForFilters(selectedAccountId, nextStart, nextEnd, usageApiKeyFilter, 1, requestSequence),
-        getDashboardTrend(selectedAccountId, 7).catch((cause) => {
+        loadUsageRecordsForFilters(
+          selectedAccountId,
+          nextStart,
+          nextEnd,
+          usageApiKeyFilter,
+          1,
+          usagePageSize,
+          requestSequence
+        ),
+        getDashboardTrend(selectedAccountId, buildUsageDashboardQuery(nextStart, nextEnd)).catch((cause) => {
           if (isOptionalEndpointUnavailable(cause)) {
             return null;
           }
           throw cause;
         }),
-        getDashboardModels(selectedAccountId, 7).catch((cause) => {
+        getDashboardModels(selectedAccountId, buildUsageDashboardQuery(nextStart, nextEnd)).catch((cause) => {
           if (isOptionalEndpointUnavailable(cause)) {
             return null;
           }
@@ -752,7 +809,7 @@ export function useUsageWorkspace({
     const requestSequence = beginUsageRequest();
     setUsageModelSummariesLoading(true);
     const scopeRowsPromise: Promise<UsageRow[]> =
-      nav === "overview"
+      nav === "overview" || !analyticsLabActive
         ? Promise.resolve([])
         : startUsageScopeRowsRefresh(
             selectedAccountId,
@@ -769,6 +826,25 @@ export function useUsageWorkspace({
           return;
         }
         setUsageStats(applyUsageRateFallback(stats, { period: "today" }));
+        setError(null);
+        return;
+      }
+
+      if (keyUsagePageActive) {
+        if (keyUsageKeyId) {
+          const daily = await getApiKeyDailyUsage(selectedAccountId, keyUsageKeyId, 30);
+          if (!isLatestUsageRequest(requestSequence)) {
+            return;
+          }
+          setKeyUsageRows(daily);
+        }
+        setUsageRecords(null);
+        setUsageStats(null);
+        setUsageTrend(null);
+        setUsageModels(null);
+        setUsageModelSummaries([]);
+        setUsageScopeRows([]);
+        setUsageScopeMeta(null);
         setError(null);
         return;
       }
@@ -793,6 +869,9 @@ export function useUsageWorkspace({
         return;
       }
 
+      setUsageScopeRows([]);
+      setUsageScopeMeta(null);
+
       const effectiveStart = usageStartDate || toDateValue(new Date());
       const effectiveEnd = usageEndDate || toDateValue(new Date());
       const targetUsagePage = usageRecords?.page ?? usagePage;
@@ -812,13 +891,13 @@ export function useUsageWorkspace({
           usagePageSize,
           requestSequence
         ),
-        getDashboardTrend(selectedAccountId, 7).catch((cause) => {
+        getDashboardTrend(selectedAccountId, buildUsageDashboardQuery(effectiveStart, effectiveEnd)).catch((cause) => {
           if (isOptionalEndpointUnavailable(cause)) {
             return null;
           }
           throw cause;
         }),
-        getDashboardModels(selectedAccountId, 7).catch((cause) => {
+        getDashboardModels(selectedAccountId, buildUsageDashboardQuery(effectiveStart, effectiveEnd)).catch((cause) => {
           if (isOptionalEndpointUnavailable(cause)) {
             return null;
           }
@@ -840,14 +919,6 @@ export function useUsageWorkspace({
       setUsageTrend(trend);
       setUsageModels(models);
       setUsageModelSummaries(summarizeDashboardModels(models));
-
-      if (nav === "keyUsage" && keyUsageKeyId) {
-        const daily = await getApiKeyDailyUsage(selectedAccountId, keyUsageKeyId, 30);
-        if (!isLatestUsageRequest(requestSequence)) {
-          return;
-        }
-        setKeyUsageRows(daily);
-      }
 
       setError(null);
     } catch (cause) {

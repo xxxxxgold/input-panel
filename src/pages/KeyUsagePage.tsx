@@ -18,7 +18,7 @@ export function KeyUsagePage({
   const selectedKey = managedKeys?.items.find((item) => item.id === keyUsageKeyId) ?? null;
 
   return (
-    <section className="content-grid">
+    <section className="content-grid content-grid-align-start">
       <SectionCard title="单 Key 用量" subtitle="对齐 key-usage 页面与 daily usage 接口">
         <div className="filter-grid">
           <label className="field">
