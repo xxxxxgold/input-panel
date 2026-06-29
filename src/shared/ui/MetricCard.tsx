@@ -31,12 +31,14 @@ export function MetricCard({
   const animatedValue = useAnimatedDisplayValue(value, animationKey ?? `${label}:${value}`);
   const body = (
     <article className={`metric-card ${className ?? ""}`.trim()} style={style}>
-      <div className={`metric-icon ${accent}`}>{icon}</div>
-      <div>
-        <p className="metric-label">{label}</p>
-        <h3 className="metric-value">{animatedValue}</h3>
-        <p className="metric-hint">{hint}</p>
-      </div>
+  <div className="metric-icon"><span className="metric-icon-orb">{icon}</span></div>
+  <div className="metric-content">
+    <div className="metric-header">
+      <p className="metric-label">{label}</p>
+      <p className="metric-hint">{hint}</p>
+    </div>
+    <h3 className="metric-value">{animatedValue}</h3>
+  </div>
     </article>
   );
 

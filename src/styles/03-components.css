@@ -1307,8 +1307,23 @@
 
 .metric-card {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 14px;
+}
+
+.metric-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.metric-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .metric-icon {
@@ -1317,14 +1332,32 @@
   border-radius: 13px;
   display: grid;
   place-items: center;
+  flex-shrink: 0;
 }
 
-.metric-icon.emerald { background: rgba(16, 185, 129, 0.15); color: #10b981; }
-.metric-icon.sky { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
-.metric-icon.violet { background: rgba(139, 92, 246, 0.15); color: #a78bfa; }
-.metric-icon.amber { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
-.metric-icon.indigo { background: rgba(99, 102, 241, 0.15); color: #818cf8; }
-.metric-icon.rose { background: rgba(244, 63, 94, 0.15); color: #fb7185; }
+.metric-icon-orb {
+  width: 40px;
+  height: 40px;
+  border-radius: 13px;
+  display: grid;
+  place-items: center;
+  background: rgba(127, 210, 200, 0.15);
+  color: var(--accent);
+  font-size: 18px;
+  transition: transform 200ms ease, box-shadow 200ms ease;
+}
+
+.metric-card:hover .metric-icon-orb {
+  transform: scale(1.08);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.metric-icon.emerald { background: rgba(16, 185, 129, 0.15); color: var(--status-success-fg); }
+.metric-icon.sky { background: rgba(59, 130, 246, 0.15); color: var(--status-info-fg); }
+.metric-icon.violet { background: rgba(139, 92, 246, 0.15); color: var(--accent); }
+.metric-icon.amber { background: rgba(245, 158, 11, 0.15); color: var(--status-warning-fg); }
+.metric-icon.indigo { background: rgba(99, 102, 241, 0.15); color: var(--accent); }
+.metric-icon.rose { background: rgba(244, 63, 94, 0.15); color: var(--status-danger-fg); }
 
 .metric-label {
   margin: 0;
@@ -1332,10 +1365,21 @@
   font-size: 12px;
 }
 
+.metric-hint {
+  margin: 0;
+  color: var(--text-subtle);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .metric-value {
-  margin: 6px 0 0;
+  margin: 0;
   font-size: 24px;
   letter-spacing: -0.04em;
+  line-height: 1.1;
 }
 
 .section-card {
