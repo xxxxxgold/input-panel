@@ -31,7 +31,7 @@ export function MetricCard({
   const animatedValue = useAnimatedDisplayValue(value, animationKey ?? `${label}:${value}`);
   const body = (
     <article className={`metric-card ${className ?? ""}`.trim()} style={style}>
-  <div className="metric-icon"><span className="metric-icon-orb">{icon}</span></div>
+  <div className="metric-icon"><span className={`metric-icon-orb ${accent}`}>{icon}</span></div>
   <div className="metric-content">
     <div className="metric-header">
       <p className="metric-label">{label}</p>
