@@ -387,6 +387,25 @@
   background: var(--bg-card);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
+  position: relative;
+  overflow: hidden;
+}
+
+/* Card top highlight - Apple style */
+.context-card::before,
+.metric-card::before,
+.section-card::before,
+.inline-banner::before,
+.table-row::before,
+.alert-item::before,
+.empty-state::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--accent) 30%, transparent) 20%, color-mix(in srgb, var(--accent) 15%, transparent) 80%, transparent 100%);
+  pointer-events: none;
+  z-index: 1;
 }
 
 .context-card {

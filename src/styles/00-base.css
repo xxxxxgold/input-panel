@@ -65,3 +65,43 @@ body {
   color: var(--text-strong);
 }
 
+/* Custom scrollbar - Windows刚需 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-subtle) 35%, transparent);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-subtle) 55%, transparent);
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Reduced transparency */
+@media (prefers-reduced-transparency: reduce) {
+  .floating-menu-card,
+  .floating-preview-card,
+  .topbar-account-dropdown,
+  .site-picker-menu,
+  .topbar-peek-panel,
+  .modal-backdrop,
+  .toast-card {
+    backdrop-filter: none !important;
+  }
+}
+
