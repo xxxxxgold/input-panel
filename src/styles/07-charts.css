@@ -1,0 +1,403 @@
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes toast-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(18px, -6px, 0) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes toast-leave {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(18px, -4px, 0) scale(0.96);
+  }
+}
+
+@keyframes toast-progress {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+@keyframes topbar-clock-pulse {
+  0%,
+  100% {
+    transform: scale(0.92);
+    opacity: 0.72;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+}
+
+@media (max-width: 1200px) {
+  .global-topbar {
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: nowrap;
+  }
+
+  .analytics-lab-meta-grid,
+  .analytics-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .analytics-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .analytics-toolbar-actions {
+    grid-column: 1 / -1;
+  }
+
+  .analytics-detail-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar-leading,
+  .global-topbar-actions {
+    width: auto;
+  }
+
+  .topbar-leading {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .global-topbar-actions {
+    min-width: 0;
+    margin-left: auto;
+  }
+
+  .metric-grid,
+  .content-grid,
+  .panel-grid,
+  .management-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .system-settings-layout-desktop {
+    display: none;
+  }
+
+  .system-settings-layout-mobile {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .overview-layout-desktop {
+    display: none;
+  }
+
+  .overview-layout-mobile {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .usage-insights-grid,
+  .compact-metrics,
+  .usage-extreme-grid,
+  .filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 960px) {
+  .analytics-lab-hero-head {
+    flex-direction: column;
+  }
+
+  .analytics-lab-badge {
+    align-self: flex-start;
+  }
+
+  .analytics-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .app-shell.rail-collapsed {
+    grid-template-columns: 56px minmax(0, 1fr);
+  }
+
+  .app-shell:not(.rail-collapsed) {
+    grid-template-columns: minmax(180px, 220px) minmax(0, 1fr);
+  }
+
+  .workspace {
+    padding: 18px;
+  }
+
+  .global-topbar {
+    flex-wrap: nowrap;
+  }
+
+  .workspace-header-summary {
+    width: 100%;
+  }
+
+  .topbar-leading,
+  .global-topbar-actions {
+    width: auto;
+    min-width: 0;
+    justify-content: flex-end;
+  }
+
+  .topbar-clock-card {
+    min-width: 0;
+    width: auto;
+    padding-inline: 10px;
+  }
+
+  .topbar-clock-time {
+    display: none;
+  }
+
+  .topbar-clock-copy {
+    gap: 0;
+  }
+
+  .usage-pagination {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .usage-pagination-pages {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 720px) {
+  .topbar-leading {
+    display: none;
+  }
+
+  .global-topbar {
+    justify-content: flex-end;
+  }
+
+  .global-topbar-actions {
+    width: 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .analytics-lab-hero-head h3 {
+    font-size: 30px;
+  }
+
+  .analytics-lab-meta-grid,
+  .analytics-toolbar,
+  .analytics-kpi-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .analytics-toolbar-actions {
+    grid-column: auto;
+  }
+
+  .analytics-meta-card > strong,
+  .analytics-stat-card > strong {
+    font-size: 22px;
+  }
+
+  .topbar-clock-card {
+    min-width: 0;
+    width: auto;
+    max-width: 100%;
+  }
+
+  .topbar-clock-time {
+    display: none;
+  }
+
+  .topbar-clock-copy {
+    gap: 0;
+  }
+
+  .alert-inbox-item,
+  .alert-inbox-item-main {
+    flex-direction: column;
+  }
+
+  .alert-inbox-meta {
+    align-items: flex-start;
+    text-align: left;
+    min-width: 0;
+  }
+
+  .toast-host {
+    top: var(--toast-host-top, 14px);
+    right: 14px;
+    left: 14px;
+    width: auto;
+  }
+
+  .subscription-summary-grid,
+  .subscription-metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .table-list.wide .table-row.subscription-summary-row {
+    grid-template-columns: 1fr;
+  }
+
+  .modal-site-overview {
+    flex-direction: column;
+  }
+
+  .modal-site-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .account-list-modal .table-list.wide .table-row {
+    grid-template-columns: 1fr;
+  }
+
+  .account-list-modal .row-actions {
+    justify-content: flex-start;
+  }
+
+  .usage-insights-grid,
+  .compact-metrics,
+  .usage-extreme-grid,
+  .filter-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .usage-table-toolbar,
+  .usage-pagination-jump {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .subscription-card-head {
+    flex-direction: column;
+  }
+
+  .subscription-card-title-row,
+  .key-heading-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .available-group-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .available-group-inline,
+  .available-group-tags,
+  .available-group-quotas {
+    justify-content: flex-start;
+  }
+
+  .subscription-card-title-cluster,
+  .subscription-card-tags {
+    justify-content: flex-start;
+  }
+
+  .subscription-status-block {
+    align-items: flex-start;
+  }
+
+  .subscription-status-block strong {
+    text-align: left;
+  }
+
+  .subscription-card-meta {
+    gap: 8px;
+  }
+
+  .table-list.wide .table-row.key-row {
+    grid-template-columns: 1fr;
+  }
+
+  .subscription-card-tags,
+  .key-secret-line,
+  .key-row-actions,
+  .key-action-cluster {
+    justify-content: flex-start;
+    align-items: flex-start;
+  }
+
+  .key-row-actions {
+    width: 100%;
+  }
+
+  .range-popover {
+    min-width: 0;
+  }
+
+  .range-custom-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .range-arrow {
+    display: none;
+  }
+
+  .inline-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .usage-table {
+    min-width: 980px;
+  }
+  .workspace-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .table-row.wide {
+    grid-template-columns: 1fr;
+  }
+
+  .history-row,
+  .request-detail-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .site-detail-grid,
+  .request-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .site-account-row,
+  .account-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-modal-footer {
+    justify-content: flex-end;
+  }
+}
+

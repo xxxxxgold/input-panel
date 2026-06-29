@@ -1,0 +1,352 @@
+:root {
+  --motion-fast: 160ms;
+  --motion-medium: 220ms;
+  --motion-slow: 300ms;
+  --motion-slower: 520ms;
+  --motion-stagger-step: 56ms;
+  --motion-spring: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --motion-fade-up-distance: 12px;
+}
+
+.app-shell {
+  transition: grid-template-columns var(--motion-medium) var(--motion-spring);
+}
+
+.rail {
+  transition: padding-inline var(--motion-medium) var(--motion-spring), border-color var(--motion-fast) ease;
+}
+
+.brand-button,
+.rail-item,
+.metric-card,
+.section-card,
+.request-detail-card,
+.context-card,
+.site-account-row,
+.theme-card,
+.toggle-field,
+.table-row,
+.topbar-account-trigger,
+.topbar-account-dropdown,
+.floating-preview-card,
+.floating-menu-item,
+.range-preset,
+.settings-range-field input[type="range"] {
+  transition:
+    color var(--motion-fast) ease,
+    background var(--motion-fast) ease,
+    border-color var(--motion-fast) ease,
+    transform var(--motion-fast) ease,
+    box-shadow var(--motion-fast) ease,
+    filter var(--motion-fast) ease;
+}
+
+.brand-button {
+  transform-origin: center left;
+}
+
+.brand-copy {
+  animation: brand-copy-enter var(--motion-medium) var(--motion-spring);
+}
+
+.rail-item {
+  position: relative;
+  isolation: isolate;
+}
+
+.rail-item:hover,
+.rail-item.active {
+  transform: translateX(2px);
+}
+
+.rail-item-label {
+  animation: rail-label-enter var(--motion-medium) var(--motion-spring);
+}
+
+.rail-item-active-pill {
+  position: absolute;
+  left: 8px;
+  top: 9px;
+  bottom: 9px;
+  width: 4px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 92%, white 8%), color-mix(in srgb, var(--accent-strong) 78%, transparent));
+  opacity: 0;
+  transform: scaleY(0.4);
+  transform-origin: center;
+  transition: opacity var(--motion-fast) ease, transform var(--motion-medium) var(--motion-spring);
+  z-index: -1;
+}
+
+.rail-item.active .rail-item-active-pill {
+  opacity: 1;
+  transform: scaleY(1);
+}
+
+.workspace-page {
+  min-width: 0;
+}
+
+.workspace-page.page-motion-enter {
+  animation: workspace-page-enter var(--motion-slow) var(--motion-spring);
+}
+
+.page-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.motion-stagger-grid > .motion-stagger-item,
+.table-row-motion,
+.usage-row-motion {
+  animation: surface-fade-in var(--motion-slow) var(--motion-spring);
+  animation-delay: calc(var(--motion-order, 0) * var(--motion-stagger-step));
+  animation-fill-mode: both;
+}
+
+.motion-surface-card:hover,
+.theme-card:hover,
+.context-card:hover,
+.site-account-row:hover,
+.table-row-motion:hover {
+  transform: translateY(-2px);
+}
+
+.detail-reveal-visible {
+  animation: detail-reveal var(--motion-slow) var(--motion-spring);
+}
+
+.topbar-alert-badge-critical,
+.topbar-alert-badge-neutral,
+.topbar-alert-badge-success {
+  animation: topbar-alert-pulse 2.6s ease-in-out;
+  animation-iteration-count: 2;
+}
+
+.topbar-account-dropdown,
+.range-popover {
+  animation: dropdown-enter var(--motion-medium) var(--motion-spring);
+}
+
+.range-popover {
+  transform-origin: top left;
+}
+
+.range-preset:hover {
+  transform: translateY(-1px);
+}
+
+.settings-range-field input[type="range"]:active,
+.toggle-field input[type="checkbox"]:active {
+  transform: scale(0.96);
+}
+
+.usage-detail-panel {
+  transform: translateY(6px) scale(0.98);
+  transform-origin: top left;
+}
+
+.usage-detail-panel.align-end {
+  transform-origin: top right;
+}
+
+.usage-detail-popover:hover .usage-detail-panel,
+.usage-detail-popover:focus-within .usage-detail-panel {
+  transform: translateY(0) scale(1);
+}
+
+.table-row-motion:hover,
+.usage-row-motion:hover {
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.08);
+}
+
+.floating-orb-button:hover {
+  transform: translateY(-1px) scale(1.035);
+}
+
+.floating-orb-button.menu-open {
+  filter: drop-shadow(0 12px 26px rgba(15, 23, 42, 0.18));
+}
+
+.floating-orb-button:not(.dragging):not(.menu-open) {
+  animation: floating-orb-breathe 4.2s ease-in-out infinite;
+}
+
+.floating-preview-card {
+  transform: translateY(10px) scale(0.975);
+}
+
+.floating-menu-card.visible,
+.floating-preview-card.visible {
+  transform: translateY(0) scale(1);
+}
+
+.floating-preview-card.dock-left {
+  transform-origin: bottom left;
+}
+
+.floating-preview-card.hover-preview {
+  animation: floating-preview-enter var(--motion-medium) var(--motion-spring);
+}
+
+.floating-menu-item:hover,
+.floating-menu-item.selected {
+  transform: translateX(-2px);
+}
+
+.loading-state,
+.echart-card-shell {
+  animation: workspace-page-enter var(--motion-medium) var(--motion-spring);
+}
+
+.modal-backdrop {
+  opacity: 0;
+  transition: opacity var(--motion-medium) ease;
+}
+
+.modal-card {
+  opacity: 0;
+  transform: translateY(14px) scale(0.98);
+  transition:
+    opacity var(--motion-medium) ease,
+    transform var(--motion-medium) var(--motion-spring);
+}
+
+.modal-backdrop.modal-visible {
+  opacity: 1;
+}
+
+.modal-backdrop.modal-visible .modal-card {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+@keyframes workspace-page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-fade-up-distance));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes surface-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes detail-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes dropdown-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes brand-copy-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes rail-label-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes topbar-alert-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(214, 69, 95, 0);
+  }
+  40% {
+    transform: scale(1.12);
+    box-shadow: 0 0 0 6px rgba(214, 69, 95, 0.12);
+  }
+}
+
+@keyframes floating-orb-breathe {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(-1px) scale(1.025);
+  }
+}
+
+@keyframes floating-preview-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell,
+  .rail,
+  .brand-button,
+  .rail-item,
+  .brand-copy,
+  .rail-item-label,
+  .workspace-page.page-motion-enter,
+  .motion-stagger-grid > .motion-stagger-item,
+  .table-row-motion,
+  .usage-row-motion,
+  .detail-reveal-visible,
+  .topbar-alert-badge-critical,
+  .topbar-alert-badge-neutral,
+  .topbar-alert-badge-success,
+  .topbar-account-dropdown,
+  .range-popover,
+  .usage-detail-panel,
+  .floating-orb-button,
+  .floating-preview-card,
+  .loading-state,
+  .echart-card-shell,
+  .modal-backdrop,
+  .modal-card {
+    animation: none !important;
+    transition-duration: 0ms !important;
+    transform: none !important;
+  }
+}
