@@ -19,14 +19,14 @@ pub mod infrastructure;
 const MAIN_WINDOW_LABEL: &str = "main";
 const FLOATING_WINDOW_LABEL: &str = "floating";
 const FLOATING_PANEL_WINDOW_LABEL: &str = "floating-panel";
-const FLOATING_ORB_SIZE: f64 = 68.0;
-const FLOATING_PANEL_WIDTH: f64 = 458.0;
-const FLOATING_PANEL_HEIGHT: f64 = 292.0;
-const FLOATING_MENU_HEIGHT: i32 = 276;
-const FLOATING_PREVIEW_HEIGHT: i32 = 276;
+const FLOATING_ORB_SIZE: f64 = 60.0;
+const FLOATING_PANEL_WIDTH: f64 = 408.0;
+const FLOATING_PANEL_HEIGHT: f64 = 262.0;
+const FLOATING_MENU_HEIGHT: i32 = 248;
+const FLOATING_PREVIEW_HEIGHT: i32 = 248;
 const FLOATING_PANEL_GAP: i32 = 4;
-const FLOATING_EDGE_HIDE: i32 = 18;
-const FLOATING_SAFE_MARGIN: i32 = 14;
+const FLOATING_EDGE_HIDE: i32 = 16;
+const FLOATING_SAFE_MARGIN: i32 = 12;
 const FLOATING_EDGE_SNAP_THRESHOLD: i32 = 8;
 const TRAY_OPEN_MAIN_ID: &str = "open_main";
 const TRAY_TOGGLE_FLOATING_ID: &str = "toggle_floating";
@@ -111,11 +111,6 @@ unsafe extern "system" {
         wparam: usize,
         lparam: isize,
     ) -> isize;
-    fn RemoveWindowSubclass(
-        hwnd: *mut std::ffi::c_void,
-        pfn_subclass: Option<unsafe extern "system" fn(*mut std::ffi::c_void, u32, usize, isize, usize, usize) -> isize>,
-        uidsubclass: usize,
-    ) -> i32;
     fn SetTimer(hwnd: *mut std::ffi::c_void, n_id_event: usize, u_elapse: u32, lp_timer_func: *mut std::ffi::c_void) -> usize;
     fn KillTimer(hwnd: *mut std::ffi::c_void, u_id_event: usize) -> i32;
     fn EnumChildWindows(
@@ -126,8 +121,6 @@ unsafe extern "system" {
     fn GetCursorPos(point: *mut NativePoint) -> i32;
     fn GetWindowRect(hwnd: *mut std::ffi::c_void, rect: *mut NativeRect) -> i32;
     fn TrackMouseEvent(event_track: *mut NativeTrackMouseEvent) -> i32;
-    fn SetCapture(hwnd: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
-    fn ReleaseCapture() -> i32;
     fn GetAsyncKeyState(v_key: i32) -> i16;
 }
 
@@ -1420,7 +1413,8 @@ pub fn run() {
                 )?;
             }
             let app_handle = app.handle().clone();
-            app.manage(ctx);
+            app.manage(ctx.clone());
+            application::scheduler_service::DataSyncScheduler::start(ctx);
             build_tray(&app_handle)?;
             app_handle.on_menu_event(|app, event| match event.id().as_ref() {
                 FLOATING_CONTEXT_TOGGLE_PANEL_ID => {
@@ -1510,6 +1504,9 @@ pub fn run() {
                                 app.exit(0);
                             }
                         }
+                    } else {
+                        let _ = app.save_window_state(StateFlags::all());
+                        app.exit(0);
                     }
                 }
             }
@@ -1538,6 +1535,9 @@ pub fn run() {
             adapters::desktop::commands::login_account_2fa,
             adapters::desktop::commands::refresh_account,
             adapters::desktop::commands::refresh_all_accounts,
+            adapters::desktop::commands::sync_all_accounts,
+            adapters::desktop::commands::sync_account_data,
+            adapters::desktop::commands::get_account_sync_status,
             adapters::desktop::commands::get_available_groups,
             adapters::desktop::commands::list_managed_keys,
             adapters::desktop::commands::get_managed_key,
@@ -1554,8 +1554,6 @@ pub fn run() {
             adapters::desktop::commands::change_profile_password,
             adapters::desktop::commands::get_platform_quotas,
             adapters::desktop::commands::get_subscription_summary,
-            adapters::desktop::commands::get_payment_config,
-            adapters::desktop::commands::list_orders,
             adapters::desktop::commands::send_notify_email_code,
             adapters::desktop::commands::verify_notify_email,
             adapters::desktop::commands::remove_notify_email,
@@ -1563,7 +1561,8 @@ pub fn run() {
             adapters::desktop::commands::send_email_binding_code,
             adapters::desktop::commands::bind_email_identity,
             adapters::desktop::commands::unbind_auth_identity,
-            adapters::desktop::commands::account_proxy_request
+            adapters::desktop::commands::get_scheduler_config,
+            adapters::desktop::commands::update_scheduler_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

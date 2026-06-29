@@ -1,11 +1,8 @@
 import type {
-  PaginatedResult,
-  PaymentConfigRecord,
   PlatformQuotaPayload,
   ProfileUpdateInput,
   SubscriptionSummaryPayload,
-  UserProfileRecord,
-  OrderRecord
+  UserProfileRecord
 } from "../../types";
 import { desktopOrHttp } from "../../shared/transport/runtime";
 
@@ -57,22 +54,6 @@ export function getSubscriptionSummary(accountId: string) {
     command: "get_subscription_summary",
     args: { accountId },
     url: `/api/accounts/${accountId}/subscriptions/summary`
-  });
-}
-
-export function getPaymentConfig(accountId: string) {
-  return desktopOrHttp<PaymentConfigRecord>({
-    command: "get_payment_config",
-    args: { accountId },
-    url: `/api/accounts/${accountId}/payment/config`
-  });
-}
-
-export function listOrders(accountId: string, page = 1, pageSize = 20) {
-  return desktopOrHttp<PaginatedResult<OrderRecord>>({
-    command: "list_orders",
-    args: { accountId, page, pageSize },
-    url: `/api/accounts/${accountId}/orders?page=${page}&page_size=${pageSize}`
   });
 }
 

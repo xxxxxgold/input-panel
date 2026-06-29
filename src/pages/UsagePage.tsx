@@ -133,6 +133,10 @@ function normalizeUsageBillingMode(value?: string | null) {
   return value?.trim().toLowerCase() ?? "";
 }
 
+function normalizeUsageImageSize(value?: string | null) {
+  return value?.trim().toUpperCase() ?? "";
+}
+
 function formatUsageReasoningLabel(value?: string | null) {
   const normalized = normalizeReasoningEffort(value);
   return normalized || "-";
@@ -186,7 +190,24 @@ function inferUsageImageBilling(row: UsageRow) {
     return null;
   }
 
-  // UsageRow 里没有显式图片尺寸字段, 这里按现有图片请求的输出 Token 档位估算 1K / 2K.
+  const explicitImageCount = row.imageCount && row.imageCount > 0 ? row.imageCount : null;
+  const explicitSizeLabel = normalizeUsageImageSize(row.imageSize);
+  const explicitResolution = row.imageOutputSize ?? row.imageInputSize ?? null;
+  if (explicitImageCount || explicitSizeLabel || explicitResolution || row.imageSizeSource) {
+    return {
+      imageCount: explicitImageCount,
+      sizeLabel: explicitSizeLabel || null,
+      resolution: explicitResolution,
+      sizeSourceLabel: row.imageSizeSource === "input"
+        ? "请求入参"
+        : row.imageSizeSource === "default"
+          ? "上游默认值"
+          : row.imageSizeSource ?? "上游返回",
+      unitPrice: explicitImageCount && explicitImageCount > 0 ? row.actualCost / explicitImageCount : null
+    };
+  }
+
+  // 旧缓存没有显式图片尺寸字段时, 退回输出 Token 估算.
   const outputTokens = Math.max(Number(row.outputTokens ?? 0), 0);
   let bestMatch: {
     count: number;
@@ -380,6 +401,7 @@ function UsageCostDetail({
         {imageBilling ? (
           <>
             <DetailItem label="图片总价" value={formatUsd(row.actualCost)} />
+            <DetailItem label="图片输出 Token" value={compact(row.imageOutputTokens ?? row.outputTokens)} />
             <DetailItem label="原始" value={formatUsd(row.totalCost)} />
             <DetailItem label="计费" value={formatUsd(row.actualCost)} />
             <DetailItem label="倍率" value={`${Number(row.rateMultiplier ?? 1).toFixed(2)}x`} />

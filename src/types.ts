@@ -10,8 +10,9 @@ export type NavKey =
   | "subscriptions"
   | "keyUsage"
   | "profile"
-  | "orders"
   | "trends"
   | "alerts"
   | "settings"
   | "systemSettings";
+
+export type WindowLabel = "main" | "floating" | "floating-panel";

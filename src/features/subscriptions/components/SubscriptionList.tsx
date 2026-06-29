@@ -10,7 +10,15 @@ import {
 } from "../../../subscription-view";
 import type { SubscriptionRecord } from "../../../types";
 
-export function SubscriptionList({ subscriptions }: { subscriptions: SubscriptionRecord[] }) {
+export function SubscriptionList({
+  subscriptions,
+  selectedSubscriptionId,
+  onSelectSubscription
+}: {
+  subscriptions: SubscriptionRecord[];
+  selectedSubscriptionId?: string | null;
+  onSelectSubscription?: (subscription: SubscriptionRecord) => void;
+}) {
   if (subscriptions.length === 0) {
     return <EmptyState title="当前没有订阅数据" detail="该账号未返回有效订阅或套餐信息。" compact />;
   }
@@ -18,8 +26,18 @@ export function SubscriptionList({ subscriptions }: { subscriptions: Subscriptio
     <div className="stack-list">
       {subscriptions.map((subscription) => {
         const statusPresentation = getSubscriptionStatusPresentation(subscription.status);
+        const interactive = Boolean(onSelectSubscription);
         return (
-          <div key={subscription.id} className="subscription-card">
+          <button
+            key={subscription.id}
+            type="button"
+            className={`subscription-card ${interactive ? "subscription-card-button" : ""} ${
+              selectedSubscriptionId === subscription.id ? "selected" : ""
+            }`.trim()}
+            onClick={interactive ? () => onSelectSubscription?.(subscription) : undefined}
+            aria-pressed={interactive ? selectedSubscriptionId === subscription.id : undefined}
+            aria-label={interactive ? `查看 ${subscription.name} 的订阅详情` : undefined}
+          >
             <div className="subscription-card-head">
               <div className="subscription-card-copy">
                 <div className="subscription-card-title-row">
@@ -47,7 +65,7 @@ export function SubscriptionList({ subscriptions }: { subscriptions: Subscriptio
             {renderQuotaWindow("每日额度", subscription.daily, subscription.expiresAt)}
             {renderQuotaWindow("每周额度", subscription.weekly)}
             {renderQuotaWindow("每月额度", subscription.monthly)}
-          </div>
+          </button>
         );
       })}
     </div>

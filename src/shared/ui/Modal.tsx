@@ -1,5 +1,7 @@
 import { X } from "lucide-react";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+
+import { usePrefersReducedMotion } from "../lib/motion";
 
 export function Modal({
   title,
@@ -28,8 +30,26 @@ export function Modal({
   headerClassName?: string;
   closeText?: string | null;
 }) {
+  const prefersReducedMotion = usePrefersReducedMotion();
+  const [entered, setEntered] = useState(prefersReducedMotion);
+
+  useEffect(() => {
+    if (prefersReducedMotion) {
+      setEntered(true);
+      return;
+    }
+
+    setEntered(false);
+    const timerId = window.setTimeout(() => setEntered(true), 16);
+    return () => window.clearTimeout(timerId);
+  }, [prefersReducedMotion]);
+
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div
+      className={`modal-backdrop ${entered ? "modal-visible" : "modal-hidden"}`.trim()}
+      onClick={onClose}
+      data-motion={prefersReducedMotion ? "reduced" : "full"}
+    >
       <div
         className={`modal-card ${size === "wide" ? "wide" : ""} ${className ?? ""}`.trim()}
         onClick={(event) => event.stopPropagation()}

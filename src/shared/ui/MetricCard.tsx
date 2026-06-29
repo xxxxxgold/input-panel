@@ -1,6 +1,7 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 
 import { UsageDetailPopover } from "./UsageDetailPopover";
+import { useAnimatedDisplayValue } from "../lib/motion";
 
 export function MetricCard({
   label,
@@ -10,7 +11,10 @@ export function MetricCard({
   icon,
   detailTitle,
   detail,
-  detailPanelAlign = "start"
+  detailPanelAlign = "start",
+  className,
+  style,
+  animationKey
 }: {
   label: string;
   value: string;
@@ -20,13 +24,17 @@ export function MetricCard({
   detailTitle?: string;
   detail?: ReactNode;
   detailPanelAlign?: "start" | "end";
+  className?: string;
+  style?: CSSProperties;
+  animationKey?: string;
 }) {
+  const animatedValue = useAnimatedDisplayValue(value, animationKey ?? `${label}:${value}`);
   const body = (
-    <article className="metric-card">
+    <article className={`metric-card ${className ?? ""}`.trim()} style={style}>
       <div className={`metric-icon ${accent}`}>{icon}</div>
       <div>
         <p className="metric-label">{label}</p>
-        <h3 className="metric-value">{value}</h3>
+        <h3 className="metric-value">{animatedValue}</h3>
         <p className="metric-hint">{hint}</p>
       </div>
     </article>

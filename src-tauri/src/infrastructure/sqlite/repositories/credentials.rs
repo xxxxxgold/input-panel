@@ -2,7 +2,7 @@ use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
 
 use crate::contracts::StoredCredential;
-use super::Database;
+use crate::infrastructure::sqlite::Database;
 
 pub fn save_credential(db: &Database, credential: &StoredCredential) -> Result<()> {
     let conn = db.connect()?;
@@ -47,3 +47,4 @@ pub fn remove_credential(db: &Database, account_id: &str) -> Result<()> {
     conn.execute("DELETE FROM credentials WHERE account_id = ?1", params![account_id])?;
     Ok(())
 }
+

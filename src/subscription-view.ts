@@ -62,6 +62,24 @@ export interface SubscriptionUsageInsights {
   rows: SubscriptionUsageInsightsRow[];
 }
 
+export interface SubscriptionDetailRecord {
+  id: string;
+  name: string;
+  status: string;
+  platform: string | null;
+  groupName: string | null;
+  expiresAt: string | null;
+  dailyUsedUsd: number;
+  dailyLimitUsd: number;
+  dailyWindowStart: string | null;
+  weeklyUsedUsd: number;
+  weeklyLimitUsd: number | null;
+  weeklyWindowStart: string | null;
+  monthlyUsedUsd: number;
+  monthlyLimitUsd: number | null;
+  monthlyWindowStart: string | null;
+}
+
 type SubscriptionStatusPresentation = {
   label: string;
   tone: SubscriptionStatusTone;
@@ -76,22 +94,22 @@ type TopbarSubscriptionSourceRecord = Pick<
 };
 
 export function mergeSubscriptionRecords(
-  snapshotSubscriptions: SubscriptionRecord[],
+  cacheViewSubscriptions: SubscriptionRecord[],
   summary: SubscriptionSummaryPayload | null
 ) {
   if (!summary?.subscriptions.length) {
-    return snapshotSubscriptions;
+    return cacheViewSubscriptions;
   }
 
-  const remainingSnapshots = [...snapshotSubscriptions];
-  const fallbackPlatform = remainingSnapshots.find((item) => item.platform)?.platform ?? null;
+  const remainingCacheViews = [...cacheViewSubscriptions];
+  const fallbackPlatform = remainingCacheViews.find((item) => item.platform)?.platform ?? null;
   const merged = summary.subscriptions.map((summaryRecord) => {
-    const matchIndex = remainingSnapshots.findIndex((item) => matchesSummaryRecord(item, summaryRecord));
-    const snapshotRecord = matchIndex >= 0 ? remainingSnapshots.splice(matchIndex, 1)[0] : null;
-    return buildSummarySubscriptionRecord(summaryRecord, snapshotRecord, fallbackPlatform);
+    const matchIndex = remainingCacheViews.findIndex((item) => matchesSummaryRecord(item, summaryRecord));
+    const cacheViewRecord = matchIndex >= 0 ? remainingCacheViews.splice(matchIndex, 1)[0] : null;
+    return buildSummarySubscriptionRecord(summaryRecord, cacheViewRecord, fallbackPlatform);
   });
 
-  return [...merged, ...remainingSnapshots];
+  return [...merged, ...remainingCacheViews];
 }
 
 export function getSubscriptionStatusPresentation(status?: string | null): SubscriptionStatusPresentation {
@@ -202,14 +220,14 @@ export function buildTopbarSubscriptionPreviewRecords(input: {
 
 export function buildSubscriptionUsageInsights(input: {
   summary: SubscriptionSummaryPayload | null;
-  snapshotSubscriptions: SubscriptionRecord[];
+  cacheViewSubscriptions: SubscriptionRecord[];
 }): SubscriptionUsageInsights {
   const rows = input.summary?.subscriptions.length
     ? input.summary.subscriptions.map((summaryRecord) =>
         buildUsageInsightsRowFromSummary(summaryRecord)
       )
-    : input.snapshotSubscriptions.map((subscriptionRecord) =>
-        buildUsageInsightsRowFromSnapshot(subscriptionRecord)
+    : input.cacheViewSubscriptions.map((subscriptionRecord) =>
+        buildUsageInsightsRowFromCacheView(subscriptionRecord)
       );
 
   return {
@@ -217,47 +235,77 @@ export function buildSubscriptionUsageInsights(input: {
   };
 }
 
+export function buildSubscriptionDetailRecords(input: {
+  summary: SubscriptionSummaryPayload | null;
+  cacheViewSubscriptions: SubscriptionRecord[];
+}): SubscriptionDetailRecord[] {
+  const mergedSubscriptions = mergeSubscriptionRecords(input.cacheViewSubscriptions, input.summary);
+  const summaryRecords = input.summary?.subscriptions ?? [];
+
+  return mergedSubscriptions.map((subscriptionRecord) => {
+    const summaryRecord = summaryRecords.find((item) => matchesSummaryRecord(subscriptionRecord, item));
+
+    return {
+      id: subscriptionRecord.id,
+      name: subscriptionRecord.groupName ?? subscriptionRecord.name,
+      status: summaryRecord?.status ?? subscriptionRecord.status,
+      platform: subscriptionRecord.platform ?? null,
+      groupName: subscriptionRecord.groupName ?? null,
+      expiresAt: summaryRecord?.expiresAt ?? subscriptionRecord.expiresAt ?? null,
+      dailyUsedUsd: summaryRecord?.dailyUsedUsd ?? subscriptionRecord.daily?.current ?? 0,
+      dailyLimitUsd: summaryRecord?.dailyLimitUsd ?? subscriptionRecord.daily?.limit ?? 0,
+      dailyWindowStart: subscriptionRecord.daily?.windowStart ?? null,
+      weeklyUsedUsd: summaryRecord?.weeklyUsedUsd ?? subscriptionRecord.weekly?.current ?? 0,
+      weeklyLimitUsd: subscriptionRecord.weekly?.limit ?? null,
+      weeklyWindowStart: subscriptionRecord.weekly?.windowStart ?? null,
+      monthlyUsedUsd: summaryRecord?.monthlyUsedUsd ?? subscriptionRecord.monthly?.current ?? 0,
+      monthlyLimitUsd: subscriptionRecord.monthly?.limit ?? null,
+      monthlyWindowStart: subscriptionRecord.monthly?.windowStart ?? null
+    };
+  });
+}
+
 function matchesSummaryRecord(
-  snapshotRecord: SubscriptionRecord,
+  cacheViewRecord: SubscriptionRecord,
   summaryRecord: SubscriptionSummaryRecord
 ) {
   if (
-    typeof snapshotRecord.groupId === "number" &&
-    snapshotRecord.groupId > 0 &&
-    snapshotRecord.groupId === summaryRecord.groupId
+    typeof cacheViewRecord.groupId === "number" &&
+    cacheViewRecord.groupId > 0 &&
+    cacheViewRecord.groupId === summaryRecord.groupId
   ) {
     return true;
   }
 
-  const snapshotKey = normalizeSubscriptionKey(snapshotRecord.groupName ?? snapshotRecord.name);
+  const cacheViewKey = normalizeSubscriptionKey(cacheViewRecord.groupName ?? cacheViewRecord.name);
   const summaryKey = normalizeSubscriptionKey(summaryRecord.groupName);
-  return snapshotKey.length > 0 && snapshotKey === summaryKey;
+  return cacheViewKey.length > 0 && cacheViewKey === summaryKey;
 }
 
 function buildSummarySubscriptionRecord(
   summaryRecord: SubscriptionSummaryRecord,
-  snapshotRecord: SubscriptionRecord | null,
+  cacheViewRecord: SubscriptionRecord | null,
   fallbackPlatform: string | null
 ): SubscriptionRecord {
   const summaryDailyWindow = summaryRecord.dailyLimitUsd > 0
     ? {
         current: summaryRecord.dailyUsedUsd,
         limit: summaryRecord.dailyLimitUsd,
-        windowStart: snapshotRecord?.daily?.windowStart ?? null
+        windowStart: cacheViewRecord?.daily?.windowStart ?? null
       }
-    : snapshotRecord?.daily ?? null;
+    : cacheViewRecord?.daily ?? null;
 
   return {
-    id: snapshotRecord?.id ?? buildSummaryRecordId(summaryRecord),
-    groupId: summaryRecord.groupId > 0 ? summaryRecord.groupId : (snapshotRecord?.groupId ?? null),
-    name: snapshotRecord?.name ?? summaryRecord.groupName,
-    status: summaryRecord.status || snapshotRecord?.status || "unknown",
-    groupName: summaryRecord.groupName || snapshotRecord?.groupName || snapshotRecord?.name || "未分组",
-    platform: snapshotRecord?.platform ?? fallbackPlatform,
-    expiresAt: summaryRecord.expiresAt ?? snapshotRecord?.expiresAt ?? null,
+    id: cacheViewRecord?.id ?? buildSummaryRecordId(summaryRecord),
+    groupId: summaryRecord.groupId > 0 ? summaryRecord.groupId : (cacheViewRecord?.groupId ?? null),
+    name: cacheViewRecord?.name ?? summaryRecord.groupName,
+    status: summaryRecord.status || cacheViewRecord?.status || "unknown",
+    groupName: summaryRecord.groupName || cacheViewRecord?.groupName || cacheViewRecord?.name || "未分组",
+    platform: cacheViewRecord?.platform ?? fallbackPlatform,
+    expiresAt: summaryRecord.expiresAt ?? cacheViewRecord?.expiresAt ?? null,
     daily: summaryDailyWindow,
-    weekly: snapshotRecord?.weekly ?? null,
-    monthly: snapshotRecord?.monthly ?? null
+    weekly: cacheViewRecord?.weekly ?? null,
+    monthly: cacheViewRecord?.monthly ?? null
   };
 }
 
@@ -286,7 +334,7 @@ function buildUsageInsightsRowFromSummary(
   };
 }
 
-function buildUsageInsightsRowFromSnapshot(
+function buildUsageInsightsRowFromCacheView(
   subscriptionRecord: SubscriptionRecord
 ): SubscriptionUsageInsightsRow {
   return {

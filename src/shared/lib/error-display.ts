@@ -16,6 +16,13 @@ export function formatAppErrorMessage(message: string | null | undefined) {
     return "当前站点暂不支持这个接口, 请稍后重试或切换账号。";
   }
 
+  if (
+    rawMessage.includes("status.input.im 服务状态")
+    || rawMessage.includes("服务状态接口返回失败状态")
+  ) {
+    return "服务状态请求失败, 远端监控接口暂时不可用。";
+  }
+
   const requestStatus = rawMessage.match(REQUEST_STATUS_PATTERN)?.[1];
   if (requestStatus) {
     return describeRequestStatus(requestStatus, rawMessage);
@@ -31,6 +38,9 @@ function describeUrlRequestFailure(url: string) {
   }
   if (path.startsWith("/api/v1/user/api-keys/")) {
     return "单 Key 用量请求失败, 请稍后重试。";
+  }
+  if (path === "/api/status") {
+    return "服务状态请求失败, 远端监控接口暂时不可用。";
   }
   return "请求上游服务失败, 请稍后重试。";
 }

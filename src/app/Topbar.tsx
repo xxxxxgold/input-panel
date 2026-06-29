@@ -1,14 +1,15 @@
 import { Activity, Bell, ChevronDown, Crown, RefreshCw, Search, Server, Settings2, UserRound } from "lucide-react";
 import { useEffect, useState, type MutableRefObject } from "react";
 
-import type { AccountRuntime, ServiceStatusPayload, SiteRecord, SnapshotAlert } from "../types";
+import type { AccountRuntime, ServiceStatusPayload, SiteRecord, AccountAlert } from "../types";
 import { formatLiveClockDate, formatLiveClockTime, formatMilliseconds, formatPercent, formatTime, formatUsd, maskEmail } from "../shared/lib/formatters";
-import type { TopbarSubscriptionPreviewRecord } from "../subscription-view";
+import { getSubscriptionStatusPresentation, type TopbarSubscriptionPreviewRecord } from "../subscription-view";
 import { StatusBadge } from "../shared/ui/StatusBadge";
 
 export function Topbar({
   onReload,
   serviceStatus,
+  serviceStatusLastSyncedAt,
   serviceStatusRefreshing,
   topbarServiceStatusExpanded,
   setTopbarServiceStatusExpanded,
@@ -57,6 +58,7 @@ export function Topbar({
 }: {
   onReload: () => void;
   serviceStatus: ServiceStatusPayload | null;
+  serviceStatusLastSyncedAt?: number | null;
   serviceStatusRefreshing: boolean;
   topbarServiceStatusExpanded: boolean;
   setTopbarServiceStatusExpanded: (value: boolean) => void;
@@ -65,7 +67,7 @@ export function Topbar({
   topbarAlertsExpanded: boolean;
   setTopbarAlertsExpanded: (value: boolean) => void;
   topbarAlertsRef: MutableRefObject<HTMLDivElement | null>;
-  topbarAlertPreview: SnapshotAlert[];
+  topbarAlertPreview: AccountAlert[];
   latestUnreadAlertSeverity: "critical" | "high" | "medium" | "low" | "success" | "info" | null;
   closeTopbarAccountMenu: () => void;
   setTopbarSubscriptionsExpanded: (value: boolean) => void;
@@ -124,8 +126,18 @@ export function Topbar({
   const avatarUrl = selectedAccountAvatarUrl && !avatarLoadFailed ? selectedAccountAvatarUrl : null;
   const serviceStatusRecords = serviceStatus?.services ?? [];
   const serviceStatusOnlineCount = serviceStatusRecords.filter((item) => item.last?.ok).length;
+  const serviceStatusSyncLabel = serviceStatus
+    ? formatLiveClockTime(
+      new Date(serviceStatusLastSyncedAt ?? serviceStatus.generatedAt * 1000)
+    )
+    : "";
   const alertBadgeToneClass = resolveAlertBadgeToneClass(latestUnreadAlertSeverity);
   const serviceStatusUnavailable = !selectedAccount;
+  const subscriptionSummary = resolveSubscriptionSummaryMeta({
+    usageStatusLabel,
+    subscriptionCount,
+    subscriptionPreviewRecords
+  });
 
   function handlePeekMouseEnter(key: "serviceStatus" | "alerts" | "subscriptions") {
     closeTopbarAccountMenu();
@@ -217,7 +229,11 @@ export function Topbar({
                   <span className="topbar-card-label">服务状态</span>
                   <strong>{serviceStatusUnavailable ? "未配置账号" : serviceStatus ? serviceStatus.allOk ? `${serviceStatusOnlineCount} / ${serviceStatusRecords.length} 正常` : `${serviceStatusOnlineCount} / ${serviceStatusRecords.length} 正常, 存在异常` : "等待同步"}</strong>
                   <p>
-                    {serviceStatusUnavailable ? "先登录一个账号后再自动监控服务状态" : serviceStatus ? `每 ${serviceStatusRefreshIntervalSeconds} 秒刷新一次最新探测结果` : "等待服务状态接口返回"}
+                    {serviceStatusUnavailable
+                      ? "先登录一个账号后再自动监控服务状态"
+                      : serviceStatus
+                        ? `每 ${serviceStatusRefreshIntervalSeconds} 秒刷新一次最新探测结果 · 上次同步 ${serviceStatusSyncLabel}`
+                        : "等待服务状态接口返回"}
                   </p>
                 </div>
                 <span className="topbar-metric">
@@ -296,13 +312,19 @@ export function Topbar({
               {topbarAlertPreview.length > 0 ? (
                 <div className="topbar-alert-list">
                   {topbarAlertPreview.map((alert) => (
-                    <div key={alert.id} className={`topbar-alert-item ${alert.severity}`}>
+                    <button
+                      key={alert.id}
+                      type="button"
+                      className={`topbar-alert-item topbar-alert-item-button ${alert.severity}`}
+                      onClick={onOpenAlerts}
+                      aria-label={`打开消息盒子: ${alert.title}`}
+                    >
                       <div className="topbar-alert-copy">
                         <strong>{alert.title}</strong>
                         <p>{alert.detail}</p>
                       </div>
                       <span className="topbar-alert-time">{formatTime(alert.createdAt)}</span>
-                    </div>
+                    </button>
                   ))}
                 </div>
               ) : (
@@ -340,18 +362,20 @@ export function Topbar({
               )}
             </button>
             <div className="topbar-card topbar-peek-panel topbar-subscription-panel">
-              <div className="topbar-subscription-head">
+              <div className="topbar-subscription-head topbar-subscription-summary-head">
                 <div className="topbar-card-icon">
                   <Crown size={18} />
                 </div>
                 <div className="topbar-card-copy">
                   <span className="topbar-card-label">订阅使用情况</span>
-                  <strong>{usageStatusLabel}</strong>
+                  <div className="topbar-subscription-summary-line">
+                    <span className={`status-pill ${subscriptionSummary.statusTone}`}>
+                      {subscriptionSummary.statusLabel}
+                    </span>
+                    <span className="topbar-subscription-summary-count">{subscriptionSummary.countLabel}</span>
+                  </div>
                   <p>{usageStatusHint}</p>
                 </div>
-                <span className="topbar-metric">
-                  {subscriptionSpend > 0 ? formatUsd(subscriptionSpend, 2) : subscriptionCount.toString()}
-                </span>
               </div>
               {subscriptionPreviewRecords.length > 0 ? (
                 <div className="topbar-subscription-list">
@@ -537,4 +561,74 @@ function resolveAlertBadgeToneClass(severity: "critical" | "high" | "medium" | "
     return "topbar-alert-badge-success";
   }
   return "topbar-alert-badge-neutral";
+}
+
+function resolveSubscriptionSummaryMeta(input: {
+  usageStatusLabel: string;
+  subscriptionCount: number;
+  subscriptionPreviewRecords: TopbarSubscriptionPreviewRecord[];
+}) {
+  const countLabel = input.subscriptionCount > 0
+    ? /^\d+\s*个/.test(input.usageStatusLabel.trim())
+      ? input.usageStatusLabel.trim()
+      : `${input.subscriptionCount} 个订阅`
+    : "暂无订阅";
+  const subscriptionStatusPresentations = input.subscriptionPreviewRecords.map((record) =>
+    getSubscriptionStatusPresentation(record.status)
+  );
+
+  if (subscriptionStatusPresentations.some((item) => item.tone === "critical")) {
+    return {
+      statusLabel: "异常",
+      statusTone: "critical" as const,
+      countLabel
+    };
+  }
+
+  if (subscriptionStatusPresentations.some((item) => item.tone === "neutral")) {
+    return {
+      statusLabel: "待生效",
+      statusTone: "neutral" as const,
+      countLabel
+    };
+  }
+
+  if (subscriptionStatusPresentations.length > 0) {
+    return {
+      statusLabel: "正常",
+      statusTone: "ready" as const,
+      countLabel
+    };
+  }
+
+  if (input.usageStatusLabel.includes("等待")) {
+    return {
+      statusLabel: "等待同步",
+      statusTone: "neutral" as const,
+      countLabel
+    };
+  }
+
+  if (input.usageStatusLabel.includes("同步")) {
+    return {
+      statusLabel: "已同步",
+      statusTone: "ready" as const,
+      countLabel
+    };
+  }
+
+  const statusPresentation = getSubscriptionStatusPresentation(input.usageStatusLabel);
+  if (statusPresentation.label !== "未知状态") {
+    return {
+      statusLabel: statusPresentation.label,
+      statusTone: statusPresentation.tone,
+      countLabel
+    };
+  }
+
+  return {
+    statusLabel: "等待同步",
+    statusTone: "neutral" as const,
+    countLabel
+  };
 }

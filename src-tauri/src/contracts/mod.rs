@@ -125,6 +125,15 @@ pub struct UsageRow {
     pub request_type: Option<String>,
     pub stream: Option<bool>,
     pub billing_type: Option<i64>,
+    pub image_count: Option<i64>,
+    pub image_size: Option<String>,
+    pub image_input_size: Option<String>,
+    pub image_output_size: Option<String>,
+    pub image_output_tokens: Option<i64>,
+    pub image_output_cost: Option<f64>,
+    pub image_size_source: Option<String>,
+    pub image_size_breakdown: Option<String>,
+    pub media_type: Option<String>,
     pub rate_multiplier: Option<f64>,
     pub user_agent: Option<String>,
     pub api_key_name: Option<String>,
@@ -132,45 +141,6 @@ pub struct UsageRow {
     pub subscription_name: Option<String>,
     pub group_name: Option<String>,
     pub subscription_type: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UsageHistoryRow {
-    pub id: String,
-    pub api_key_id: Option<i64>,
-    pub created_at: String,
-    pub model: String,
-    pub reasoning_effort: Option<String>,
-    pub endpoint: Option<String>,
-    pub upstream_endpoint: Option<String>,
-    pub actual_cost: f64,
-    pub total_cost: f64,
-    pub input_tokens: i64,
-    pub output_tokens: i64,
-    pub input_cost: Option<f64>,
-    pub output_cost: Option<f64>,
-    pub cache_creation_tokens: Option<i64>,
-    pub cache_read_tokens: Option<i64>,
-    pub cache_creation_cost: Option<f64>,
-    pub cache_read_cost: Option<f64>,
-    pub total_tokens: i64,
-    pub first_token_ms: Option<i64>,
-    pub duration_ms: Option<i64>,
-    pub billing_mode: Option<String>,
-    pub request_type: Option<String>,
-    pub stream: Option<bool>,
-    pub billing_type: Option<i64>,
-    pub rate_multiplier: Option<f64>,
-    pub user_agent: Option<String>,
-    pub api_key_name: Option<String>,
-    pub platform: Option<String>,
-    pub subscription_name: Option<String>,
-    pub group_name: Option<String>,
-    pub subscription_type: Option<String>,
-    pub first_seen_at: String,
-    pub last_seen_at: String,
-    pub is_latest: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,7 +169,7 @@ pub struct PlatformPoint {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SnapshotStats {
+pub struct AccountCacheStats {
     pub total_api_keys: i64,
     pub active_api_keys: i64,
     pub today_requests: i64,
@@ -230,7 +200,7 @@ pub struct UsageSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SnapshotAlert {
+pub struct AccountAlert {
     pub id: String,
     pub severity: String,
     pub title: String,
@@ -242,24 +212,18 @@ pub struct SnapshotAlert {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AccountSnapshot {
+pub struct AccountCacheView {
     pub fetched_at: String,
     pub online: bool,
     pub site_name: String,
-    pub site_url: String,
-    pub account_label: String,
-    pub email_masked: Option<String>,
     pub balance: f64,
-    pub currency: String,
-    pub stats: SnapshotStats,
-    pub usage_summary: UsageSummary,
+    pub stats: AccountCacheStats,
     pub recent_usage: Vec<UsageRow>,
-    pub request_history: Vec<UsageHistoryRow>,
     pub trend: Vec<TrendPoint>,
     pub keys: Vec<KeyRecord>,
     pub subscriptions: Vec<SubscriptionRecord>,
     pub active_subscription: Option<SubscriptionRecord>,
-    pub alerts: Vec<SnapshotAlert>,
+    pub alerts: Vec<AccountAlert>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,7 +232,7 @@ pub struct AccountRuntime {
     #[serde(flatten)]
     pub account: AccountRecord,
     pub site: Option<SiteRecord>,
-    pub snapshot: Option<AccountSnapshot>,
+    pub cache_view: Option<AccountCacheView>,
     pub session_state: String,
     pub last_error: Option<String>,
 }
@@ -279,6 +243,43 @@ pub enum RefreshTriggerSource {
     #[default]
     Manual,
     StaleAuto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshAccountTaskResponse {
+    pub account: AccountRuntime,
+    pub run: TaskRunRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DataSyncTrigger {
+    #[default]
+    Manual,
+    StaleAuto,
+    PostWrite,
+    Bootstrap,
+    Auto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum DataSyncScope {
+    #[default]
+    Core,
+    Keys,
+    Usage,
+    Full,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountSyncState {
+    Idle,
+    Running,
+    Succeeded,
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -294,7 +295,8 @@ pub enum TaskRunStatus {
 pub struct TaskRunRecord {
     pub id: String,
     pub account_id: String,
-    pub primary_trigger_source: RefreshTriggerSource,
+    pub scope: DataSyncScope,
+    pub primary_trigger_source: DataSyncTrigger,
     pub status: TaskRunStatus,
     pub join_count: i64,
     pub started_at: String,
@@ -304,9 +306,28 @@ pub struct TaskRunRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RefreshAccountTaskResponse {
-    pub account: AccountRuntime,
-    pub run: TaskRunRecord,
+pub struct AccountSyncStatusRecord {
+    pub account_id: String,
+    pub scope: DataSyncScope,
+    pub state: AccountSyncState,
+    pub last_attempt_at: Option<String>,
+    pub last_success_at: Option<String>,
+    pub last_error: Option<String>,
+    pub item_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSyncStatusPayload {
+    pub account_id: String,
+    pub statuses: Vec<AccountSyncStatusRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncAccountDataInput {
+    pub scope: DataSyncScope,
+    pub trigger_source: DataSyncTrigger,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -364,7 +385,7 @@ pub struct OverviewPayload {
     pub sites: Vec<SiteRecord>,
     pub accounts: Vec<AccountRuntime>,
     pub totals: OverviewTotals,
-    pub alerts: Vec<SnapshotAlert>,
+    pub alerts: Vec<AccountAlert>,
     pub platform_series: Vec<PlatformPoint>,
     pub trend: Vec<TrendPoint>,
     pub recent_usage: Vec<OverviewUsageRow>,
@@ -443,33 +464,6 @@ pub struct DashboardModelsPayload {
     pub start_date: String,
     pub end_date: String,
     pub models: Vec<ModelUsagePoint>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PaymentConfigRecord {
-    pub enabled: bool,
-    pub min_amount: f64,
-    pub max_amount: f64,
-    pub daily_limit: f64,
-    pub order_timeout_minutes: i64,
-    pub max_pending_orders: i64,
-    pub enabled_payment_types: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OrderRecord {
-    pub id: i64,
-    pub status: String,
-    pub amount: f64,
-    pub provider_instance_id: Option<i64>,
-    pub out_trade_no: Option<String>,
-    pub created_at: Option<String>,
-    pub updated_at: Option<String>,
-    pub paid_at: Option<String>,
-    pub refunded_at: Option<String>,
-    pub product_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -631,13 +625,86 @@ pub struct StoredCredential {
     pub saved_at: String,
 }
 
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountProfileCacheRecord {
+    pub account_id: String,
+    pub payload: UserProfileRecord,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountPlatformQuotaCacheRecord {
+    pub account_id: String,
+    pub payload: PlatformQuotaPayload,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSubscriptionCacheRecord {
+    pub account_id: String,
+    pub subscription_id: String,
+    pub row: SubscriptionRecord,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSubscriptionSummaryCacheRecord {
+    pub account_id: String,
+    pub payload: SubscriptionSummaryPayload,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountGroupCacheRecord {
+    pub account_id: String,
+    pub group_id: i64,
+    pub row: GroupRecord,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountKeyCacheRecord {
+    pub account_id: String,
+    pub key_id: String,
+    pub row: ManagedKeyRecord,
+    pub updated_at: String,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountUsageRowCacheRecord {
+    pub account_id: String,
+    pub usage_id: String,
+    pub occurred_at: String,
+    pub row: UsageRow,
+    pub updated_at: String,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct StoredState {
+pub struct DataCenterState {
     pub sites: Vec<SiteRecord>,
     pub accounts: Vec<AccountRecord>,
-    pub snapshots: HashMap<String, AccountSnapshot>,
-    pub errors: HashMap<String, Option<String>>,
+    pub sessions: HashMap<String, StoredSession>,
+    pub profiles: HashMap<String, AccountProfileCacheRecord>,
+    pub platform_quotas: HashMap<String, AccountPlatformQuotaCacheRecord>,
+    pub subscription_summaries: HashMap<String, AccountSubscriptionSummaryCacheRecord>,
+    pub subscriptions: HashMap<String, Vec<AccountSubscriptionCacheRecord>>,
+    pub groups: HashMap<String, Vec<AccountGroupCacheRecord>>,
+    pub keys: HashMap<String, Vec<AccountKeyCacheRecord>>,
+    pub usage_rows: HashMap<String, Vec<AccountUsageRowCacheRecord>>,
+    pub sync_statuses: HashMap<String, Vec<AccountSyncStatusRecord>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -671,11 +738,25 @@ pub struct DesktopUiPrefs {
     pub open_floating_in_main_mode: bool,
     #[serde(default)]
     pub keep_floating_panel_visible: bool,
+    #[serde(default = "default_floating_panel_opacity")]
+    pub floating_panel_opacity: f64,
     pub close_behavior: CloseBehavior,
     #[serde(default = "default_auto_refresh_enabled")]
     pub auto_refresh_enabled: bool,
     #[serde(default = "default_auto_refresh_interval_seconds")]
     pub auto_refresh_interval_seconds: i64,
+    #[serde(default = "default_auto_refresh_enabled", alias = "autoRefreshSnapshotEnabled")]
+    pub auto_refresh_core_enabled: bool,
+    #[serde(default = "default_auto_refresh_interval_seconds", alias = "autoRefreshSnapshotIntervalSeconds")]
+    pub auto_refresh_core_interval_seconds: i64,
+    #[serde(default = "default_auto_refresh_enabled", alias = "autoRefreshAccountScopedEnabled")]
+    pub auto_refresh_keys_enabled: bool,
+    #[serde(default = "default_auto_refresh_interval_seconds", alias = "autoRefreshAccountScopedIntervalSeconds")]
+    pub auto_refresh_keys_interval_seconds: i64,
+    #[serde(default = "default_auto_refresh_enabled")]
+    pub auto_refresh_usage_enabled: bool,
+    #[serde(default = "default_auto_refresh_interval_seconds")]
+    pub auto_refresh_usage_interval_seconds: i64,
     pub theme: String,
 }
 
@@ -686,9 +767,16 @@ impl Default for DesktopUiPrefs {
             launch_mode: AppLaunchMode::Main,
             open_floating_in_main_mode: true,
             keep_floating_panel_visible: false,
+            floating_panel_opacity: 0.82,
             close_behavior: CloseBehavior::Ask,
             auto_refresh_enabled: true,
             auto_refresh_interval_seconds: 9,
+            auto_refresh_core_enabled: true,
+            auto_refresh_core_interval_seconds: 9,
+            auto_refresh_keys_enabled: true,
+            auto_refresh_keys_interval_seconds: 9,
+            auto_refresh_usage_enabled: true,
+            auto_refresh_usage_interval_seconds: 9,
             theme: "light".into(),
         }
     }
@@ -700,9 +788,20 @@ pub struct DesktopUiPrefsPatch {
     pub launch_mode: Option<AppLaunchMode>,
     pub open_floating_in_main_mode: Option<bool>,
     pub keep_floating_panel_visible: Option<bool>,
+    pub floating_panel_opacity: Option<f64>,
     pub close_behavior: Option<CloseBehavior>,
     pub auto_refresh_enabled: Option<bool>,
     pub auto_refresh_interval_seconds: Option<i64>,
+    #[serde(alias = "autoRefreshSnapshotEnabled")]
+    pub auto_refresh_core_enabled: Option<bool>,
+    #[serde(alias = "autoRefreshSnapshotIntervalSeconds")]
+    pub auto_refresh_core_interval_seconds: Option<i64>,
+    #[serde(alias = "autoRefreshAccountScopedEnabled")]
+    pub auto_refresh_keys_enabled: Option<bool>,
+    #[serde(alias = "autoRefreshAccountScopedIntervalSeconds")]
+    pub auto_refresh_keys_interval_seconds: Option<i64>,
+    pub auto_refresh_usage_enabled: Option<bool>,
+    pub auto_refresh_usage_interval_seconds: Option<i64>,
     pub theme: Option<String>,
 }
 
@@ -712,6 +811,10 @@ fn default_auto_refresh_enabled() -> bool {
 
 fn default_auto_refresh_interval_seconds() -> i64 {
     9
+}
+
+fn default_floating_panel_opacity() -> f64 {
+    0.82
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -769,3 +872,4 @@ pub enum LoginFlowResult {
         message: Option<String>,
     },
 }
+

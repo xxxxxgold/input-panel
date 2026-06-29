@@ -8,11 +8,11 @@ use axum::{
     routing::{get, patch, post, put},
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use crate::application::{
-    account_service, auth_service, dashboard_service, desktop_ui_service, keys_service,
-    profile_service, proxy_service, refresh_task_service, service_status_service, site_service, usage_service, AppContext,
+    account_service, auth_service, dashboard_service, data_center_service, desktop_ui_service, keys_service,
+    profile_service, service_status_service, site_service, usage_service, AppContext,
 };
 
 #[derive(Debug, Deserialize)]
@@ -57,10 +57,9 @@ struct RefreshAccountBody {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ProxyBody {
-    path: String,
-    method: Option<String>,
-    payload: Option<Value>,
+struct SyncAccountBody {
+    scope: crate::contracts::DataSyncScope,
+    trigger_source: Option<crate::contracts::DataSyncTrigger>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,6 +88,9 @@ struct UsageStatsQueryParams {
 #[derive(Debug, Deserialize)]
 struct DaysQuery {
     days: Option<i64>,
+    api_key_id: Option<String>,
+    start_date: Option<String>,
+    end_date: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,9 +126,16 @@ struct DesktopUiPrefsPatchBody {
     launch_mode: Option<crate::contracts::AppLaunchMode>,
     open_floating_in_main_mode: Option<bool>,
     keep_floating_panel_visible: Option<bool>,
+    floating_panel_opacity: Option<f64>,
     close_behavior: Option<crate::contracts::CloseBehavior>,
     auto_refresh_enabled: Option<bool>,
     auto_refresh_interval_seconds: Option<i64>,
+    auto_refresh_core_enabled: Option<bool>,
+    auto_refresh_core_interval_seconds: Option<i64>,
+    auto_refresh_keys_enabled: Option<bool>,
+    auto_refresh_keys_interval_seconds: Option<i64>,
+    auto_refresh_usage_enabled: Option<bool>,
+    auto_refresh_usage_interval_seconds: Option<i64>,
     theme: Option<String>,
 }
 
@@ -206,7 +215,10 @@ pub fn router(ctx: AppContext) -> Router {
         .route("/api/accounts/:account_id/login/2fa", post(login_account_2fa))
         .route("/api/accounts/:account_id/credential", post(persist_account_credential))
         .route("/api/accounts/:account_id/refresh", post(refresh_account))
+        .route("/api/accounts/:account_id/sync", post(sync_account_data))
+        .route("/api/accounts/:account_id/sync-status", get(get_account_sync_status))
         .route("/api/accounts/refresh-all", post(refresh_all_accounts))
+        .route("/api/accounts/sync-all", post(sync_all_accounts))
         .route("/api/accounts/:account_id/groups", get(get_available_groups))
         .route("/api/accounts/:account_id/keys", get(list_managed_keys).post(create_managed_key))
         .route(
@@ -231,8 +243,6 @@ pub fn router(ctx: AppContext) -> Router {
             "/api/accounts/:account_id/subscriptions/summary",
             get(get_subscription_summary),
         )
-        .route("/api/accounts/:account_id/payment/config", get(get_payment_config))
-        .route("/api/accounts/:account_id/orders", get(list_orders))
         .route(
             "/api/accounts/:account_id/notify-email/send-code",
             post(send_notify_email_code),
@@ -254,7 +264,7 @@ pub fn router(ctx: AppContext) -> Router {
             "/api/accounts/:account_id/identity-bindings/:provider",
             axum::routing::delete(unbind_auth_identity),
         )
-        .route("/api/accounts/:account_id/proxy", post(account_proxy_request))
+        .route("/api/scheduler/config", get(get_scheduler_config).patch(update_scheduler_config))
         .with_state(ctx)
 }
 
@@ -287,9 +297,16 @@ async fn update_desktop_ui_prefs(
             launch_mode: payload.launch_mode,
             open_floating_in_main_mode: payload.open_floating_in_main_mode,
             keep_floating_panel_visible: payload.keep_floating_panel_visible,
+            floating_panel_opacity: payload.floating_panel_opacity,
             close_behavior: payload.close_behavior,
             auto_refresh_enabled: payload.auto_refresh_enabled,
             auto_refresh_interval_seconds: payload.auto_refresh_interval_seconds,
+            auto_refresh_core_enabled: payload.auto_refresh_core_enabled,
+            auto_refresh_core_interval_seconds: payload.auto_refresh_core_interval_seconds,
+            auto_refresh_keys_enabled: payload.auto_refresh_keys_enabled,
+            auto_refresh_keys_interval_seconds: payload.auto_refresh_keys_interval_seconds,
+            auto_refresh_usage_enabled: payload.auto_refresh_usage_enabled,
+            auto_refresh_usage_interval_seconds: payload.auto_refresh_usage_interval_seconds,
             theme: payload.theme,
         },
     ))
@@ -336,7 +353,7 @@ async fn position_floating_panel(
 async fn push_floating_panel_toast(
     Json(payload): Json<FloatingPanelToastBody>,
 ) -> impl IntoResponse {
-    let _ = payload;
+    let _toast_preview = (&payload.tone, &payload.message, payload.duration_ms);
     (StatusCode::OK, Json(json!(true))).into_response()
 }
 
@@ -451,28 +468,87 @@ async fn persist_account_credential(
     }
 }
 
+async fn sync_all_accounts(
+    State(ctx): State<AppContext>,
+    body: Option<Json<SyncAllAccountsBody>>,
+) -> impl IntoResponse {
+    let scope = body
+        .as_ref()
+        .and_then(|Json(payload)| payload.scope.clone())
+        .unwrap_or(crate::contracts::DataSyncScope::Full);
+    let trigger_source = body
+        .and_then(|Json(payload)| payload.trigger_source)
+        .unwrap_or(crate::contracts::DataSyncTrigger::Manual);
+    map_async_json_result(
+        data_center_service::sync_all_accounts(
+            &ctx,
+            crate::contracts::SyncAccountDataInput {
+                scope,
+                trigger_source,
+            },
+        )
+        .await
+        .and_then(|_| dashboard_service::get_overview(&ctx)),
+    )
+}
+
 async fn refresh_account(
     State(ctx): State<AppContext>,
     Path(account_id): Path<String>,
     body: Option<Json<RefreshAccountBody>>,
 ) -> impl IntoResponse {
     map_async_json_result(
-        refresh_task_service::refresh_account(
+        data_center_service::refresh_account(
             &ctx,
             &account_id,
             body.and_then(|Json(payload)| payload.trigger_source)
                 .unwrap_or(crate::contracts::RefreshTriggerSource::Manual),
         )
-        .await
-        .map(|result| crate::contracts::RefreshAccountTaskResponse {
-            account: result.account,
-            run: result.run,
-        }),
+        .await,
     )
 }
 
 async fn refresh_all_accounts(State(ctx): State<AppContext>) -> impl IntoResponse {
-    map_async_json_result(auth_service::refresh_all_accounts(&ctx).await)
+    map_async_json_result(
+        data_center_service::refresh_all_accounts(&ctx)
+            .await
+            .and_then(|_| dashboard_service::get_overview(&ctx)),
+    )
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncAllAccountsBody {
+    scope: Option<crate::contracts::DataSyncScope>,
+    trigger_source: Option<crate::contracts::DataSyncTrigger>,
+}
+
+async fn sync_account_data(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+    Json(payload): Json<SyncAccountBody>,
+) -> impl IntoResponse {
+    map_async_json_result(
+        data_center_service::sync_account_data(
+            &ctx,
+            &account_id,
+            crate::contracts::SyncAccountDataInput {
+                scope: payload.scope,
+                trigger_source: payload
+                    .trigger_source
+                    .unwrap_or(crate::contracts::DataSyncTrigger::Manual),
+            },
+        )
+        .await
+        .map(|result| result.status),
+    )
+}
+
+async fn get_account_sync_status(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+) -> impl IntoResponse {
+    map_json_result(data_center_service::get_account_sync_status(&ctx, &account_id))
 }
 
 async fn get_available_groups(
@@ -577,7 +653,17 @@ async fn get_dashboard_trend(
     Query(query): Query<DaysQuery>,
 ) -> impl IntoResponse {
     map_async_json_result(
-        usage_service::get_dashboard_trend(&ctx, &account_id, query.days.unwrap_or(7)).await,
+        usage_service::get_dashboard_trend(
+            &ctx,
+            &account_id,
+            usage_service::UsageStatsQuery {
+                period: Some(format!("days:{}", query.days.unwrap_or(7))),
+                api_key_id: query.api_key_id,
+                start_date: query.start_date,
+                end_date: query.end_date,
+            },
+        )
+        .await,
     )
 }
 
@@ -587,7 +673,17 @@ async fn get_dashboard_models(
     Query(query): Query<DaysQuery>,
 ) -> impl IntoResponse {
     map_async_json_result(
-        usage_service::get_dashboard_models(&ctx, &account_id, query.days.unwrap_or(7)).await,
+        usage_service::get_dashboard_models(
+            &ctx,
+            &account_id,
+            usage_service::UsageStatsQuery {
+                period: Some(format!("days:{}", query.days.unwrap_or(7))),
+                api_key_id: query.api_key_id,
+                start_date: query.start_date,
+                end_date: query.end_date,
+            },
+        )
+        .await,
     )
 }
 
@@ -645,29 +741,6 @@ async fn get_subscription_summary(
     Path(account_id): Path<String>,
 ) -> impl IntoResponse {
     map_async_json_result(profile_service::get_subscription_summary(&ctx, &account_id).await)
-}
-
-async fn get_payment_config(
-    State(ctx): State<AppContext>,
-    Path(account_id): Path<String>,
-) -> impl IntoResponse {
-    map_async_json_result(profile_service::get_payment_config(&ctx, &account_id).await)
-}
-
-async fn list_orders(
-    State(ctx): State<AppContext>,
-    Path(account_id): Path<String>,
-    Query(query): Query<PaginationQuery>,
-) -> impl IntoResponse {
-    map_async_json_result(
-        profile_service::list_orders(
-            &ctx,
-            &account_id,
-            query.page.unwrap_or(1),
-            query.page_size.unwrap_or(20),
-        )
-        .await,
-    )
 }
 
 async fn send_notify_email_code(
@@ -734,16 +807,36 @@ async fn unbind_auth_identity(
     map_async_json_result(profile_service::unbind_auth_identity(&ctx, &account_id, &provider).await)
 }
 
-async fn account_proxy_request(
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SchedulerConfigPayload {
+    enabled: bool,
+    interval_seconds: u64,
+}
+
+async fn get_scheduler_config(State(ctx): State<AppContext>) -> impl IntoResponse {
+    let config = SchedulerConfigPayload {
+        enabled: crate::application::scheduler_service::is_scheduler_enabled(&ctx),
+        interval_seconds: crate::application::scheduler_service::get_scheduler_interval(&ctx),
+    };
+    (StatusCode::OK, Json(serde_json::to_value(config).unwrap_or_else(|_| json!({})))).into_response()
+}
+
+async fn update_scheduler_config(
     State(ctx): State<AppContext>,
-    Path(account_id): Path<String>,
-    Json(body): Json<ProxyBody>,
+    Json(payload): Json<SchedulerConfigPayload>,
 ) -> impl IntoResponse {
-    let method = body.method.unwrap_or_else(|| "GET".to_string());
-    match proxy_service::account_proxy_request(&ctx, &account_id, &body.path, &method, body.payload).await {
-        Ok(value) => (StatusCode::OK, Json(value)).into_response(),
-        Err(error) => map_error(error).into_response(),
+    if let Err(e) = crate::application::scheduler_service::set_scheduler_enabled(&ctx, payload.enabled) {
+        return map_error(e).into_response();
     }
+    if let Err(e) = crate::application::scheduler_service::set_scheduler_interval(&ctx, payload.interval_seconds) {
+        return map_error(e).into_response();
+    }
+    let config = SchedulerConfigPayload {
+        enabled: crate::application::scheduler_service::is_scheduler_enabled(&ctx),
+        interval_seconds: crate::application::scheduler_service::get_scheduler_interval(&ctx),
+    };
+    (StatusCode::OK, Json(serde_json::to_value(config).unwrap_or_else(|_| json!({})))).into_response()
 }
 
 fn map_json_result<T>(result: anyhow::Result<T>) -> axum::response::Response

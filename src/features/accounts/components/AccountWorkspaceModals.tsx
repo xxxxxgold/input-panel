@@ -21,12 +21,12 @@ export function AccountWorkspaceModals({
   sites: SiteRecord[];
   overview: OverviewPayload | null;
 }) {
-  const onlineCount = workspace.accountManagerAccounts.filter((account) => account.snapshot?.online).length;
+  const onlineCount = workspace.accountManagerAccounts.filter((account) => account.cacheView?.online).length;
   const alertCount = selectedSite
     ? overview?.alerts.filter((alert) => alert.siteId === selectedSite.id).length ?? 0
     : 0;
   const siteBalance = workspace.accountManagerAccounts.reduce(
-    (sum, account) => sum + (account.snapshot?.balance ?? 0),
+    (sum, account) => sum + (account.cacheView?.balance ?? 0),
     0
   );
 

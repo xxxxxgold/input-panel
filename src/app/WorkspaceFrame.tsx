@@ -8,6 +8,8 @@ export function WorkspaceFrame({
   summary,
   loading,
   ready,
+  navKey,
+  pageMotionPhase,
   children
 }: {
   topbar: ReactNode;
@@ -16,6 +18,8 @@ export function WorkspaceFrame({
   summary: ReactNode;
   loading: boolean;
   ready: boolean;
+  navKey: string;
+  pageMotionPhase?: "idle" | "enter";
   children: ReactNode;
 }) {
   return (
@@ -36,7 +40,12 @@ export function WorkspaceFrame({
           <span>正在加载工作台...</span>
         </div>
       ) : (
-        <div className="workspace-scroll">{children}</div>
+        <div
+          key={navKey}
+          className={`workspace-scroll workspace-page ${pageMotionPhase === "enter" ? "page-motion-enter" : ""}`.trim()}
+        >
+          {children}
+        </div>
       )}
     </main>
   );

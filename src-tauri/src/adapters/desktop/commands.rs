@@ -1,18 +1,43 @@
-use serde_json::Value;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::application::{
-    account_service, auth_service, dashboard_service, desktop_ui_service, keys_service,
-    profile_service, proxy_service, refresh_task_service, service_status_service, site_service, usage_service, AppContext,
+    account_service, auth_service, dashboard_service, data_center_service, desktop_ui_service, keys_service,
+    profile_service, scheduler_service, service_status_service, site_service, usage_service, AppContext,
 };
 use crate::contracts::{
     AccountRuntime, AppLaunchMode, DashboardModelsPayload, DailyUsagePoint, DesktopUiPrefs,
     DesktopUiPrefsPatch, GroupRecord, KeyMutationInput, KeyPatchInput, LoginFlowResult, ManagedKeyRecord,
-    OpenMainWindowPayload, OrderRecord, OverviewPayload, PaginatedResult, PaymentConfigRecord,
-    PlatformQuotaPayload, ProfileUpdateInput, RefreshAccountTaskResponse, RefreshTriggerSource, ServiceStatusPayload, SiteRecord,
-    SubscriptionSummaryPayload, UsageRow, UsageStatsRecord, UsageTrendPayload, UserProfileRecord,
+    OpenMainWindowPayload, OverviewPayload, PaginatedResult,
+    PlatformQuotaPayload, ProfileUpdateInput, ServiceStatusPayload, SiteRecord,
+    SubscriptionSummaryPayload, SyncAccountDataInput, UsageRow, UsageStatsRecord, UsageTrendPayload, UserProfileRecord,
+    AccountSyncStatusPayload, RefreshAccountTaskResponse, RefreshTriggerSource,
 };
+
+fn sync_keep_floating_panel_visible(app: &AppHandle, prefs: &DesktopUiPrefs) {
+    let can_show_floating = prefs.launch_mode == AppLaunchMode::Floating || prefs.open_floating_in_main_mode;
+
+    if prefs.keep_floating_panel_visible && can_show_floating {
+        if let Some(window) = app.get_webview_window("floating-panel") {
+            let _ = window.show();
+        }
+        let _ = app.emit_to(
+            "floating",
+            "floating-native-panel-visibility",
+            serde_json::json!({ "visible": true }),
+        );
+        return;
+    }
+
+    if let Some(window) = app.get_webview_window("floating-panel") {
+        let _ = window.hide();
+    }
+    let _ = app.emit_to(
+        "floating",
+        "floating-native-panel-visibility",
+        serde_json::json!({ "visible": false }),
+    );
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +51,14 @@ pub struct FloatingPanelPositionPayload {
 pub struct FloatingContextMenuPayload {
     pub x: Option<f64>,
     pub y: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FloatingPanelToastPayload {
+    pub tone: String,
+    pub message: String,
+    pub duration_ms: Option<u64>,
 }
 
 #[tauri::command]
@@ -52,10 +85,14 @@ pub fn get_desktop_ui_prefs(ctx: State<'_, AppContext>) -> Result<DesktopUiPrefs
 
 #[tauri::command]
 pub fn update_desktop_ui_prefs(
+    app: AppHandle,
     ctx: State<'_, AppContext>,
     payload: DesktopUiPrefsPatch,
 ) -> Result<DesktopUiPrefs, String> {
-    desktop_ui_service::update_desktop_ui_prefs(&ctx, payload).map_err(to_message)
+    let prefs = desktop_ui_service::update_desktop_ui_prefs(&ctx, payload).map_err(to_message)?;
+    sync_keep_floating_panel_visible(&app, &prefs);
+    let _ = app.emit("desktop-ui-prefs-updated", &prefs);
+    Ok(prefs)
 }
 
 #[tauri::command]
@@ -100,6 +137,7 @@ pub fn switch_app_mode(
             }
         }
     }
+    sync_keep_floating_panel_visible(&app, &prefs);
     let _ = app.emit("desktop-ui-prefs-updated", &prefs);
     Ok(prefs)
 }
@@ -131,6 +169,7 @@ pub fn set_floating_window_visible(
         let _ = window.hide();
     }
 
+    sync_keep_floating_panel_visible(&app, &prefs);
     let _ = app.emit("desktop-ui-prefs-updated", &prefs);
     Ok(prefs)
 }
@@ -155,6 +194,20 @@ pub fn position_floating_panel(
     if let Some(window) = app.get_webview_window("floating-panel") {
         let _ = window.set_position(tauri::LogicalPosition::new(payload.x as f64, payload.y as f64));
     }
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn push_floating_panel_toast(
+    app: AppHandle,
+    payload: FloatingPanelToastPayload,
+) -> Result<bool, String> {
+    let event_payload = serde_json::json!({
+        "tone": payload.tone,
+        "message": payload.message,
+        "durationMs": payload.duration_ms
+    });
+    let _ = app.emit_to("floating-panel", "floating-panel-toast", event_payload);
     Ok(true)
 }
 
@@ -221,6 +274,7 @@ pub fn open_main_window(
     if let Some(window) = app.get_webview_window("floating-panel") {
         let _ = window.hide();
     }
+    sync_keep_floating_panel_visible(&app, &prefs);
     let _ = app.emit("desktop-ui-prefs-updated", &prefs);
     Ok(prefs)
 }
@@ -308,29 +362,57 @@ pub async fn login_account_2fa(
 }
 
 #[tauri::command]
+pub async fn sync_all_accounts(
+    ctx: State<'_, AppContext>,
+    payload: SyncAccountDataInput,
+) -> Result<OverviewPayload, String> {
+    data_center_service::sync_all_accounts(&ctx, payload)
+        .await
+        .and_then(|_| dashboard_service::get_overview(&ctx))
+        .map_err(to_message)
+}
+
+#[tauri::command]
 pub async fn refresh_account(
     ctx: State<'_, AppContext>,
     account_id: String,
     trigger_source: Option<RefreshTriggerSource>,
 ) -> Result<RefreshAccountTaskResponse, String> {
-    refresh_task_service::refresh_account(
+    data_center_service::refresh_account(
         &ctx,
         &account_id,
         trigger_source.unwrap_or(RefreshTriggerSource::Manual),
     )
-        .await
-        .map(|result| RefreshAccountTaskResponse {
-            account: result.account,
-            run: result.run,
-        })
-        .map_err(to_message)
+    .await
+    .map_err(to_message)
 }
 
 #[tauri::command]
 pub async fn refresh_all_accounts(ctx: State<'_, AppContext>) -> Result<OverviewPayload, String> {
-    auth_service::refresh_all_accounts(&ctx)
+    data_center_service::refresh_all_accounts(&ctx)
         .await
+        .and_then(|_| dashboard_service::get_overview(&ctx))
         .map_err(to_message)
+}
+
+#[tauri::command]
+pub async fn sync_account_data(
+    ctx: State<'_, AppContext>,
+    account_id: String,
+    payload: SyncAccountDataInput,
+) -> Result<AccountSyncStatusPayload, String> {
+    data_center_service::sync_account_data(&ctx, &account_id, payload)
+        .await
+        .map(|result| result.status)
+        .map_err(to_message)
+}
+
+#[tauri::command]
+pub fn get_account_sync_status(
+    ctx: State<'_, AppContext>,
+    account_id: String,
+) -> Result<AccountSyncStatusPayload, String> {
+    data_center_service::get_account_sync_status(&ctx, &account_id).map_err(to_message)
 }
 
 #[tauri::command]
@@ -453,8 +535,20 @@ pub async fn get_dashboard_models(
     ctx: State<'_, AppContext>,
     account_id: String,
     days: Option<i64>,
+    api_key_id: Option<String>,
+    start_date: Option<String>,
+    end_date: Option<String>,
 ) -> Result<DashboardModelsPayload, String> {
-    usage_service::get_dashboard_models(&ctx, &account_id, days.unwrap_or(7))
+    usage_service::get_dashboard_models(
+        &ctx,
+        &account_id,
+        usage_service::UsageStatsQuery {
+            period: Some(format!("days:{}", days.unwrap_or(7))),
+            api_key_id,
+            start_date,
+            end_date,
+        },
+    )
         .await
         .map_err(to_message)
 }
@@ -464,8 +558,20 @@ pub async fn get_dashboard_trend(
     ctx: State<'_, AppContext>,
     account_id: String,
     days: Option<i64>,
+    api_key_id: Option<String>,
+    start_date: Option<String>,
+    end_date: Option<String>,
 ) -> Result<UsageTrendPayload, String> {
-    usage_service::get_dashboard_trend(&ctx, &account_id, days.unwrap_or(7))
+    usage_service::get_dashboard_trend(
+        &ctx,
+        &account_id,
+        usage_service::UsageStatsQuery {
+            period: Some(format!("days:{}", days.unwrap_or(7))),
+            api_key_id,
+            start_date,
+            end_date,
+        },
+    )
         .await
         .map_err(to_message)
 }
@@ -531,28 +637,6 @@ pub async fn get_subscription_summary(
     account_id: String,
 ) -> Result<SubscriptionSummaryPayload, String> {
     profile_service::get_subscription_summary(&ctx, &account_id)
-        .await
-        .map_err(to_message)
-}
-
-#[tauri::command]
-pub async fn get_payment_config(
-    ctx: State<'_, AppContext>,
-    account_id: String,
-) -> Result<PaymentConfigRecord, String> {
-    profile_service::get_payment_config(&ctx, &account_id)
-        .await
-        .map_err(to_message)
-}
-
-#[tauri::command]
-pub async fn list_orders(
-    ctx: State<'_, AppContext>,
-    account_id: String,
-    page: Option<i64>,
-    page_size: Option<i64>,
-) -> Result<PaginatedResult<OrderRecord>, String> {
-    profile_service::list_orders(&ctx, &account_id, page.unwrap_or(1), page_size.unwrap_or(20))
         .await
         .map_err(to_message)
 }
@@ -637,19 +721,32 @@ pub async fn unbind_auth_identity(
         .map_err(to_message)
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchedulerConfigPayload {
+    pub enabled: bool,
+    pub interval_seconds: u64,
+}
+
 #[tauri::command]
-pub async fn account_proxy_request(
+pub fn get_scheduler_config(ctx: State<'_, AppContext>) -> Result<SchedulerConfigPayload, String> {
+    Ok(SchedulerConfigPayload {
+        enabled: scheduler_service::is_scheduler_enabled(&ctx),
+        interval_seconds: scheduler_service::get_scheduler_interval(&ctx),
+    })
+}
+
+#[tauri::command]
+pub fn update_scheduler_config(
     ctx: State<'_, AppContext>,
-    account_id: String,
-    path: String,
-    method: String,
-    payload: Option<Value>,
-) -> Result<Value, String> {
-    proxy_service::account_proxy_request(&ctx, &account_id, &path, &method, payload)
-        .await
-        .map_err(to_message)
+    payload: SchedulerConfigPayload,
+) -> Result<SchedulerConfigPayload, String> {
+    scheduler_service::set_scheduler_enabled(&ctx, payload.enabled).map_err(to_message)?;
+    scheduler_service::set_scheduler_interval(&ctx, payload.interval_seconds).map_err(to_message)?;
+    get_scheduler_config(ctx)
 }
 
 fn to_message(error: anyhow::Error) -> String {
     error.to_string()
 }
+

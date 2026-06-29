@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
 
-use super::Database;
+use crate::infrastructure::sqlite::Database;
 
 pub fn set_setting(db: &Database, key: &str, value: &str) -> Result<()> {
     let conn = db.connect()?;
@@ -24,3 +24,4 @@ pub fn get_setting(db: &Database, key: &str) -> Result<Option<String>> {
         .optional()?;
     Ok(value)
 }
+

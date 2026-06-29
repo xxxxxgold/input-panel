@@ -6,11 +6,12 @@ use reqwest::{Client, Method};
 use serde_json::{json, Value};
 
 use crate::contracts::{
-    AccountRecord, AccountSnapshot, KeyRecord, LoginChallenge, PlatformPoint, SiteRecord,
-    SnapshotStats, StoredSession, SubscriptionQuotaWindow, SubscriptionRecord,
-    TrendPoint, UsageRow, UsageSummary,
+    AccountRecord, AccountCacheView, KeyRecord, LoginChallenge, PlatformPoint, SiteRecord,
+    AccountCacheStats, StoredSession, SubscriptionQuotaWindow, SubscriptionRecord,
+    TrendPoint, UsageRow,
 };
 use crate::domain::alerts::build_alerts;
+use crate::infrastructure::sub2api::normalizers::normalize_trend_payload;
 
 pub struct Sub2ApiClient {
     client: Client,
@@ -136,23 +137,25 @@ impl Sub2ApiClient {
         self.request_json_with_method(&[path], parsed_method, body).await
     }
 
-    pub async fn build_snapshot(
+    pub async fn build_runtime_cache_view_for_smoke(
         &mut self,
         account: &AccountRecord,
         site: &SiteRecord,
-    ) -> Result<AccountSnapshot> {
+    ) -> Result<AccountCacheView> {
         let profile = self.request_json(&["/api/v1/user/profile", "/api/v1/auth/me"]).await?;
         let stats = self.dashboard_stats().await?;
         let keys = self.keys().await?;
         let subscriptions = self.subscriptions().await?;
         let usage = self.usage().await?;
-        let raw_trend = self.trend(&keys).await?;
+        let raw_trend = match self.dashboard_trend(7).await {
+            Ok(trend) => trend,
+            Err(_) => self.trend(&keys).await?,
+        };
         let trend = if raw_trend.is_empty() {
             trend_from_usage(&usage)
         } else {
             raw_trend
         };
-        let usage_summary = usage_summary(&stats, &usage);
         let balance = pick_f64(&profile, &["balance", "quota.remaining", "wallet.balance"]).unwrap_or(0.0);
         let fetched_at = Utc::now().to_rfc3339();
         let alerts = build_alerts(account, site, balance, &keys, &fetched_at);
@@ -162,19 +165,13 @@ impl Sub2ApiClient {
             .cloned()
             .or_else(|| subscriptions.first().cloned());
 
-        Ok(AccountSnapshot {
+        Ok(AccountCacheView {
             fetched_at,
             online: true,
             site_name: site.name.clone(),
-            site_url: site.base_url.clone(),
-            account_label: account.label.clone(),
-            email_masked: pick_string(&profile, &["email", "email_masked", "user.email"]),
             balance,
-            currency: pick_string(&profile, &["currency"]).unwrap_or_else(|| "USD".into()),
             stats,
-            usage_summary,
             recent_usage: usage,
-            request_history: Vec::new(),
             trend,
             keys,
             subscriptions: subscriptions.clone(),
@@ -213,7 +210,7 @@ impl Sub2ApiClient {
         Err(anyhow!("未找到可用的刷新 token 接口。"))
     }
 
-    async fn dashboard_stats(&mut self) -> Result<SnapshotStats> {
+    async fn dashboard_stats(&mut self) -> Result<AccountCacheStats> {
         let raw = self.request_json(&["/api/v1/usage/dashboard/stats"]).await?;
         let by_platform = array_at(&raw, &["by_platform", "platforms"])
             .into_iter()
@@ -226,7 +223,7 @@ impl Sub2ApiClient {
             })
             .collect();
 
-        Ok(SnapshotStats {
+        Ok(AccountCacheStats {
             total_api_keys: pick_i64(&raw, &["total_api_keys"]).unwrap_or(0),
             active_api_keys: pick_i64(&raw, &["active_api_keys"]).unwrap_or(0),
             today_requests: pick_i64(&raw, &["today_requests"]).unwrap_or(0),
@@ -326,6 +323,15 @@ impl Sub2ApiClient {
                     request_type: pick_string(&item, &["request_type"]),
                     stream: item.get("stream").and_then(Value::as_bool),
                     billing_type: pick_i64(&item, &["billing_type"]),
+                    image_count: pick_i64(&item, &["image_count"]),
+                    image_size: pick_string(&item, &["image_size"]),
+                    image_input_size: pick_string(&item, &["image_input_size"]),
+                    image_output_size: pick_string(&item, &["image_output_size"]),
+                    image_output_tokens: pick_i64(&item, &["image_output_tokens"]),
+                    image_output_cost: pick_f64(&item, &["image_output_cost"]),
+                    image_size_source: pick_string(&item, &["image_size_source"]),
+                    image_size_breakdown: item.get("image_size_breakdown").map(|value| value.to_string()),
+                    media_type: pick_string(&item, &["media_type"]),
                     rate_multiplier: pick_f64(&item, &["rate_multiplier"]),
                     user_agent: pick_string(&item, &["user_agent"]),
                     api_key_name: pick_string(&item, &["api_key.name", "api_key_name"]),
@@ -381,6 +387,28 @@ impl Sub2ApiClient {
             }
         }
         let mut trend: Vec<TrendPoint> = points.into_values().collect();
+        trend.sort_by(|a, b| a.bucket.cmp(&b.bucket));
+        Ok(trend)
+    }
+
+    async fn dashboard_trend(&mut self, days: i64) -> Result<Vec<TrendPoint>> {
+        let raw = self.request_json(&[&format!("/api/v1/usage/dashboard/trend?days={days}")]).await?;
+        let payload = normalize_trend_payload(&raw);
+        let mut trend = payload
+            .trend
+            .into_iter()
+            .map(|item| TrendPoint {
+                bucket: item.date,
+                actual_cost: item.actual_cost.unwrap_or(0.0),
+                total_cost: item.total_cost.unwrap_or(0.0),
+                requests: item.requests,
+                input_tokens: item.input_tokens,
+                output_tokens: item.output_tokens,
+                cache_creation_tokens: item.cache_write_tokens.unwrap_or(0),
+                cache_read_tokens: item.cache_read_tokens.unwrap_or(0),
+                total_tokens: item.total_tokens.unwrap_or(0),
+            })
+            .collect::<Vec<_>>();
         trend.sort_by(|a, b| a.bucket.cmp(&b.bucket));
         Ok(trend)
     }
@@ -504,33 +532,6 @@ fn quota_window(value: &Value, prefix: &str) -> Option<SubscriptionQuotaWindow> 
     })
 }
 
-fn usage_summary(stats: &SnapshotStats, usage: &[UsageRow]) -> UsageSummary {
-    let average_duration_ms = if stats.average_duration_ms > 0.0 {
-        stats.average_duration_ms
-    } else if usage.is_empty() {
-        0.0
-    } else {
-        usage
-            .iter()
-            .map(|item| item.duration_ms.unwrap_or_default() as f64)
-            .sum::<f64>()
-            / usage.len() as f64
-    };
-
-    let total_input_tokens = usage.iter().map(|item| item.input_tokens).sum::<i64>();
-    let total_output_tokens = usage.iter().map(|item| item.output_tokens).sum::<i64>();
-
-    UsageSummary {
-        total_requests: stats.total_requests,
-        total_tokens: stats.total_tokens,
-        total_input_tokens,
-        total_output_tokens,
-        total_actual_cost: stats.total_actual_cost,
-        total_cost: stats.total_cost,
-        average_duration_ms,
-    }
-}
-
 fn trend_from_usage(usage: &[UsageRow]) -> Vec<TrendPoint> {
     let mut points: HashMap<String, TrendPoint> = HashMap::new();
     for row in usage {
@@ -608,7 +609,7 @@ mod tests {
     use crate::contracts::{AccountRecord, SiteRecord};
 
     #[tokio::test]
-    async fn supports_2fa_flow_and_build_snapshot() {
+    async fn supports_2fa_flow_and_build_runtime_cache_view_for_smoke() {
         let app = Router::new()
             .route("/api/v1/auth/login", post(|| async {
                 Json(json!({
@@ -643,6 +644,36 @@ mod tests {
             .route("/api/v1/keys", get(|| async { Json(json!({ "items": [] })) }))
             .route("/api/v1/keys?page=1&page_size=100", get(|| async { Json(json!({ "items": [] })) }))
             .route("/api/v1/subscriptions", get(|| async { Json(json!({ "items": [] })) }))
+            .route("/api/v1/usage/dashboard/trend", get(|| async {
+                Json(json!({
+                    "start_date": "2026-06-09",
+                    "end_date": "2026-06-15",
+                    "trend": [
+                        {
+                            "date": "2026-06-09",
+                            "requests": 7,
+                            "input_tokens": 100,
+                            "output_tokens": 40,
+                            "cache_read_tokens": 300,
+                            "cache_write_tokens": 0,
+                            "total_tokens": 440,
+                            "actual_cost": 1.5,
+                            "total_cost": 1.5
+                        },
+                        {
+                            "date": "2026-06-15",
+                            "requests": 2,
+                            "input_tokens": 30,
+                            "output_tokens": 10,
+                            "cache_read_tokens": 20,
+                            "cache_write_tokens": 0,
+                            "total_tokens": 60,
+                            "actual_cost": 0.5,
+                            "total_cost": 0.5
+                        }
+                    ]
+                }))
+            }))
             .route("/api/v1/usage", get(|| async { Json(json!({ "items": [] })) }))
             .route("/api/v1/usage?page=1&page_size=20", get(|| async { Json(json!({ "items": [] })) }));
 
@@ -653,6 +684,7 @@ mod tests {
         tokio::spawn(async move {
             axum::serve(listener, app).await.expect("serve test app");
         });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
         let base_url = format!("http://{}", address);
         let mut client = Sub2ApiClient::new(&base_url, None).expect("create client");
@@ -665,8 +697,8 @@ mod tests {
             .complete_2fa("temp-123", "654321")
             .await
             .expect("complete 2fa");
-        let snapshot = client
-            .build_snapshot(
+        let cache_view = client
+            .build_runtime_cache_view_for_smoke(
                 &AccountRecord {
                     id: "account-3".into(),
                     site_id: "site-3".into(),
@@ -686,7 +718,105 @@ mod tests {
                 },
             )
             .await
-            .expect("build snapshot");
-        assert_eq!(snapshot.balance, 3.2);
+            .expect("build runtime cache view for smoke");
+        assert_eq!(cache_view.balance, 3.2);
+        assert_eq!(cache_view.trend.len(), 2);
+        assert_eq!(cache_view.trend[0].bucket, "2026-06-09");
+        assert_eq!(cache_view.trend[0].requests, 7);
+        assert_eq!(cache_view.trend[1].bucket, "2026-06-15");
+        assert_eq!(cache_view.trend[1].total_tokens, 60);
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_key_daily_when_dashboard_trend_is_unavailable() {
+        let app = Router::new()
+            .route("/api/v1/user/profile", get(|| async {
+                Json(json!({ "balance": 3.2, "email": "demo@example.com" }))
+            }))
+            .route("/api/v1/usage/dashboard/stats", get(|| async {
+                Json(json!({ "total_api_keys": 1, "active_api_keys": 1, "today_requests": 1, "total_requests": 1, "today_actual_cost": 0.1, "total_actual_cost": 0.1, "today_cost": 0.1, "total_cost": 0.1, "today_tokens": 10, "total_tokens": 10, "today_input_tokens": 5, "today_output_tokens": 5, "average_duration_ms": 100, "by_platform": [] }))
+            }))
+            .route("/api/v1/keys", get(|| async {
+                Json(json!({
+                    "items": [
+                        {
+                            "id": "key-1",
+                            "name": "demo-key",
+                            "status": "active"
+                        }
+                    ]
+                }))
+            }))
+            .route("/api/v1/subscriptions", get(|| async { Json(json!({ "items": [] })) }))
+            .route("/api/v1/usage/dashboard/trend", get(|| async {
+                axum::http::StatusCode::NOT_FOUND
+            }))
+            .route("/api/v1/user/api-keys/key-1/usage/daily", get(|| async {
+                Json(json!({
+                    "items": [
+                        {
+                            "date": "2026-06-14",
+                            "requests": 4,
+                            "input_tokens": 200,
+                            "output_tokens": 80,
+                            "cache_read_tokens": 120,
+                            "total_tokens": 400,
+                            "actual_cost": 0.8,
+                            "total_cost": 0.8
+                        }
+                    ]
+                }))
+            }))
+            .route("/api/v1/usage", get(|| async { Json(json!({ "items": [] })) }));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let address = listener.local_addr().expect("listener addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve test app");
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let base_url = format!("http://{}", address);
+        let mut client = Sub2ApiClient::new(
+            &base_url,
+            Some(crate::contracts::StoredSession {
+                saved_at: "2026-06-15T00:00:00Z".into(),
+                access_token: Some("token".into()),
+                refresh_token: None,
+                token_type: Some("bearer".into()),
+                cookie_jar_json: None,
+            }),
+        )
+        .expect("create client");
+
+        let cache_view = client
+            .build_runtime_cache_view_for_smoke(
+                &AccountRecord {
+                    id: "account-4".into(),
+                    site_id: "site-4".into(),
+                    label: "fallback".into(),
+                    email: "demo@example.com".into(),
+                    balance_warning: 1.0,
+                    last_login_at: None,
+                    created_at: "2026-06-05T00:00:00.000Z".into(),
+                    updated_at: "2026-06-05T00:00:00.000Z".into(),
+                },
+                &SiteRecord {
+                    id: "site-4".into(),
+                    name: "Fallback Site".into(),
+                    base_url,
+                    created_at: "2026-06-05T00:00:00.000Z".into(),
+                    updated_at: "2026-06-05T00:00:00.000Z".into(),
+                },
+            )
+            .await
+            .expect("build runtime cache view for smoke");
+
+        assert_eq!(cache_view.trend.len(), 1);
+        assert_eq!(cache_view.trend[0].bucket, "2026-06-14");
+        assert_eq!(cache_view.trend[0].requests, 4);
+        assert_eq!(cache_view.trend[0].cache_read_tokens, 120);
     }
 }

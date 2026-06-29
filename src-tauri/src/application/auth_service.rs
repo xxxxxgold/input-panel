@@ -5,7 +5,7 @@ use crate::contracts::{AccountRuntime, LoginFlowResult, StoredCredential};
 use crate::infrastructure::sqlite::repositories;
 use crate::infrastructure::sub2api::client::Sub2ApiClient;
 
-use super::{account_service, dashboard_service, AppContext};
+use super::{account_service, data_center_service, AppContext};
 
 pub async fn login_account(
     ctx: &AppContext,
@@ -34,9 +34,6 @@ pub async fn login_account(
         });
     }
 
-    let snapshot = client.build_snapshot(&account, &site).await?;
-    repositories::save_snapshot(&ctx.db, &account.id, &snapshot)?;
-    repositories::clear_error(&ctx.db, &account.id)?;
     repositories::save_session(&ctx.db, &account.id, &client.serialize())?;
     repositories::save_credential(
         &ctx.db,
@@ -53,7 +50,16 @@ pub async fn login_account(
     updated.updated_at = Utc::now().to_rfc3339();
     repositories::update_account(&ctx.db, &updated)?;
 
-    let runtime = account_service::wrap_runtime(ctx, updated, Some(snapshot), None)?;
+    data_center_service::sync_account_data(
+        ctx,
+        &updated.id,
+        crate::contracts::SyncAccountDataInput {
+            scope: crate::contracts::DataSyncScope::Full,
+            trigger_source: crate::contracts::DataSyncTrigger::Manual,
+        },
+    )
+    .await?;
+    let runtime = account_service::wrap_runtime(ctx, updated, None, None)?;
     Ok(LoginFlowResult::Success { account: runtime })
 }
 
@@ -89,9 +95,6 @@ pub async fn login_account_2fa(
     let (account, site) = account_service::load_account_site(ctx, account_id)?;
     let mut client = Sub2ApiClient::new(&site.base_url, None)?;
     client.complete_2fa(temp_token, code).await?;
-    let snapshot = client.build_snapshot(&account, &site).await?;
-    repositories::save_snapshot(&ctx.db, &account.id, &snapshot)?;
-    repositories::clear_error(&ctx.db, &account.id)?;
     repositories::save_session(&ctx.db, &account.id, &client.serialize())?;
 
     let mut updated = account.clone();
@@ -99,52 +102,26 @@ pub async fn login_account_2fa(
     updated.updated_at = Utc::now().to_rfc3339();
     repositories::update_account(&ctx.db, &updated)?;
 
-    account_service::wrap_runtime(ctx, updated, Some(snapshot), None)
-}
+    data_center_service::sync_account_data(
+        ctx,
+        &updated.id,
+        crate::contracts::SyncAccountDataInput {
+            scope: crate::contracts::DataSyncScope::Full,
+            trigger_source: crate::contracts::DataSyncTrigger::Manual,
+        },
+    )
+    .await?;
 
-pub async fn refresh_account(ctx: &AppContext, account_id: &str) -> Result<AccountRuntime> {
-    let (account, site) = account_service::load_account_site(ctx, account_id)?;
-    let session = repositories::load_session(&ctx.db, &account.id)?;
-    let mut client = Sub2ApiClient::new(&site.base_url, session)?;
-    ensure_authorized(ctx, &mut client, &account).await?;
-
-    match client.build_snapshot(&account, &site).await {
-        Ok(snapshot) => {
-            repositories::save_snapshot(&ctx.db, &account.id, &snapshot)?;
-            repositories::clear_error(&ctx.db, &account.id)?;
-            repositories::save_session(&ctx.db, &account.id, &client.serialize())?;
-            account_service::wrap_runtime(ctx, account, Some(snapshot), None)
-        }
-        Err(error) if is_auth_expired_error(&error) => {
-            relogin_with_saved_credential(ctx, &mut client, &account).await?;
-            let snapshot = client.build_snapshot(&account, &site).await?;
-            repositories::save_snapshot(&ctx.db, &account.id, &snapshot)?;
-            repositories::clear_error(&ctx.db, &account.id)?;
-            repositories::save_session(&ctx.db, &account.id, &client.serialize())?;
-            account_service::wrap_runtime(ctx, account, Some(snapshot), None)
-        }
-        Err(error) => {
-            repositories::save_error(&ctx.db, &account.id, &error.to_string())?;
-            Err(error)
-        }
-    }
-}
-
-pub async fn refresh_all_accounts(ctx: &AppContext) -> Result<crate::contracts::OverviewPayload> {
-    let ids = repositories::list_account_ids(&ctx.db)?;
-    for account_id in ids {
-        let _ = refresh_account(ctx, &account_id).await;
-    }
-    dashboard_service::get_overview(ctx)
+    account_service::wrap_runtime(ctx, updated, None, None)
 }
 
 pub async fn ensure_authorized(
     ctx: &AppContext,
     client: &mut Sub2ApiClient,
     account: &crate::contracts::AccountRecord,
-) -> Result<()> {
+) -> Result<bool> {
     if client.has_tokens() {
-        return Ok(());
+        return Ok(false);
     }
     relogin_with_saved_credential(ctx, client, account).await
 }
@@ -153,7 +130,7 @@ pub async fn relogin_with_saved_credential(
     ctx: &AppContext,
     client: &mut Sub2ApiClient,
     account: &crate::contracts::AccountRecord,
-) -> Result<()> {
+) -> Result<bool> {
     let credential = repositories::load_credential(&ctx.db, &account.id)?
         .context(format!("账号 {} 尚未保存可恢复凭据，请重新登录。", account.label))?;
     let challenge = client.login(&account.email, &credential.password).await?;
@@ -169,7 +146,12 @@ pub async fn relogin_with_saved_credential(
             saved_at: Utc::now().to_rfc3339(),
         },
     )?;
-    Ok(())
+    repositories::save_session(&ctx.db, &account.id, &client.serialize())?;
+    let mut updated = account.clone();
+    updated.last_login_at = Some(Utc::now().to_rfc3339());
+    updated.updated_at = Utc::now().to_rfc3339();
+    repositories::update_account(&ctx.db, &updated)?;
+    Ok(true)
 }
 
 pub fn is_auth_expired_error(error: &anyhow::Error) -> bool {

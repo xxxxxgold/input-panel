@@ -2064,12 +2064,44 @@ html.audit-archive-room {
   gap: 8px;
 }
 
-.workspace-header-summary span {
+.workspace-summary-pill {
   padding: 8px 10px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg-card) 68%, transparent);
   color: var(--text-subtle);
+  font-size: 12px;
+}
+
+.workspace-summary-pill-token-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+}
+
+.workspace-summary-token-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-card));
+  color: var(--text-subtle);
+  white-space: nowrap;
+}
+
+.workspace-summary-token-tag strong {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.workspace-summary-token-tag span {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
   font-size: 12px;
 }
 
@@ -2107,6 +2139,55 @@ html.audit-archive-room {
 
 .content-grid.content-grid-align-start > .section-card {
   align-self: start;
+  height: fit-content;
+}
+
+.system-settings-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.18fr) minmax(360px, 0.96fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.system-settings-layout-mobile {
+  display: none;
+}
+
+.system-settings-column {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+
+.system-settings-card {
+  align-self: start;
+  min-width: 0;
+}
+
+.overview-layout {
+  display: grid;
+  grid-template-columns: 1.45fr 1fr;
+  gap: 18px;
+  align-items: start;
+}
+
+.overview-layout-mobile {
+  display: none;
+}
+
+.overview-column {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+
+.overview-layout-card {
+  min-width: 0;
+}
+
+.overview-layout-card > .section-card {
   height: fit-content;
 }
 
@@ -4300,6 +4381,42 @@ html.audit-archive-room {
   gap: 8px;
 }
 
+.recent-usage-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.recent-usage-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.recent-usage-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  background: color-mix(in srgb, var(--bg-soft) 82%, var(--bg-card));
+  color: var(--text-subtle);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.recent-usage-pill-endpoint {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-card));
+}
+
+.recent-usage-numbers small {
+  color: var(--text-subtle);
+  font-size: 12px;
+}
+
 .key-action-cluster {
   display: inline-flex;
   align-items: center;
@@ -5836,6 +5953,26 @@ html.audit-archive-room {
   .panel-grid,
   .management-grid {
     grid-template-columns: 1fr;
+  }
+
+  .system-settings-layout-desktop {
+    display: none;
+  }
+
+  .system-settings-layout-mobile {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .overview-layout-desktop {
+    display: none;
+  }
+
+  .overview-layout-mobile {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
   }
 
   .usage-insights-grid,
