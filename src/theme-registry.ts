@@ -10,7 +10,8 @@ export const THEME_IDS = [
   "polar-lab",
   "spectral-lab",
   "clinical-monitor-bay",
-  "audit-archive-room"
+  "audit-archive-room",
+  "system-follow"
 ] as const;
 
 export type ThemeId = (typeof THEME_IDS)[number];
@@ -122,6 +123,14 @@ export const THEME_OPTIONS: ThemeOption[] = [
     family: "light",
     accent: "#6a7e8f",
     preview: "linear-gradient(135deg, #faf7f1 0%, #f0ebe2 44%, #ddd6ca 100%)"
+  },
+  {
+    id: "system-follow",
+    label: "跟随系统",
+    summary: "自动跟随系统深色/浅色设置, 无缝适配环境。",
+    family: "light",
+    accent: "#68c4ba",
+    preview: "linear-gradient(135deg, #ffffff 0%, #e2e8f0 50%, #cbd5e1 100%)"
   }
 ];
 

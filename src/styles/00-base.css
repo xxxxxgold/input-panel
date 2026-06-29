@@ -1,0 +1,67 @@
+@import "tailwindcss";
+
+:root {
+  --font-sans: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Mono", Consolas, monospace;
+  --radius-lg: 18px;
+  --radius-md: 12px;
+  --radius-sm: 10px;
+  --shadow-card: 0 20px 40px rgba(15, 23, 42, 0.08);
+  --bg-elevated: rgba(255, 255, 255, 0.94);
+  --bg-overlay: rgba(4, 8, 15, 0.62);
+  --bg-modal: #ffffff;
+  --bg-hover: rgba(104, 196, 186, 0.08);
+  --bg-selected: rgba(104, 196, 186, 0.16);
+  --text-inverse: #f8fafc;
+  --focus-ring: rgba(25, 179, 164, 0.18);
+  --success: #16a34a;
+  --warning: #a16207;
+  --info: #2563eb;
+  --status-success-fg: #0f9f67;
+  --status-warning-fg: #b45309;
+  --status-danger-fg: #be123c;
+  --status-info-fg: #1d4ed8;
+  --chart-1: var(--accent);
+  --chart-2: #5e8cff;
+  --chart-3: #e3a62c;
+  --chart-4: #4fc8f0;
+  --chart-5: #8d78ff;
+  --chart-6: #53cdb5;
+  --tier-green: #22c55e;
+  --tier-green-light: #4ade80;
+  --tier-lime: #84cc16;
+  --tier-lime-light: #bef264;
+  --tier-yellow: #eab308;
+  --tier-yellow-light: #facc15;
+  --tier-orange: #f59e0b;
+  --tier-orange-light: #fb923c;
+  --tier-red: #ef4444;
+  --tier-red-light: #f43f5e;
+  --tier-crimson: #991b1b;
+  --tier-crimson-light: #dc2626;
+  --shadow-sm: 0 2px 6px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 8px 24px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 20px 40px rgba(15, 23, 42, 0.12);
+  --shadow-xl: 0 24px 70px rgba(5, 10, 19, 0.18);
+  --shadow-glow: 0 0 24px color-mix(in srgb, var(--accent) 18%, transparent);
+  --radius-xs: 6px;
+  --radius-xl: 24px;
+  --z-base: 1;
+  --z-dropdown: 20;
+  --z-modal: 50;
+  --z-toast: 80;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-page);
+  color: var(--text-strong);
+}
+
