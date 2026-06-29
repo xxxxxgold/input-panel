@@ -51,3 +51,14 @@
   }
 }
 
+
+
+/* Data update flash */
+@keyframes data-update-flash {
+  0% { background-color: color-mix(in srgb, var(--accent) 18%, transparent); }
+  100% { background-color: transparent; }
+}
+
+.data-update-flash {
+  animation: data-update-flash 600ms ease-out;
+}

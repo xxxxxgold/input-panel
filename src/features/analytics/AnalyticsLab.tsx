@@ -606,7 +606,7 @@ function buildUsageTrendOption(trend: UsageTrendPayload | null, palette: ChartPa
   }
 
   return {
-    backgroundColor: "transparent",
+    backgroundColor: palette.chartBg,
     color: [palette.accent, palette.secondary, palette.tertiary],
     tooltip: {
       trigger: "axis"
@@ -632,7 +632,7 @@ function buildUsageTrendOption(trend: UsageTrendPayload | null, palette: ChartPa
         type: "value",
         name: "成本 / 请求",
         axisLine: { show: false },
-        splitLine: { lineStyle: { color: palette.grid } },
+        splitLine: { lineStyle: { color: palette.chartGrid } },
         axisLabel: { color: palette.textSoft }
       },
       {
@@ -673,7 +673,7 @@ function buildModelCostOption(models: DashboardModelsPayload | null, palette: Ch
     return null;
   }
   return {
-    backgroundColor: "transparent",
+    backgroundColor: palette.chartBg,
     tooltip: {
       trigger: "axis",
       axisPointer: { type: "shadow" }
@@ -687,7 +687,7 @@ function buildModelCostOption(models: DashboardModelsPayload | null, palette: Ch
     xAxis: {
       type: "value",
       axisLabel: { color: palette.textSoft },
-      splitLine: { lineStyle: { color: palette.grid } }
+      splitLine: { lineStyle: { color: palette.chartGrid } }
     },
     yAxis: {
       type: "category",
@@ -726,7 +726,7 @@ function buildModelTokenOption(models: DashboardModelsPayload | null, palette: C
     xAxis: {
       type: "value",
       axisLabel: { color: palette.textSoft },
-      splitLine: { lineStyle: { color: palette.grid } }
+      splitLine: { lineStyle: { color: palette.chartGrid } }
     },
     yAxis: {
       type: "category",
@@ -771,7 +771,7 @@ function buildPlatformOverviewOption(
       {
         type: "value",
         name: "成本 / 请求",
-        splitLine: { lineStyle: { color: palette.grid } },
+        splitLine: { lineStyle: { color: palette.chartGrid } },
         axisLabel: { color: palette.textSoft }
       },
       {
@@ -809,7 +809,7 @@ function buildLatencyPercentileOption(rows: UsageRow[], palette: ChartPalette): 
     yAxis: {
       type: "value",
       axisLabel: { color: palette.textSoft },
-      splitLine: { lineStyle: { color: palette.grid } }
+      splitLine: { lineStyle: { color: palette.chartGrid } }
     },
     series: [
       {
@@ -870,7 +870,7 @@ function buildEfficiencyScatterOption(rows: EfficiencyRow[], palette: ChartPalet
       type: "value",
       name: "溢价倍率",
       axisLabel: { color: palette.textSoft },
-      splitLine: { lineStyle: { color: palette.grid } }
+      splitLine: { lineStyle: { color: palette.chartGrid } }
     },
     yAxis: {
       type: "value",
@@ -950,7 +950,7 @@ function buildCacheEfficiencyOption(
     xAxis: {
       type: "value",
       axisLabel: { color: palette.textSoft },
-      splitLine: { lineStyle: { color: palette.grid } }
+      splitLine: { lineStyle: { color: palette.chartGrid } }
     },
     yAxis: {
       type: "category",
@@ -978,7 +978,7 @@ function buildEndpointFlowOption(rows: EndpointFlowRow[], palette: ChartPalette)
     xAxis: {
       type: "value",
       axisLabel: { color: palette.textSoft },
-      splitLine: { lineStyle: { color: palette.grid } }
+      splitLine: { lineStyle: { color: palette.chartGrid } }
     },
     yAxis: {
       type: "category",
@@ -1010,7 +1010,7 @@ function buildLatencyComparisonOption(rows: UsageAggregateRow[], palette: ChartP
     xAxis: {
       type: "value",
       axisLabel: { color: palette.textSoft },
-      splitLine: { lineStyle: { color: palette.grid } }
+      splitLine: { lineStyle: { color: palette.chartGrid } }
     },
     yAxis: {
       type: "category",
@@ -1050,7 +1050,7 @@ function buildExtremeRowsOption(rows: ExtremeRequestRow[], palette: ChartPalette
     xAxis: {
       type: "value",
       axisLabel: { color: palette.textSoft },
-      splitLine: { lineStyle: { color: palette.grid } }
+      splitLine: { lineStyle: { color: palette.chartGrid } }
     },
     yAxis: {
       type: "category",
@@ -1080,7 +1080,7 @@ function buildPremiumBarOption(rows: PremiumRow[], palette: ChartPalette): Chart
         color: palette.textSoft,
         formatter: (value: number) => `${value.toFixed(2)}x`
       },
-      splitLine: { lineStyle: { color: palette.grid } }
+      splitLine: { lineStyle: { color: palette.chartGrid } }
     },
     yAxis: {
       type: "category",
@@ -1128,7 +1128,7 @@ function buildRequestScatterOption(rows: UsageRow[], palette: ChartPalette): Cha
       type: "value",
       name: "总 Tokens",
       axisLabel: { color: palette.textSoft },
-      splitLine: { lineStyle: { color: palette.grid } }
+      splitLine: { lineStyle: { color: palette.chartGrid } }
     },
     yAxis: {
       type: "value",
@@ -1171,7 +1171,7 @@ function buildDimensionBarOption(rows: DimensionRow[], palette: ChartPalette, na
     xAxis: {
       type: "value",
       axisLabel: { color: palette.textSoft },
-      splitLine: { lineStyle: { color: palette.grid } }
+      splitLine: { lineStyle: { color: palette.chartGrid } }
     },
     yAxis: {
       type: "category",
@@ -1242,7 +1242,7 @@ function buildKeyQuotaOption(keys: ManagedKeyRecord[], palette: ChartPalette): C
     xAxis: {
       type: "value",
       axisLabel: { color: palette.textSoft },
-      splitLine: { lineStyle: { color: palette.grid } }
+      splitLine: { lineStyle: { color: palette.chartGrid } }
     },
     yAxis: {
       type: "category",
@@ -1281,7 +1281,7 @@ function buildKeyWindowOption(keys: ManagedKeyRecord[], palette: ChartPalette): 
     xAxis: {
       type: "value",
       axisLabel: { color: palette.textSoft },
-      splitLine: { lineStyle: { color: palette.grid } }
+      splitLine: { lineStyle: { color: palette.chartGrid } }
     },
     yAxis: {
       type: "category",
@@ -1325,7 +1325,7 @@ function buildKeyDailyTrendOption(rows: DailyUsagePoint[], palette: ChartPalette
       {
         type: "value",
         axisLabel: { color: palette.textSoft },
-        splitLine: { lineStyle: { color: palette.grid } }
+        splitLine: { lineStyle: { color: palette.chartGrid } }
       },
       {
         type: "value",
@@ -1361,7 +1361,7 @@ function buildSubscriptionUsageOption(rows: SubscriptionChartRow[], palette: Cha
     xAxis: {
       type: "value",
       axisLabel: { color: palette.textSoft },
-      splitLine: { lineStyle: { color: palette.grid } }
+      splitLine: { lineStyle: { color: palette.chartGrid } }
     },
     yAxis: {
       type: "category",
@@ -1405,7 +1405,7 @@ function buildPlatformQuotaOption(
     yAxis: {
       type: "value",
       axisLabel: { color: palette.textSoft },
-      splitLine: { lineStyle: { color: palette.grid } }
+      splitLine: { lineStyle: { color: palette.chartGrid } }
     },
     series: [
       { name: "总额度", type: "bar", data: rows.map((item) => Number(item.quota ?? 0)) },
@@ -1431,7 +1431,7 @@ function buildIdentityBindingOption(rows: IdentityRow[], palette: ChartPalette):
     xAxis: {
       type: "value",
       axisLabel: { color: palette.textSoft },
-      splitLine: { lineStyle: { color: palette.grid } }
+      splitLine: { lineStyle: { color: palette.chartGrid } }
     },
     yAxis: {
       type: "category",
@@ -1477,7 +1477,7 @@ function buildAlertSeverityOption(rows: DimensionRow[], palette: ChartPalette): 
     yAxis: {
       type: "value",
       axisLabel: { color: palette.textSoft },
-      splitLine: { lineStyle: { color: palette.grid } }
+      splitLine: { lineStyle: { color: palette.chartGrid } }
     },
     series: [
       {
@@ -1526,7 +1526,7 @@ function buildRankingOption(
     xAxis: {
       type: "value",
       axisLabel: { color: palette.textSoft },
-      splitLine: { lineStyle: { color: palette.grid } }
+      splitLine: { lineStyle: { color: palette.chartGrid } }
     },
     yAxis: {
       type: "category",
@@ -1554,6 +1554,8 @@ interface ChartPalette {
   textSoft: string;
   border: string;
   grid: string;
+  chartBg: string;
+  chartGrid: string;
 }
 
 function readChartPalette(): ChartPalette {
@@ -1569,7 +1571,9 @@ function readChartPalette(): ChartPalette {
       textStrong: "#101826",
       textSoft: "#6a778d",
       border: "rgba(16, 24, 38, 0.12)",
-      grid: "rgba(16, 24, 38, 0.08)"
+      grid: "rgba(148, 163, 184, 0.18)",
+      chartBg: "transparent",
+      chartGrid: "rgba(148, 163, 184, 0.18)"
     };
   }
   const style = getComputedStyle(document.documentElement);
@@ -1584,7 +1588,9 @@ function readChartPalette(): ChartPalette {
     textStrong: style.getPropertyValue("--text-strong").trim() || "#101826",
     textSoft: style.getPropertyValue("--text-subtle").trim() || "#6a778d",
     border: style.getPropertyValue("--border").trim() || "rgba(16, 24, 38, 0.12)",
-    grid: style.getPropertyValue("--border-strong").trim() || "rgba(16, 24, 38, 0.08)"
+    grid: style.getPropertyValue("--chart-grid").trim() || "rgba(148, 163, 184, 0.18)",
+    chartBg: style.getPropertyValue("--chart-bg").trim() || "transparent",
+    chartGrid: style.getPropertyValue("--chart-grid").trim() || "rgba(148, 163, 184, 0.18)"
   };
 }
 

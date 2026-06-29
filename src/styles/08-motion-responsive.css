@@ -1,3 +1,42 @@
+
+
+/* Large screen enhancement (1600px+) */
+@media (min-width: 1600px) {
+  .metric-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .analytics-lab-meta-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .analytics-kpi-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .analytics-toolbar {
+    grid-template-columns: repeat(5, minmax(0, 1fr)) minmax(260px, 1fr);
+  }
+
+  .content-grid {
+    grid-template-columns: 1.6fr 1fr;
+  }
+
+  .panel-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Ultra-wide screen enhancement (1920px+) */
+@media (min-width: 1920px) {
+  .app-shell:not(.rail-collapsed) {
+    grid-template-columns: 240px minmax(0, 1fr);
+  }
+
+  .workspace {
+    padding: 16px 32px 32px;
+  }
+}
 @media (max-width: 1200px) {
   .global-topbar {
     flex-direction: row;

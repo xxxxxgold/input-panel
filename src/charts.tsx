@@ -357,7 +357,9 @@ function readChartPalette() {
       sky: "#4fc8f0",
       textSoft: "#6a778d",
       border: "rgba(16, 24, 38, 0.12)",
-      grid: "rgba(16, 24, 38, 0.08)"
+      grid: "rgba(148, 163, 184, 0.18)",
+      chartBg: "transparent",
+      chartGrid: "rgba(148, 163, 184, 0.18)"
     };
   }
   const style = getComputedStyle(document.documentElement);
@@ -370,7 +372,9 @@ function readChartPalette() {
     sky: style.getPropertyValue("--chart-4").trim() || "#4fc8f0",
     textSoft: style.getPropertyValue("--text-subtle").trim() || "#6a778d",
     border: style.getPropertyValue("--border").trim() || "rgba(16, 24, 38, 0.12)",
-    grid: style.getPropertyValue("--border-strong").trim() || "rgba(16, 24, 38, 0.08)"
+    grid: style.getPropertyValue("--chart-grid").trim() || "rgba(148, 163, 184, 0.18)",
+    chartBg: style.getPropertyValue("--chart-bg").trim() || "transparent",
+    chartGrid: style.getPropertyValue("--chart-grid").trim() || "rgba(148, 163, 184, 0.18)"
   };
 }
 
