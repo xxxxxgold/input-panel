@@ -1,5 +1,61 @@
 
 
+/* Performance: will-change hints for GPU-composited elements */
+.floating-orb-button,
+.floating-menu-card,
+.floating-preview-card,
+.modal-card,
+.toast-card,
+.metric-card,
+.section-card,
+.context-card {
+  will-change: transform, opacity;
+}
+
+/* A11y: Enhanced focus-visible for keyboard navigation */
+.theme-option:focus-visible,
+.rail-item:focus-visible,
+.context-card:focus-visible,
+.site-picker-option:focus-visible,
+.range-preset:focus-visible,
+.number-stepper-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, white);
+  outline-offset: 2px;
+}
+
+/* A11y: Skip link for keyboard users */
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  background: var(--accent);
+  color: var(--text-inverse);
+  padding: 8px 16px;
+  z-index: 100;
+  transition: top 200ms ease;
+}
+
+.skip-link:focus {
+  top: 0;
+}
+
+/* A11y: High contrast mode support */
+@media (prefers-contrast: more) {
+  .metric-card,
+  .section-card,
+  .context-card,
+  .table-row,
+  .alert-item,
+  .empty-state {
+    border-width: 2px;
+  }
+
+  .status-pill {
+    border: 1px solid currentColor;
+  }
+}
+
+
 /* Large screen enhancement (1600px+) */
 @media (min-width: 1600px) {
   .metric-grid {
