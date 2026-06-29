@@ -7,10 +7,12 @@ import {
   describeServiceStatusFailure
 } from "../src/features/service-status/useServiceStatusWorkspace";
 import { buildServiceStatusTransitionEvent } from "../src/features/service-status/notifications";
+import { formatDateTimeFull } from "../src/shared/lib/formatters";
 import type { ServiceStatusPayload } from "../src/types";
 
 describe("ServiceStatusTerminal", () => {
   it("renders local service cards and keeps the original page escape hatch", () => {
+    const lastSyncedAt = new Date("2026-06-14T23:05:09+08:00").getTime();
     const status: ServiceStatusPayload = {
       allOk: true,
       generatedAt: 1781447824,
@@ -56,6 +58,7 @@ describe("ServiceStatusTerminal", () => {
         loading: false,
         refreshing: false,
         lastError: null,
+        lastSyncedAt,
         enabled: true,
         refreshIntervalSeconds: 9,
         onRefresh: () => {}
@@ -76,6 +79,8 @@ describe("ServiceStatusTerminal", () => {
     expect(html).toContain("gpt-5.4-mini");
     expect(html).toContain("probe timeout");
     expect(html).toContain("polling every 9s");
+    expect(html).toContain(`Last synced: ${formatDateTimeFull(new Date(lastSyncedAt).toISOString())}`);
+    expect(html).toContain("Latest probe result");
     expect(html).toContain("status-history-bar ok");
     expect(html).toContain("status-history-bar bad");
   });

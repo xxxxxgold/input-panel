@@ -13,9 +13,16 @@ const samplePrefs: DesktopUiPrefs = {
   launchMode: "floating",
   openFloatingInMainMode: true,
   keepFloatingPanelVisible: true,
+  floatingPanelOpacity: 0.82,
   closeBehavior: "switch_to_floating",
   autoRefreshEnabled: true,
   autoRefreshIntervalSeconds: 9,
+  autoRefreshCoreEnabled: true,
+  autoRefreshCoreIntervalSeconds: 9,
+  autoRefreshKeysEnabled: true,
+  autoRefreshKeysIntervalSeconds: 12,
+  autoRefreshUsageEnabled: false,
+  autoRefreshUsageIntervalSeconds: 30,
   theme: "spectral-lab"
 };
 
@@ -62,5 +69,40 @@ describe("desktop ui prefs browser sync helpers", () => {
 
     expect(storage.get(DESKTOP_UI_PREFS_STORAGE_KEY)).toBe(JSON.stringify(samplePrefs));
     expect(readBrowserDesktopUiPrefs()).toEqual(samplePrefs);
+  });
+
+  it("backfills grouped auto refresh fields for legacy stored prefs", () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          storage.set(key, value);
+        }
+      }
+    });
+    storage.set(
+      DESKTOP_UI_PREFS_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        launchMode: "main",
+        openFloatingInMainMode: true,
+        keepFloatingPanelVisible: false,
+        floatingPanelOpacity: 0.82,
+        closeBehavior: "ask",
+        autoRefreshEnabled: true,
+        autoRefreshIntervalSeconds: 9,
+        theme: "light"
+      })
+    );
+
+    expect(readBrowserDesktopUiPrefs()).toMatchObject({
+      autoRefreshCoreEnabled: true,
+      autoRefreshCoreIntervalSeconds: 9,
+      autoRefreshKeysEnabled: true,
+      autoRefreshKeysIntervalSeconds: 9,
+      autoRefreshUsageEnabled: true,
+      autoRefreshUsageIntervalSeconds: 9
+    });
   });
 });

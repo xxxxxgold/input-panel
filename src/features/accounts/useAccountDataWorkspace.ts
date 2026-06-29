@@ -16,7 +16,7 @@ import {
   listManagedKeys
 } from "../../api";
 
-type AccountScopedResources = {
+type AccountDataResources = {
   groups?: boolean;
   managedKeys?: boolean;
   subscriptionSummary?: boolean;
@@ -24,14 +24,14 @@ type AccountScopedResources = {
   platformQuotas?: boolean;
 };
 
-export function useAccountScopedWorkspace({
+export function useAccountDataWorkspace({
   selectedAccountId,
   resources,
   enabled,
   setError
 }: {
   selectedAccountId: string | null;
-  resources: AccountScopedResources;
+  resources: AccountDataResources;
   enabled: boolean;
   setError: (value: string | null) => void;
 }) {
@@ -74,10 +74,10 @@ export function useAccountScopedWorkspace({
   }, [selectedAccountId, groupsEnabled, managedKeysEnabled, subscriptionSummaryEnabled, profileRecordEnabled, platformQuotasEnabled]);
 
   useEffect(() => {
-    if (!selectedAccountId || !enabled || !hasEnabledAccountScopedResources(resources)) {
+    if (!selectedAccountId || !enabled || !hasEnabledAccountDataResources(resources)) {
       return;
     }
-    void loadAccountScopedData(selectedAccountId);
+    void loadAccountData(selectedAccountId);
   }, [
     enabled,
     groupsEnabled,
@@ -88,7 +88,7 @@ export function useAccountScopedWorkspace({
     subscriptionSummaryEnabled
   ]);
 
-  async function loadAccountScopedData(accountId: string) {
+  async function loadAccountData(accountId: string) {
     try {
       const loadOptional = async <T,>(loader: () => Promise<T>, fallback: T) => {
         try {
@@ -126,11 +126,11 @@ export function useAccountScopedWorkspace({
     }
   }
 
-  async function refreshAccountScopedData() {
-    if (!selectedAccountId || !enabled || !hasEnabledAccountScopedResources(resources)) {
+  async function refreshAccountData() {
+    if (!selectedAccountId || !enabled || !hasEnabledAccountDataResources(resources)) {
       return;
     }
-    await loadAccountScopedData(selectedAccountId);
+    await loadAccountData(selectedAccountId);
   }
 
   return {
@@ -140,7 +140,7 @@ export function useAccountScopedWorkspace({
     profileRecord,
     setProfileRecord,
     platformQuotas,
-    refreshAccountScopedData
+    refreshAccountData
   };
 }
 
@@ -149,7 +149,7 @@ function isOptionalEndpointUnavailable(cause: unknown) {
   return message.includes("未找到可用的接口路径") || message.includes("404");
 }
 
-function hasEnabledAccountScopedResources(resources: AccountScopedResources) {
+function hasEnabledAccountDataResources(resources: AccountDataResources) {
   return Boolean(
     resources.groups
     || resources.managedKeys

@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Topbar } from "../src/app/Topbar";
+import { formatLiveClockTime } from "../src/shared/lib/formatters";
 import type { TopbarSubscriptionPreviewRecord } from "../src/subscription-view";
 import type { AccountRuntime, ServiceStatusPayload } from "../src/types";
 
@@ -152,6 +153,10 @@ describe("Topbar subscription peek", () => {
 
     expect(html).toContain("topbar-subscription-dots");
     expect(html).toContain("topbar-subscription-dot quota-tier-90");
+    expect(html).toContain("topbar-subscription-summary-line");
+    expect(html).toContain("status-pill ready");
+    expect(html).toContain(">正常<");
+    expect(html).toContain("2 个有效订阅");
     expect(html).toContain("CodeX Plus 年度");
     expect(html).toContain("每日 87.4%");
     expect(html).toContain("$437.11 / $500.00");
@@ -224,6 +229,9 @@ describe("Topbar subscription peek", () => {
     );
 
     expect(html).toContain("当前没有订阅数据");
+    expect(html).toContain("status-pill neutral");
+    expect(html).toContain(">等待同步<");
+    expect(html).toContain("暂无订阅");
     expect(html).not.toContain("topbar-subscription-dot quota-tier-");
   });
 
@@ -359,6 +367,7 @@ describe("Topbar subscription peek", () => {
   });
 
   it("renders service status dots and service rows in the peek panel", () => {
+    const lastSyncedAt = new Date("2026-06-14T23:01:09+08:00").getTime();
     const selectedAccount = {
       id: "account-1",
       siteId: "site-1",
@@ -378,6 +387,7 @@ describe("Topbar subscription peek", () => {
       createElement(Topbar, {
         onReload: () => {},
         serviceStatus,
+        serviceStatusLastSyncedAt: lastSyncedAt,
         serviceStatusRefreshing: false,
         topbarServiceStatusExpanded: true,
         setTopbarServiceStatusExpanded: () => {},
@@ -431,6 +441,7 @@ describe("Topbar subscription peek", () => {
     expect(html).toContain("gpt-5.4");
     expect(html).toContain("立即刷新服务状态");
     expect(html).toContain("每 9 秒刷新一次最新探测结果");
+    expect(html).toContain(`上次同步 ${formatLiveClockTime(new Date(lastSyncedAt))}`);
     expect(html).toContain('aria-label="测试红色通知"');
     expect(html).toContain('aria-label="测试绿色通知"');
   });
@@ -488,5 +499,70 @@ describe("Topbar subscription peek", () => {
     expect(html).toContain("topbar-quick-action");
     expect(html).toContain("topbar-test-trigger");
     expect(html).toContain("topbar-alert-badge topbar-alert-badge-critical");
+  });
+
+  it("renders alert preview rows as clickable inbox entries", () => {
+    const html = renderToStaticMarkup(
+      createElement(Topbar, {
+        onReload: () => {},
+        serviceStatus,
+        serviceStatusRefreshing: false,
+        topbarServiceStatusExpanded: false,
+        setTopbarServiceStatusExpanded: () => {},
+        topbarServiceStatusRef: createRef<HTMLDivElement>(),
+        alertCount: 1,
+        topbarAlertsExpanded: true,
+        setTopbarAlertsExpanded: () => {},
+        topbarAlertsRef: createRef<HTMLDivElement>(),
+        topbarAlertPreview: [
+          {
+            id: "alert-1",
+            severity: "critical",
+            title: "测试通知: 检测到服务状态不可用",
+            detail: "这是一条手动触发的异常测试通知, 用于验证系统通知和消息盒子链路。",
+            siteId: "service-status",
+            accountId: "runtime",
+            createdAt: "2026-06-17T09:48:00.000Z"
+          }
+        ],
+        latestUnreadAlertSeverity: "critical",
+        closeTopbarAccountMenu: () => {},
+        setTopbarSubscriptionsExpanded: () => {},
+        topbarSubscriptionsExpanded: false,
+        topbarSubscriptionsRef: createRef<HTMLDivElement>(),
+        usageStatusLabel: "等待同步",
+        usageStatusHint: "暂无订阅数据",
+        subscriptionSpend: 0,
+        subscriptionCount: 0,
+        subscriptionPreviewRecords: [],
+        closeTopbarPeekPanels: () => {},
+        onRefreshServiceStatus: () => {},
+        serviceStatusRefreshIntervalSeconds: 9,
+        onTriggerTestNotification: () => {},
+        onOpenAlerts: () => {},
+        onOpenSubscriptions: () => {},
+        selectedAccount: null,
+        topbarAccountMenuOpen: false,
+        setTopbarAccountMenuOpen: () => {},
+        topbarAccountMenuRef: createRef<HTMLDivElement>(),
+        selectedAccountStatusLabel: "未选择账号",
+        selectedAccountAvatarUrl: null,
+        selectedSite: null,
+        topbarFilteredAccounts: [],
+        accounts: [],
+        topbarAccountSearch: "",
+        setTopbarAccountSearch: () => {},
+        onAccountSelect: () => {},
+        onOpenProfileModal: () => {},
+        onOpenSystemSettings: () => {},
+        onOpenSettings: () => {},
+        onRefreshSelectedAccount: () => {},
+        onOpenSelectedAccountLogin: () => {}
+      })
+    );
+
+    expect(html).toContain("topbar-alert-item-button critical");
+    expect(html).toContain('aria-label="打开消息盒子: 测试通知: 检测到服务状态不可用"');
+    expect(html).toContain("测试通知: 检测到服务状态不可用");
   });
 });

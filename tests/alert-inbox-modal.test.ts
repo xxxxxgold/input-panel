@@ -10,6 +10,7 @@ describe("AlertInboxModal", () => {
   it("renders alert rows and inbox copy", () => {
     const items = [
       {
+        notificationKey: "overview-alert:alert-1",
         source: "overview-alert" as const,
         id: "alert-1",
         accountLabel: "主账号",
@@ -21,18 +22,26 @@ describe("AlertInboxModal", () => {
       }
     ];
 
-    const html = renderToStaticMarkup(createElement(AlertInboxModal, { items, onClose: () => {} }));
+    const html = renderToStaticMarkup(
+      createElement(AlertInboxModal, {
+        items,
+        onClose: () => {},
+        onAcknowledge: () => {}
+      })
+    );
 
     expect(html).toContain("消息盒子");
     expect(html).toContain("1 条待处理消息");
     expect(html).toContain("主账号 余额已耗尽");
     expect(html).toContain("AI INPUT");
     expect(html).toContain("主账号");
+    expect(html).toContain("知道了");
   });
 
   it("renders service status records in the shared inbox", () => {
     const items = [
       {
+        notificationKey: "service-status:status-1",
         source: "service-status" as const,
         id: "status-1",
         severity: "success" as const,
@@ -43,7 +52,13 @@ describe("AlertInboxModal", () => {
       }
     ];
 
-    const html = renderToStaticMarkup(createElement(AlertInboxModal, { items, onClose: () => {} }));
+    const html = renderToStaticMarkup(
+      createElement(AlertInboxModal, {
+        items,
+        onClose: () => {},
+        onAcknowledge: () => {}
+      })
+    );
 
     expect(html).toContain("检测到服务状态恢复正常");
     expect(html).toContain("服务状态监控");
@@ -52,7 +67,13 @@ describe("AlertInboxModal", () => {
   });
 
   it("renders empty state when there are no alerts", () => {
-    const html = renderToStaticMarkup(createElement(AlertInboxModal, { items: [], onClose: () => {} }));
+    const html = renderToStaticMarkup(
+      createElement(AlertInboxModal, {
+        items: [],
+        onClose: () => {},
+        onAcknowledge: () => {}
+      })
+    );
 
     expect(html).toContain("没有待处理消息");
     expect(html).toContain("当前没有新的余额、订阅或登录异常。");

@@ -2,7 +2,7 @@ use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
 
 use crate::contracts::SiteRecord;
-use super::Database;
+use crate::infrastructure::sqlite::Database;
 
 pub fn insert_site(db: &Database, site: &SiteRecord) -> Result<()> {
     let conn = db.connect()?;
@@ -47,3 +47,4 @@ pub fn find_site(db: &Database, site_id: &str) -> Result<Option<SiteRecord>> {
         .optional()?;
     Ok(site)
 }
+

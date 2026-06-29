@@ -29,29 +29,143 @@ export function useServiceStatusWorkspace(options: {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
+  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
   const lastReportedRequestErrorRef = useRef<string | null>(null);
   const lastKnownHealthRef = useRef<"healthy" | "degraded" | null>(null);
+  const lifecycleTokenRef = useRef(0);
+  const requestInFlightRef = useRef(false);
+  const enabledRef = useRef(enabled);
+  const autoRefreshRef = useRef(autoRefresh);
+  const refreshIntervalMsRef = useRef(refreshIntervalMs);
+  const notifyStatusTransitionRef = useRef(notifyStatusTransition);
+  const setErrorRef = useRef(setError);
+
+  enabledRef.current = enabled;
+  autoRefreshRef.current = autoRefresh;
+  refreshIntervalMsRef.current = refreshIntervalMs;
+  notifyStatusTransitionRef.current = notifyStatusTransition;
+  setErrorRef.current = setError;
+
+  function clearRefreshTimer() {
+    if (refreshTimerRef.current !== null) {
+      window.clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = null;
+    }
+  }
+
+  function reportRequestError(message: string) {
+    setLastError(message);
+    if (lastReportedRequestErrorRef.current !== message) {
+      setErrorRef.current(message);
+      lastReportedRequestErrorRef.current = message;
+    }
+  }
+
+  function syncStatusTransition(next: ServiceStatusPayload, shouldNotify: boolean) {
+    const nextHealth = resolveServiceStatusHealthState(next);
+    const notifyStatusTransition = notifyStatusTransitionRef.current;
+    if (lastKnownHealthRef.current === null) {
+      lastKnownHealthRef.current = nextHealth;
+      return;
+    }
+    if (!shouldNotify || !notifyStatusTransition) {
+      lastKnownHealthRef.current = nextHealth;
+      return;
+    }
+
+    const event = buildServiceStatusTransitionEvent({
+      previousHealth: lastKnownHealthRef.current,
+      nextStatus: next
+    });
+    lastKnownHealthRef.current = nextHealth;
+    if (!event) {
+      return;
+    }
+    notifyStatusTransition(event);
+  }
+
+  function scheduleNextRefresh(token: number) {
+    if (!mountedRef.current || !enabledRef.current || !autoRefreshRef.current || token !== lifecycleTokenRef.current) {
+      return;
+    }
+    clearRefreshTimer();
+    refreshTimerRef.current = window.setTimeout(() => {
+      void executeRefresh({
+        initial: false,
+        notifyTransition: true,
+        token
+      });
+    }, refreshIntervalMsRef.current);
+  }
+
+  async function executeRefresh(options: {
+    initial: boolean;
+    notifyTransition: boolean;
+    token: number;
+  }) {
+    const { initial, notifyTransition, token } = options;
+    if (
+      !mountedRef.current
+      || !enabledRef.current
+      || token !== lifecycleTokenRef.current
+      || requestInFlightRef.current
+    ) {
+      return;
+    }
+
+    requestInFlightRef.current = true;
+    if (initial) {
+      setLoading(true);
+    } else {
+      setRefreshing(true);
+    }
+
+    try {
+      const next = await getServiceStatus();
+      if (!mountedRef.current || token !== lifecycleTokenRef.current) {
+        return;
+      }
+      setStatus(next);
+      setLastSyncedAt(Date.now());
+      setLastError(null);
+      lastReportedRequestErrorRef.current = null;
+      syncStatusTransition(next, notifyTransition);
+    } catch (cause) {
+      if (!mountedRef.current || token !== lifecycleTokenRef.current) {
+        return;
+      }
+      reportRequestError((cause as Error).message);
+    } finally {
+      requestInFlightRef.current = false;
+      if (!mountedRef.current || token !== lifecycleTokenRef.current) {
+        return;
+      }
+      setLoading(false);
+      setRefreshing(false);
+      scheduleNextRefresh(token);
+    }
+  }
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      if (refreshTimerRef.current !== null) {
-        window.clearTimeout(refreshTimerRef.current);
-      }
+      clearRefreshTimer();
     };
   }, []);
 
   useEffect(() => {
+    lifecycleTokenRef.current += 1;
+    const token = lifecycleTokenRef.current;
+
     if (!enabled) {
-      if (refreshTimerRef.current !== null) {
-        window.clearTimeout(refreshTimerRef.current);
-        refreshTimerRef.current = null;
-      }
+      clearRefreshTimer();
+      requestInFlightRef.current = false;
       setStatus(null);
       setLastError(null);
+      setLastSyncedAt(null);
       setLoading(false);
       setRefreshing(false);
       lastReportedRequestErrorRef.current = null;
@@ -59,122 +173,31 @@ export function useServiceStatusWorkspace(options: {
       return;
     }
 
-    let cancelled = false;
-
-    function syncStatusTransition(next: ServiceStatusPayload, shouldNotify: boolean) {
-      const nextHealth = resolveServiceStatusHealthState(next);
-      if (lastKnownHealthRef.current === null) {
-        lastKnownHealthRef.current = nextHealth;
-        return;
-      }
-      if (!shouldNotify || !notifyStatusTransition) {
-        lastKnownHealthRef.current = nextHealth;
-        return;
-      }
-
-      const event = buildServiceStatusTransitionEvent({
-        previousHealth: lastKnownHealthRef.current,
-        nextStatus: next
-      });
-      lastKnownHealthRef.current = nextHealth;
-      if (!event) {
-        return;
-      }
-      notifyStatusTransition(event);
-    }
-
-    async function run(initial = false) {
-      if (!mountedRef.current || cancelled) {
-        return;
-      }
-      if (initial) {
-        setLoading(true);
-      } else {
-        setRefreshing(true);
-      }
-      try {
-        const next = await getServiceStatus();
-        if (!mountedRef.current || cancelled) {
-          return;
-        }
-        setStatus(next);
-        setLastError(null);
-        lastReportedRequestErrorRef.current = null;
-        syncStatusTransition(next, !initial);
-      } catch (cause) {
-        if (!mountedRef.current || cancelled) {
-          return;
-        }
-        const message = (cause as Error).message;
-        setLastError(message);
-        if (lastReportedRequestErrorRef.current !== message) {
-          setError(message);
-          lastReportedRequestErrorRef.current = message;
-        }
-      } finally {
-        if (!mountedRef.current || cancelled) {
-          return;
-        }
-        setLoading(false);
-        setRefreshing(false);
-        if (autoRefresh) {
-          refreshTimerRef.current = window.setTimeout(() => {
-            void run(false);
-          }, refreshIntervalMs);
-        }
-      }
-    }
-
-    void run(true);
+    void executeRefresh({
+      initial: true,
+      notifyTransition: false,
+      token
+    });
 
     return () => {
-      cancelled = true;
-      if (refreshTimerRef.current !== null) {
-        window.clearTimeout(refreshTimerRef.current);
+      if (lifecycleTokenRef.current === token) {
+        lifecycleTokenRef.current += 1;
       }
+      clearRefreshTimer();
     };
-  }, [autoRefresh, enabled, notifyStatusTransition, refreshIntervalMs, setError]);
+  }, [autoRefresh, enabled, refreshIntervalMs]);
 
   async function refreshNow() {
-    if (!enabled) {
+    if (!enabledRef.current || requestInFlightRef.current) {
       return;
     }
-    if (refreshTimerRef.current !== null) {
-      window.clearTimeout(refreshTimerRef.current);
-      refreshTimerRef.current = null;
-    }
-    setRefreshing(true);
-    try {
-      const next = await getServiceStatus();
-      if (!mountedRef.current) {
-        return;
-      }
-      setStatus(next);
-      setLastError(null);
-      lastReportedRequestErrorRef.current = null;
-      lastKnownHealthRef.current = resolveServiceStatusHealthState(next);
-    } catch (cause) {
-      if (!mountedRef.current) {
-        return;
-      }
-      const message = (cause as Error).message;
-      setLastError(message);
-      if (lastReportedRequestErrorRef.current !== message) {
-        setError(message);
-        lastReportedRequestErrorRef.current = message;
-      }
-    } finally {
-      if (!mountedRef.current) {
-        return;
-      }
-      setLoading(false);
-      setRefreshing(false);
-      if (autoRefresh) {
-        refreshTimerRef.current = window.setTimeout(() => {
-          void refreshNow();
-        }, refreshIntervalMs);
-      }
-    }
+    clearRefreshTimer();
+    const token = lifecycleTokenRef.current;
+    await executeRefresh({
+      initial: false,
+      notifyTransition: false,
+      token
+    });
   }
 
   return {
@@ -182,6 +205,7 @@ export function useServiceStatusWorkspace(options: {
     loading,
     refreshing,
     lastError,
+    lastSyncedAt,
     refreshNow
   };
 }

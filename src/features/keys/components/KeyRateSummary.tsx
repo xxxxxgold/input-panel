@@ -1,7 +1,29 @@
 import { formatTime } from "../../../shared/lib/formatters";
 import type { ManagedKeyRecord } from "../../../types";
 
+function describeKeyStatus(status: string) {
+  const normalized = status.trim().toLowerCase();
+
+  if (normalized === "active" || normalized === "enabled" || normalized === "ok" || normalized === "normal") {
+    return { label: "已启用", tone: "ready" as const };
+  }
+
+  if (
+    normalized === "inactive" ||
+    normalized === "disabled" ||
+    normalized === "revoked" ||
+    normalized === "expired" ||
+    normalized === "blocked"
+  ) {
+    return { label: normalized === "expired" ? "已失效" : "已停用", tone: "critical" as const };
+  }
+
+  return { label: "未知状态", tone: "neutral" as const };
+}
+
 export function KeyRateSummary({ keyRecord }: { keyRecord: ManagedKeyRecord }) {
+  const statusPresentation = describeKeyStatus(keyRecord.status);
+
   return (
     <div className="stack-list">
       <div className="summary-stat">
@@ -10,7 +32,7 @@ export function KeyRateSummary({ keyRecord }: { keyRecord: ManagedKeyRecord }) {
       </div>
       <div className="summary-stat">
         <span>状态</span>
-        <strong>{keyRecord.status}</strong>
+        <span className={`status-pill ${statusPresentation.tone}`}>{statusPresentation.label}</span>
       </div>
       <div className="summary-stat">
         <span>额度 / 已用</span>

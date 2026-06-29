@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { AnalyticsLab } from "../src/analytics-lab";
+import { AnalyticsLab } from "../src/features/analytics/AnalyticsLab";
 
 describe("AnalyticsLab", () => {
   it("renders chart cards inside the shared tall chart container", () => {
@@ -23,7 +23,7 @@ describe("AnalyticsLab", () => {
                 createdAt: "2026-06-01T00:00:00.000Z",
                 updatedAt: "2026-06-01T00:00:00.000Z"
               },
-              snapshot: {
+              cacheView: {
                 fetchedAt: "2026-06-14T02:12:57.000Z",
                 balance: 42.5,
                 stats: {
@@ -83,7 +83,7 @@ describe("AnalyticsLab", () => {
             createdAt: "2026-06-01T00:00:00.000Z",
             updatedAt: "2026-06-01T00:00:00.000Z"
           },
-          snapshot: {
+          cacheView: {
             fetchedAt: "2026-06-14T02:12:57.000Z",
             subscriptions: [],
             stats: {
@@ -325,7 +325,7 @@ describe("AnalyticsLab", () => {
             createdAt: "2026-06-01T00:00:00.000Z",
             updatedAt: "2026-06-01T00:00:00.000Z"
           },
-          snapshot: {
+          cacheView: {
             fetchedAt: "2026-06-14T02:12:57.000Z",
             subscriptions: [],
             stats: {

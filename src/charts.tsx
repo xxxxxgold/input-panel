@@ -1,11 +1,29 @@
 import { useEffect, useRef } from "react";
-import * as echarts from "echarts";
+import { BarChart, HeatmapChart, LineChart, PieChart, ScatterChart } from "echarts/charts";
+import { GridComponent, LegendComponent, TooltipComponent, VisualMapComponent } from "echarts/components";
+import { init, use, type EChartsType } from "echarts/core";
+import { CanvasRenderer } from "echarts/renderers";
+
+use([
+  BarChart,
+  HeatmapChart,
+  LineChart,
+  PieChart,
+  ScatterChart,
+  GridComponent,
+  LegendComponent,
+  TooltipComponent,
+  VisualMapComponent,
+  CanvasRenderer
+]);
 
 export type ChartOption = Record<string, unknown>;
 
 export function EChartCard({ option }: { option: ChartOption | null }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const chartRef = useRef<echarts.ECharts | null>(null);
+  const chartRef = useRef<EChartsType | null>(null);
+  const optionSignatureRef = useRef<string | null>(null);
+  const hoverPointRef = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -13,18 +31,36 @@ export function EChartCard({ option }: { option: ChartOption | null }) {
       return;
     }
 
-    const chart = echarts.init(host);
+    const chart = init(host);
     chartRef.current = chart;
 
     const observer = new ResizeObserver(() => {
       chart.resize();
+      scheduleRestoreChartTooltip(chart, hoverPointRef.current, chartRef);
     });
     observer.observe(host);
 
+    const handlePointerMove = (event: PointerEvent) => {
+      const rect = host.getBoundingClientRect();
+      hoverPointRef.current = {
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top
+      };
+    };
+    const handlePointerLeave = () => {
+      hoverPointRef.current = null;
+    };
+    host.addEventListener("pointermove", handlePointerMove);
+    host.addEventListener("pointerleave", handlePointerLeave);
+
     return () => {
       observer.disconnect();
+      host.removeEventListener("pointermove", handlePointerMove);
+      host.removeEventListener("pointerleave", handlePointerLeave);
       chart.dispose();
       chartRef.current = null;
+      optionSignatureRef.current = null;
+      hoverPointRef.current = null;
     };
   }, []);
 
@@ -33,11 +69,19 @@ export function EChartCard({ option }: { option: ChartOption | null }) {
       return;
     }
     if (!option) {
-      chartRef.current.clear();
+      if (optionSignatureRef.current !== null) {
+        chartRef.current.clear();
+        optionSignatureRef.current = null;
+      }
       return;
     }
-    chartRef.current.setOption(option as echarts.EChartsOption, { notMerge: true });
-    chartRef.current.resize();
+    const nextSignature = buildChartOptionSignature(option);
+    if (optionSignatureRef.current === nextSignature) {
+      return;
+    }
+    chartRef.current.setOption(option as never, { notMerge: true });
+    optionSignatureRef.current = nextSignature;
+    scheduleRestoreChartTooltip(chartRef.current, hoverPointRef.current, chartRef);
   }, [option]);
 
   return (
@@ -328,6 +372,56 @@ function readChartPalette() {
     border: style.getPropertyValue("--border").trim() || "rgba(16, 24, 38, 0.12)",
     grid: style.getPropertyValue("--border-strong").trim() || "rgba(16, 24, 38, 0.08)"
   };
+}
+
+export function buildChartOptionSignature(option: ChartOption | null) {
+  if (!option) {
+    return "__empty__";
+  }
+  return JSON.stringify(option, chartOptionSignatureReplacer);
+}
+
+function scheduleRestoreChartTooltip(
+  chart: EChartsType,
+  hoverPoint: { x: number; y: number } | null,
+  chartRef: { current: EChartsType | null }
+) {
+  if (!hoverPoint) {
+    return;
+  }
+  const restore = () => {
+    if (chartRef.current !== chart) {
+      return;
+    }
+    chart.dispatchAction({
+      type: "showTip",
+      x: hoverPoint.x,
+      y: hoverPoint.y
+    } as never);
+  };
+  if (typeof window !== "undefined") {
+    window.requestAnimationFrame(restore);
+    return;
+  }
+  restore();
+}
+
+function chartOptionSignatureReplacer(_key: string, value: unknown) {
+  if (typeof value === "function") {
+    return `__fn__:${Function.prototype.toString.call(value)}`;
+  }
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    return `__num__:${String(value)}`;
+  }
+  if (value instanceof Date) {
+    return `__date__:${value.toISOString()}`;
+  }
+  if (Array.isArray(value) || value == null || typeof value !== "object") {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right))
+  );
 }
 
 function computeCacheHitRate(inputTokens: number, cacheReadTokens: number) {

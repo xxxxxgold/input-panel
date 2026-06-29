@@ -23,11 +23,28 @@ const defaultPrefs: DesktopUiPrefs = {
   launchMode: "main",
   openFloatingInMainMode: true,
   keepFloatingPanelVisible: false,
+  floatingPanelOpacity: 0.82,
   closeBehavior: "ask",
   autoRefreshEnabled: true,
   autoRefreshIntervalSeconds: DEFAULT_AUTO_REFRESH_INTERVAL_SECONDS,
+  autoRefreshCoreEnabled: true,
+  autoRefreshCoreIntervalSeconds: DEFAULT_AUTO_REFRESH_INTERVAL_SECONDS,
+  autoRefreshKeysEnabled: true,
+  autoRefreshKeysIntervalSeconds: DEFAULT_AUTO_REFRESH_INTERVAL_SECONDS,
+  autoRefreshUsageEnabled: true,
+  autoRefreshUsageIntervalSeconds: DEFAULT_AUTO_REFRESH_INTERVAL_SECONDS,
   theme: DEFAULT_THEME_ID
 };
+
+const MIN_FLOATING_PANEL_OPACITY = 0.45;
+const MAX_FLOATING_PANEL_OPACITY = 0.95;
+
+export function normalizeFloatingPanelOpacity(value: number) {
+  if (!Number.isFinite(value)) {
+    return defaultPrefs.floatingPanelOpacity;
+  }
+  return Math.min(Math.max(value, MIN_FLOATING_PANEL_OPACITY), MAX_FLOATING_PANEL_OPACITY);
+}
 
 export const DESKTOP_UI_PREFS_STORAGE_KEY = "input-panel.desktop-ui-prefs";
 
@@ -42,20 +59,53 @@ export function isDesktopUiPrefsPayload(value: unknown): value is DesktopUiPrefs
     (candidate.launchMode === "main" || candidate.launchMode === "floating") &&
     typeof candidate.openFloatingInMainMode === "boolean" &&
     typeof candidate.keepFloatingPanelVisible === "boolean" &&
+    typeof candidate.floatingPanelOpacity === "number" &&
     (candidate.closeBehavior === "ask" ||
       candidate.closeBehavior === "switch_to_floating" ||
       candidate.closeBehavior === "exit_app") &&
     typeof candidate.autoRefreshEnabled === "boolean" &&
     typeof candidate.autoRefreshIntervalSeconds === "number" &&
+    (candidate.autoRefreshCoreEnabled === undefined || typeof candidate.autoRefreshCoreEnabled === "boolean") &&
+    (candidate.autoRefreshCoreIntervalSeconds === undefined ||
+      typeof candidate.autoRefreshCoreIntervalSeconds === "number") &&
+    (candidate.autoRefreshKeysEnabled === undefined ||
+      typeof candidate.autoRefreshKeysEnabled === "boolean") &&
+    (candidate.autoRefreshKeysIntervalSeconds === undefined ||
+      typeof candidate.autoRefreshKeysIntervalSeconds === "number") &&
+    (candidate.autoRefreshUsageEnabled === undefined || typeof candidate.autoRefreshUsageEnabled === "boolean") &&
+    (candidate.autoRefreshUsageIntervalSeconds === undefined ||
+      typeof candidate.autoRefreshUsageIntervalSeconds === "number") &&
     typeof candidate.theme === "string"
   );
 }
 
-function normalizeDesktopUiPrefs(prefs: DesktopUiPrefs): DesktopUiPrefs {
-  return {
+function normalizeDesktopUiPrefs(prefs: Partial<DesktopUiPrefs> & {
+  autoRefreshSnapshotEnabled?: boolean;
+  autoRefreshSnapshotIntervalSeconds?: number;
+  autoRefreshAccountScopedEnabled?: boolean;
+  autoRefreshAccountScopedIntervalSeconds?: number;
+}): DesktopUiPrefs {
+  const merged: DesktopUiPrefs = {
+    ...defaultPrefs,
     ...prefs,
-    autoRefreshIntervalSeconds: normalizeAutoRefreshIntervalSeconds(prefs.autoRefreshIntervalSeconds),
-    theme: normalizeThemeId(prefs.theme)
+    autoRefreshCoreEnabled: prefs.autoRefreshCoreEnabled ?? prefs.autoRefreshSnapshotEnabled ?? defaultPrefs.autoRefreshCoreEnabled,
+    autoRefreshCoreIntervalSeconds: prefs.autoRefreshCoreIntervalSeconds ?? prefs.autoRefreshSnapshotIntervalSeconds ?? defaultPrefs.autoRefreshCoreIntervalSeconds,
+    autoRefreshKeysEnabled: prefs.autoRefreshKeysEnabled ?? prefs.autoRefreshAccountScopedEnabled ?? defaultPrefs.autoRefreshKeysEnabled,
+    autoRefreshKeysIntervalSeconds: prefs.autoRefreshKeysIntervalSeconds ?? prefs.autoRefreshAccountScopedIntervalSeconds ?? defaultPrefs.autoRefreshKeysIntervalSeconds
+  };
+
+  return {
+    ...merged,
+    floatingPanelOpacity: normalizeFloatingPanelOpacity(merged.floatingPanelOpacity),
+    autoRefreshIntervalSeconds: normalizeAutoRefreshIntervalSeconds(merged.autoRefreshIntervalSeconds),
+    autoRefreshCoreIntervalSeconds: normalizeAutoRefreshIntervalSeconds(
+      merged.autoRefreshCoreIntervalSeconds
+    ),
+    autoRefreshKeysIntervalSeconds: normalizeAutoRefreshIntervalSeconds(
+      merged.autoRefreshKeysIntervalSeconds
+    ),
+    autoRefreshUsageIntervalSeconds: normalizeAutoRefreshIntervalSeconds(merged.autoRefreshUsageIntervalSeconds),
+    theme: normalizeThemeId(merged.theme)
   };
 }
 

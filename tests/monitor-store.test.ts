@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   appendToastDeduped,
+  ERROR_TOAST_DURATION_MS,
+  INFO_TOAST_DURATION_MS,
+  pruneDismissedOverviewAlertIds,
+  pruneReadNotificationKeys,
   resolveOverviewSelection,
   type MonitorToast
 } from "../src/shared/state/monitor-store";
 import {
-  isSnapshotStaleForToday,
-  shouldRefreshAccountScopedData,
-  shouldRefreshSnapshotForNav
+  isAccountDataStaleForToday,
+  shouldRefreshAccountData,
+  shouldRefreshCoreForNav
 } from "../src/app/refresh-policy";
 import { formatAppErrorMessage } from "../src/shared/lib/error-display";
 import type { AccountRuntime, OverviewPayload, SiteRecord } from "../src/types";
@@ -33,7 +37,7 @@ function buildAccount(overrides: Partial<AccountRuntime> = {}): AccountRuntime {
     createdAt: overrides.createdAt ?? "2026-06-11T00:00:00Z",
     updatedAt: overrides.updatedAt ?? "2026-06-11T00:00:00Z",
     site: overrides.site ?? buildSite({ id: overrides.siteId ?? "site-1" }),
-    snapshot: overrides.snapshot ?? null,
+    cacheView: overrides.cacheView ?? null,
     sessionState: overrides.sessionState ?? "missing",
     lastError: overrides.lastError ?? null
   };
@@ -83,6 +87,70 @@ describe("resolveOverviewSelection", () => {
       selectedAccountId: "offline",
       selectedSiteId: "site-1"
     });
+  });
+});
+
+describe("overview payload compatibility", () => {
+  it("accepts runtime account data under cacheView shape", () => {
+    const account = buildAccount({
+      cacheView: {
+        fetchedAt: "2026-06-28T03:43:55.880722700+00:00",
+        online: true,
+        siteName: "AI INPUT",
+        balance: 42.5,
+        stats: {
+          totalApiKeys: 9,
+          activeApiKeys: 9,
+          todayRequests: 3456,
+          totalRequests: 13052,
+          todayActualCost: 535.2615,
+          totalActualCost: 1966.8461,
+          todayCost: 535.2615,
+          totalCost: 1966.8461,
+          todayTokens: 815397136,
+          totalTokens: 2565410987,
+          todayInputTokens: 35164183,
+          todayOutputTokens: 3599620,
+          averageDurationMs: 27789.4,
+          byPlatform: []
+        },
+        recentUsage: [],
+        trend: [],
+        keys: [],
+        subscriptions: [],
+        activeSubscription: null,
+        alerts: []
+      },
+      sessionState: "ready"
+    });
+
+    const overview = {
+      sites: [buildSite()],
+      accounts: [account],
+      totals: {
+        balance: 42.5,
+        totalSites: 1,
+        totalAccounts: 1,
+        totalApiKeys: 9,
+        activeApiKeys: 9,
+        todayRequests: 3456,
+        totalRequests: 13052,
+        todayActualCost: 535.2615,
+        totalActualCost: 1966.8461,
+        todayTokens: 815397136,
+        totalTokens: 2565410987
+      },
+      alerts: [],
+      platformSeries: [],
+      trend: [],
+      recentUsage: [],
+      subscriptions: [],
+      keys: [],
+      generatedAt: "2026-06-28T03:43:55.880722700+00:00"
+    } satisfies OverviewPayload;
+
+    expect(overview.accounts[0].cacheView?.stats.totalApiKeys).toBe(9);
+    expect(overview.accounts[0].cacheView?.recentUsage).toEqual([]);
   });
 });
 
@@ -165,27 +233,47 @@ describe("app notifications", () => {
     expect(item.kind).toBe("service-status-down");
     expect(item.dedupeKey).toContain("service-status:down");
   });
+
+  it("keeps service-status toast durations stable for down and recovered transitions", () => {
+    expect(ERROR_TOAST_DURATION_MS).toBe(4200);
+    expect(INFO_TOAST_DURATION_MS).toBe(2400);
+  });
+
+  it("drops acknowledged overview alerts once the upstream overview no longer returns them", () => {
+    expect(pruneDismissedOverviewAlertIds(["alert-1", "alert-2"], ["alert-2", "alert-3"])).toEqual(["alert-2"]);
+    expect(pruneDismissedOverviewAlertIds(["alert-1"], [])).toEqual([]);
+  });
+
+  it("drops read notification keys once the underlying notifications disappear", () => {
+    expect(
+      pruneReadNotificationKeys(
+        ["service-status:notify-1", "overview-alert:alert-1"],
+        ["overview-alert:alert-1", "overview-alert:alert-2"]
+      )
+    ).toEqual(["overview-alert:alert-1"]);
+    expect(pruneReadNotificationKeys(["service-status:notify-1"], [])).toEqual([]);
+  });
 });
 
 describe("refresh policy", () => {
   it("refreshes account-scoped data for subscription-adjacent pages", () => {
-    expect(shouldRefreshAccountScopedData("subscriptions")).toBe(true);
-    expect(shouldRefreshAccountScopedData("keys")).toBe(true);
-    expect(shouldRefreshAccountScopedData("systemSettings")).toBe(false);
+    expect(shouldRefreshAccountData("subscriptions")).toBe(true);
+    expect(shouldRefreshAccountData("keys")).toBe(true);
+    expect(shouldRefreshAccountData("systemSettings")).toBe(false);
   });
 
-  it("refreshes stale snapshots only on pages that render snapshot-based views", () => {
-    expect(shouldRefreshSnapshotForNav("overview")).toBe(true);
-    expect(shouldRefreshSnapshotForNav("subscriptions")).toBe(true);
-    expect(shouldRefreshSnapshotForNav("usage")).toBe(false);
+  it("refreshes stale snapshots only on pages that render cacheView-based views", () => {
+    expect(shouldRefreshCoreForNav("overview")).toBe(true);
+    expect(shouldRefreshCoreForNav("subscriptions")).toBe(true);
+    expect(shouldRefreshCoreForNav("usage")).toBe(false);
   });
 
   it("treats missing, invalid, or cross-day snapshots as stale", () => {
     const now = new Date("2026-06-13T00:30:00+08:00");
 
-    expect(isSnapshotStaleForToday(null, now)).toBe(true);
-    expect(isSnapshotStaleForToday("invalid-date", now)).toBe(true);
-    expect(isSnapshotStaleForToday("2026-06-12T23:59:59+08:00", now)).toBe(true);
-    expect(isSnapshotStaleForToday("2026-06-13T00:00:01+08:00", now)).toBe(false);
+    expect(isAccountDataStaleForToday(null, now)).toBe(true);
+    expect(isAccountDataStaleForToday("invalid-date", now)).toBe(true);
+    expect(isAccountDataStaleForToday("2026-06-12T23:59:59+08:00", now)).toBe(true);
+    expect(isAccountDataStaleForToday("2026-06-13T00:00:01+08:00", now)).toBe(false);
   });
 });

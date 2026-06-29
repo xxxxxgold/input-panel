@@ -2,7 +2,7 @@ use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
 
 use crate::contracts::AccountRecord;
-use super::Database;
+use crate::infrastructure::sqlite::Database;
 
 pub fn insert_account(db: &Database, account: &AccountRecord) -> Result<()> {
     let conn = db.connect()?;
@@ -81,3 +81,4 @@ pub fn list_account_ids(db: &Database) -> Result<Vec<String>> {
     }
     Ok(ids)
 }
+

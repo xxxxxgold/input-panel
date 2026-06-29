@@ -25,11 +25,7 @@ pub fn update_site(
     name: Option<String>,
     base_url: Option<String>,
 ) -> Result<SiteRecord> {
-    let mut state = repositories::read_state(&ctx.db)?;
-    let site = state
-        .sites
-        .iter_mut()
-        .find(|item| item.id == site_id)
+    let mut site = repositories::find_site(&ctx.db, site_id)?
         .ok_or_else(|| anyhow::anyhow!("站点不存在。"))?;
     if let Some(name) = name {
         site.name = name.trim().to_string();
@@ -38,9 +34,8 @@ pub fn update_site(
         site.base_url = base_url.trim().to_string();
     }
     site.updated_at = Utc::now().to_rfc3339();
-    let cloned = site.clone();
-    repositories::update_site(&ctx.db, &cloned)?;
-    Ok(cloned)
+    repositories::update_site(&ctx.db, &site)?;
+    Ok(site)
 }
 
 pub fn remove_site(ctx: &AppContext, site_id: &str) -> Result<bool> {

@@ -10,11 +10,13 @@
     "dev:server": "cargo run --manifest-path src-tauri/Cargo.toml --example dev_api",
     "build:web": "tsc -p tsconfig.json --noEmit && vite build",
     "build": "pnpm build:web",
-    "build:desktop": "pwsh -NoLogo -NoProfile -File ./scripts/prepare-desktop-build.ps1 && pnpm build:web && pnpm tauri build --debug --no-bundle",
+    "build:desktop": "pwsh -NoLogo -NoProfile -File ./scripts/prepare-desktop-build.ps1 && pnpm tauri build --debug --no-bundle",
     "preview": "vite preview",
     "start": "pnpm tauri dev",
     "test": "vitest run",
     "smoke:real": "cargo run --manifest-path src-tauri/Cargo.toml --example real_smoke",
+    "gitnexus:refresh": "npx gitnexus analyze --force --skip-agents-md --skip-skills",
+    "gitnexus:status": "npx gitnexus status",
     "tauri": "tauri"
   },
   "dependencies": {

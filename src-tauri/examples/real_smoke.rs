@@ -13,8 +13,8 @@ async fn main() -> anyhow::Result<()> {
         return Err(anyhow::anyhow!("真实站点返回了 2FA 挑战，当前 smoke 二进制未处理。"));
     }
 
-    let snapshot = client
-        .build_snapshot(
+    let cache_view = client
+        .build_runtime_cache_view_for_smoke(
             &app_lib::contracts::AccountRecord {
                 id: "smoke-account".into(),
                 site_id: "smoke-site".into(),
@@ -38,11 +38,11 @@ async fn main() -> anyhow::Result<()> {
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
-            "balance": snapshot.balance,
-            "todayActualCost": snapshot.stats.today_actual_cost,
-            "totalApiKeys": snapshot.stats.total_api_keys,
-            "activeSubscription": snapshot.active_subscription.as_ref().map(|item| item.name.clone()),
-            "recentUsage": snapshot.recent_usage.first(),
+            "balance": cache_view.balance,
+            "todayActualCost": cache_view.stats.today_actual_cost,
+            "totalApiKeys": cache_view.stats.total_api_keys,
+            "activeSubscription": cache_view.active_subscription.as_ref().map(|item| item.name.clone()),
+            "recentUsage": cache_view.recent_usage.first(),
         }))?
     );
 

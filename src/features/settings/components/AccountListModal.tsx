@@ -43,6 +43,7 @@ export function AccountListModal({
       title={selectedSite ? `${selectedSite.name} · 站点详情` : "站点详情"}
       onClose={onClose}
       size="wide"
+      className="account-list-modal"
       footer={
         <button className="ghost-button" onClick={onClose}>
           关闭
@@ -105,7 +106,7 @@ export function AccountListModal({
               </div>
               <div className="row-meta">
                 <span>{formatBalanceWarningSummary(account.balanceWarning)}</span>
-                <span>{account.snapshot ? formatTime(account.snapshot.fetchedAt) : "未拉取"}</span>
+                <span>{account.cacheView ? formatTime(account.cacheView.fetchedAt) : "未拉取"}</span>
               </div>
               <div className="row-actions">
                 <StatusBadge state={account.sessionState} />

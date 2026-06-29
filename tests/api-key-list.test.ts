@@ -17,7 +17,7 @@ const sampleKey: KeyRecord = {
 };
 
 describe("ApiKeyList summary style", () => {
-  it("renders api key rows with the shared card language while keeping original content fields", () => {
+  it("removes duplicated raw status fields and keeps status plus group info on the secondary row", () => {
     const html = renderToStaticMarkup(
       createElement(ApiKeyList, {
         keys: [sampleKey]
@@ -29,9 +29,11 @@ describe("ApiKeyList summary style", () => {
     expect(html).toContain("codex++");
     expect(html).toContain("CodeX Plus 年度");
     expect(html).toContain("key-platform-pill openai");
-    expect(html).toContain(">active</small>");
     expect(html).toContain("最后使用时间：06/11 20:27");
-    expect(html).toContain(">active</span>");
+    expect(html).not.toContain(">active</small>");
+    expect(html).not.toContain(">active</span>");
+    expect(html.indexOf("codex++")).toBeLessThan(html.indexOf("status-pill ready"));
+    expect(html.indexOf("status-pill ready")).toBeLessThan(html.indexOf("CodeX Plus 年度"));
   });
 
   it("renders the overview all-api-keys panel with the same summary row style", () => {
@@ -50,7 +52,7 @@ describe("ApiKeyList summary style", () => {
           site: null,
           sessionState: "ready",
           lastError: null,
-          snapshot: null
+          cacheView: null
         }
       ],
       totals: {
@@ -79,11 +81,7 @@ describe("ApiKeyList summary style", () => {
       fetchedAt: "2026-06-15T10:00:00Z",
       online: true,
       siteName: "AI INPUT",
-      siteUrl: "https://example.com",
-      accountLabel: "主账号",
-      emailMasked: "m***@example.com",
       balance: 42.5,
-      currency: "USD",
       stats: {
         totalApiKeys: 1,
         activeApiKeys: 1,
@@ -100,26 +98,7 @@ describe("ApiKeyList summary style", () => {
         averageDurationMs: 400,
         byPlatform: []
       },
-      usageSummary: {
-        windowStart: "2026-06-15T00:00:00Z",
-        windowEnd: "2026-06-15T23:59:59Z",
-        todayRequests: 123,
-        todayActualCost: 32.2293,
-        todayCost: 32.2293,
-        todayTokens: 54100000,
-        todayInputTokens: 1000,
-        todayOutputTokens: 2000,
-        totalRequests: 103576,
-        totalActualCost: 15701.5399,
-        totalCost: 15701.5399,
-        totalTokens: 21600700000,
-        totalInputTokens: 3000,
-        totalOutputTokens: 4000,
-        averageDurationMs: 400,
-        byPlatform: []
-      },
       recentUsage: [],
-      requestHistory: [],
       trend: [],
       subscriptions: [],
       keys: [sampleKey],
@@ -130,7 +109,11 @@ describe("ApiKeyList summary style", () => {
     const html = renderToStaticMarkup(
       createElement(OverviewPage, {
         overview,
-        visibleSnapshot,
+        currentAccountStats: visibleSnapshot.stats,
+        currentAccountSubscriptions: visibleSnapshot.subscriptions,
+        subscriptionSummary: null,
+        currentAccountKeys: visibleSnapshot.keys,
+        currentAccountRecentUsage: visibleSnapshot.recentUsage,
         usageStats: null
       })
     );
@@ -139,7 +122,8 @@ describe("ApiKeyList summary style", () => {
     expect(html).toContain("api-key-summary-row");
     expect(html).toContain("codex++");
     expect(html).toContain("CodeX Plus 年度");
-    expect(html).toContain(">active</span>");
+    expect(html).not.toContain(">active</span>");
     expect(html).toContain("06/11 20:27");
   });
 });
+

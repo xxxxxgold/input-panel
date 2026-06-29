@@ -1,6 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import type { AccountInput, AccountRuntime, LoginFlowResult, SiteInput, SiteRecord } from "../../types";
+import type {
+  AccountSyncStatusPayload,
+  AccountInput,
+  AccountRuntime,
+  DataSyncScope,
+  LoginFlowResult,
+  DataSyncTrigger,
+  RefreshAccountTaskResponse,
+  RefreshTriggerSource,
+  SiteInput,
+  SiteRecord
+} from "../../types";
 import { isTauriRuntime, request } from "../../shared/transport/runtime";
 
 export function createSite(payload: SiteInput) {
@@ -125,11 +136,51 @@ export function completeAccount2fa(accountId: string, tempToken: string, code: s
   });
 }
 
-export function refreshAccount(accountId: string) {
+export function refreshAccount(
+  accountId: string,
+  triggerSource: RefreshTriggerSource = "manual"
+) {
   if (isTauriRuntime()) {
-    return invoke<AccountRuntime>("refresh_account", { accountId });
+    return invoke<RefreshAccountTaskResponse>("refresh_account", {
+      accountId,
+      triggerSource
+    }).then((result) => result.account);
   }
-  return request<AccountRuntime>(`/api/accounts/${accountId}/refresh`, {
-    method: "POST"
+  return request<RefreshAccountTaskResponse>(`/api/accounts/${accountId}/refresh`, {
+    method: "POST",
+    body: JSON.stringify({ triggerSource })
+  }).then((result) => result.account);
+}
+
+export function syncAccountData(
+  accountId: string,
+  payload: {
+    scope: DataSyncScope;
+    triggerSource?: DataSyncTrigger;
+  }
+) {
+  if (isTauriRuntime()) {
+    return invoke<AccountSyncStatusPayload>("sync_account_data", {
+      accountId,
+      payload: {
+        scope: payload.scope,
+        triggerSource: payload.triggerSource ?? "manual"
+      }
+    });
+  }
+  return request<AccountSyncStatusPayload>(`/api/accounts/${accountId}/sync`, {
+    method: "POST",
+    body: JSON.stringify({
+      scope: payload.scope,
+      triggerSource: payload.triggerSource ?? "manual"
+    })
   });
 }
+
+export function getAccountSyncStatus(accountId: string) {
+  if (isTauriRuntime()) {
+    return invoke<AccountSyncStatusPayload>("get_account_sync_status", { accountId });
+  }
+  return request<AccountSyncStatusPayload>(`/api/accounts/${accountId}/sync-status`);
+}
+

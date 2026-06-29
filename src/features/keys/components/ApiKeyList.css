@@ -3,7 +3,7 @@
 }
 
 .table-list.wide .table-row.key-row.api-key-summary-row {
-  grid-template-columns: minmax(0, 1fr) 140px;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
 }
 
@@ -11,26 +11,25 @@
   padding: 14px 16px;
 }
 
-.api-key-summary-context {
-  justify-content: flex-start;
+.api-key-summary-context-row {
+  width: 100%;
+  gap: 10px;
 }
 
-.api-key-summary-secret-row {
-  margin-top: 2px;
+.api-key-summary-context-row .status-pill {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.api-key-summary-context {
+  justify-content: flex-start;
+  overflow: visible;
+}
+
+.api-key-summary-context .key-context-name {
+  max-width: 100%;
 }
 
 .api-key-summary-meta {
   margin-top: 2px;
-}
-
-.api-key-summary-actions {
-  align-items: flex-end;
-  justify-content: center;
-  gap: 6px;
-  color: var(--text-subtle);
-  text-align: right;
-}
-
-.api-key-summary-status-text {
-  text-transform: none;
 }

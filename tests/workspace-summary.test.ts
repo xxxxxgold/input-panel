@@ -83,12 +83,20 @@ describe("buildWorkspaceSummaryTexts", () => {
     ];
 
     expect(buildWorkspaceSummaryTexts({ overview, accounts, now: new Date("2026-06-13T00:00:00Z") })).toEqual([
-      "2 个站点",
-      "2 个账号",
-      "今日 4.1K 请求",
-      "入 700 / 缓存 300 / 出 500",
-      "总 Token 864.2M",
-      "最近同步 08:00:00"
+      { key: "sites", label: "2 个站点" },
+      { key: "accounts", label: "2 个账号" },
+      { key: "requests", label: "今日 4.1K 请求" },
+      {
+        key: "tokens",
+        tone: "token-group",
+        segments: [
+          { key: "input", label: "输入", value: "700" },
+          { key: "cache", label: "缓存", value: "300" },
+          { key: "output", label: "输出", value: "500" }
+        ]
+      },
+      { key: "totalTokens", label: "总 Token 864.2M" },
+      { key: "sync", label: "最近同步 08:00:00" }
     ]);
   });
 
@@ -139,7 +147,9 @@ describe("buildWorkspaceSummaryTexts", () => {
       }
     ];
 
-    expect(buildWorkspaceSummaryTexts({ overview, accounts: [], syncStatuses }).at(-1)).toBe("同步失败: core");
+    const summary = buildWorkspaceSummaryTexts({ overview, accounts: [], syncStatuses });
+    const last = summary.at(-1);
+    expect(last && !("segments" in last) ? last.label : null).toBe("同步失败: core");
   });
 
   it("falls back to overview generatedAt when sync status is still running", () => {
@@ -180,6 +190,8 @@ describe("buildWorkspaceSummaryTexts", () => {
       }
     ];
 
-    expect(buildWorkspaceSummaryTexts({ overview, accounts: [], syncStatuses }).at(-1)).toBe("1 项同步中");
+    const summary = buildWorkspaceSummaryTexts({ overview, accounts: [], syncStatuses });
+    const last = summary.at(-1);
+    expect(last && !("segments" in last) ? last.label : null).toBe("1 项同步中");
   });
 });

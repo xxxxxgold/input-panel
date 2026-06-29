@@ -76,13 +76,13 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
   } = props;
 
   const palette = readChartPalette();
-  const selectedSnapshot = selectedAccount?.snapshot ?? null;
+  const selectedAccountCache = selectedAccount?.cacheView ?? null;
   const keys = managedKeys?.items ?? [];
   const scopedRows = usageScopeRows;
   const effectiveUsageStats = usageStats ?? (scopedRows.length > 0 ? buildUsageStatsFromRows(scopedRows, usageStartDate, usageEndDate) : null);
   const sampleRows = usageRecords?.items ?? scopedRows.slice(0, ANALYTICS_SAMPLE_ROWS);
   const selectedKey = keys.find((item) => item.id === keyUsageKeyId) ?? null;
-  const platformSeries = selectedSnapshot?.stats.byPlatform ?? overview?.platformSeries ?? [];
+  const platformSeries = selectedAccountCache?.stats.byPlatform ?? overview?.platformSeries ?? [];
   const scopedTrend = scopedRows.length > 0 ? buildScopedTrendPayload(scopedRows) : usageTrend;
   const scopedModels = scopedRows.length > 0 ? buildScopedModelsPayload(scopedRows) : usageModels;
   const scopedPlatformSeries = buildScopedPlatformRows(scopedRows);
@@ -125,7 +125,7 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
   const keyStatusRows = buildDimensionRows(keys, (key) => key.status || "unknown");
   const identityRows = buildIdentityRows(profileRecord);
   const quotaRows = platformQuotas?.platformQuotas ?? [];
-  const subscriptionRows = buildSubscriptionRows(subscriptionSummary, selectedSnapshot?.subscriptions ?? []);
+  const subscriptionRows = buildSubscriptionRows(subscriptionSummary, selectedAccountCache?.subscriptions ?? []);
   const alertSeverityRows = buildAlertSeverityRows(overview);
 
   const selectedAccountTitle = selectedAccount
@@ -152,7 +152,7 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
         </header>
         <AnalyticsEmptyState
           title="当前还没有可分析的数据"
-          detail="先让工作台完成一次 overview 加载，再打开这个临时测试页。"
+          detail="先让工作台完成一次 overview 加载，再打开这个分析页。"
         />
       </section>
     );
@@ -164,15 +164,15 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
         <header className="section-card-header analytics-lab-hero-head">
           <div>
             <h3>图表实验室</h3>
-            <p>临时测试页面. 这里把当前能图表化的数据尽量全部展开, 删除时只需回滚这一页即可。</p>
+            <p>围绕当前账号和筛选范围展开多维分析, 集中查看成本、请求、缓存、配额与模型分布。</p>
           </div>
-          <span className="analytics-lab-badge">TEMP / ECharts</span>
+          <span className="analytics-lab-badge">多维分析 / ECharts</span>
         </header>
         <div className="analytics-lab-meta-grid">
           <div className="analytics-meta-card">
             <span>当前账号</span>
             <strong>{selectedAccountTitle}</strong>
-            <p>{selectedSnapshot ? `最后刷新 ${formatDateTimeFull(selectedSnapshot.fetchedAt)}` : "账号还没有快照"}</p>
+            <p>{selectedAccountCache ? `最后刷新 ${formatDateTimeFull(selectedAccountCache.fetchedAt)}` : "账号还没有本地缓存数据"}</p>
           </div>
           <div className="analytics-meta-card">
             <span>样本区间</span>
@@ -247,7 +247,7 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
             value={formatDurationSeconds(effectiveUsageStats?.averageDurationMs)}
             hint={`RPM ${formatNumber(effectiveUsageStats?.rpm)} / TPM ${effectiveUsageStats?.tpm === null || effectiveUsageStats?.tpm === undefined ? "-" : compact(effectiveUsageStats.tpm)}`}
           />
-          <AnalyticsStatCard label="活跃订阅" value={String(subscriptionSummary?.activeCount ?? selectedSnapshot?.subscriptions.length ?? 0)} hint={`已用 ${formatUsd(subscriptionSummary?.totalUsedUsd ?? 0, 2)}`} />
+          <AnalyticsStatCard label="活跃订阅" value={String(subscriptionSummary?.activeCount ?? selectedAccountCache?.subscriptions.length ?? 0)} hint={`已用 ${formatUsd(subscriptionSummary?.totalUsedUsd ?? 0, 2)}`} />
           <AnalyticsStatCard label="可管理 Key" value={String(keys.length)} hint={`活跃 ${String(keys.filter((item) => item.status === "active").length)}`} />
           <AnalyticsStatCard label="身份绑定" value={`${identityRows.filter((item) => item.bound).length} / ${identityRows.length}`} hint={profileRecord ? maskEmail(profileRecord.email) : "等待资料接口"} />
         </div>
@@ -2057,8 +2057,8 @@ function buildSiteRankings(overview: OverviewPayload | null): RankingRow[] {
       const siteAccounts = overview.accounts.filter((item) => item.siteId === site.id);
       return {
         name: site.name,
-        balance: siteAccounts.reduce((sum, item) => sum + (item.snapshot?.balance ?? 0), 0),
-        requests: siteAccounts.reduce((sum, item) => sum + (item.snapshot?.stats.totalRequests ?? 0), 0),
+        balance: siteAccounts.reduce((sum, item) => sum + (item.cacheView?.balance ?? 0), 0),
+        requests: siteAccounts.reduce((sum, item) => sum + (item.cacheView?.stats.totalRequests ?? 0), 0),
         activeCount: siteAccounts.filter((item) => item.sessionState === "ready").length,
         detail: `${siteAccounts.length} 个账号 · ${site.baseUrl}`
       };
@@ -2073,8 +2073,8 @@ function buildAccountRankings(overview: OverviewPayload | null): RankingRow[] {
   return overview.accounts
     .map((account) => ({
       name: account.label,
-      balance: account.snapshot?.balance ?? 0,
-      requests: account.snapshot?.stats.totalRequests ?? 0,
+      balance: account.cacheView?.balance ?? 0,
+      requests: account.cacheView?.stats.totalRequests ?? 0,
       activeCount: account.sessionState === "ready" ? 1 : 0,
       detail: `${account.site?.name ?? "未知站点"} · ${maskEmail(account.email)}`
     }))

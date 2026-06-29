@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { CalendarDays, ChevronDown, Plus, Search } from "lucide-react";
 
 import type { GroupRecord, KeyMutationInput, ManagedKeyRecord, PaginatedResult, UserProfileRecord } from "../types";
-import { maskSecret, formatTime } from "../shared/lib/formatters";
+import { formatSubscriptionTypeLabel, maskSecret, formatTime } from "../shared/lib/formatters";
 import {
   buildKeyExpiryValue,
   inferKeyExpiryPreset,
@@ -20,6 +20,33 @@ import {
   getManagedKey,
   updateManagedKey
 } from "../features/keys/client";
+
+function isSubscriptionGroup(group: Pick<GroupRecord, "subscriptionType">) {
+  return group.subscriptionType?.trim().toLowerCase() === "subscription";
+}
+
+function sortAvailableGroups(groups: GroupRecord[]) {
+  return [...groups].sort((left, right) => Number(isSubscriptionGroup(right)) - Number(isSubscriptionGroup(left)));
+}
+
+function formatAvailableGroupTypeLabel(value?: string | null) {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized || normalized === "standard") return "余额";
+  return formatSubscriptionTypeLabel(value);
+}
+
+function formatAvailableGroupQuota(value: number) {
+  if (Number.isInteger(value)) return `$${value.toFixed(0)}`;
+  return `$${value.toFixed(2).replace(/\.?0+$/, "")}`;
+}
+
+function buildAvailableGroupQuotaItems(group: Pick<GroupRecord, "dailyLimitUsd" | "weeklyLimitUsd" | "monthlyLimitUsd">) {
+  return [
+    { label: "日", value: Number(group.dailyLimitUsd ?? 0) },
+    { label: "周", value: Number(group.weeklyLimitUsd ?? 0) },
+    { label: "月", value: Number(group.monthlyLimitUsd ?? 0) }
+  ].filter((item) => item.value > 0);
+}
 
 async function copyTextToClipboard(text: string) {
   if (navigator.clipboard?.writeText) {
@@ -46,7 +73,6 @@ async function copyTextToClipboard(text: string) {
 export function KeysPage({
   managedKeys,
   groups,
-  profileRecord,
   selectedAccountId,
   onRefresh,
   onError,
@@ -86,7 +112,9 @@ export function KeysPage({
     rateLimit7d: null
   });
 
-  const filteredKeyGroups = groups.filter((group) => {
+  const orderedGroups = sortAvailableGroups(groups);
+
+  const filteredKeyGroups = orderedGroups.filter((group) => {
     if (!keyGroupSearch.trim()) return true;
     const keyword = keyGroupSearch.trim().toLowerCase();
     return (
@@ -111,7 +139,7 @@ export function KeysPage({
   function resetKeyForm(nextGroupId?: number | null) {
     setKeyForm({
       name: "",
-      groupId: nextGroupId ?? groups[0]?.id ?? null,
+      groupId: nextGroupId ?? orderedGroups[0]?.id ?? null,
       customKey: "",
       ipWhitelist: "",
       ipBlacklist: "",
@@ -335,10 +363,51 @@ export function KeysPage({
 
   return (
     <>
-      <section className="content-grid">
+      <section className="stack-list keys-page-layout">
+        <SectionCard title="可用分组" subtitle="当前账号真实可创建密钥的分组能力">
+          <div className="stack-list">
+            {orderedGroups.map((group) => {
+              const platformTone = (group.platform ?? "unknown").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+              const subscriptionType = formatAvailableGroupTypeLabel(group.subscriptionType);
+              const quotaItems = buildAvailableGroupQuotaItems(group);
+              return (
+                <div key={group.id} className="subscription-card available-group-card">
+                  <div className="available-group-row">
+                    <div className="available-group-copy">
+                      <strong>{group.name}</strong>
+                      <div className="available-group-tags">
+                        <span className={`key-platform-pill ${platformTone}`}>{group.platform ?? "unknown"}</span>
+                        <span className="subscription-type-pill">{subscriptionType}</span>
+                      </div>
+                    </div>
+                    <div className="available-group-inline">
+                      {quotaItems.length > 0 && (
+                        <div className="available-group-quotas" aria-label="分组额度">
+                          {quotaItems.map((item) => (
+                            <span key={item.label} className="available-group-quota-pill">
+                              <small>{item.label}</small>
+                              <strong>{formatAvailableGroupQuota(item.value)}</strong>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <span className="subscription-rate-pill">倍率: x{group.rateMultiplier.toFixed(2)}</span>
+                      <span className={`available-group-dispatch-pill ${group.allowMessagesDispatch ? "ready" : "neutral"}`}>
+                        {group.allowMessagesDispatch ? "支持调度" : "仅直连"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {groups.length === 0 && (
+              <EmptyState title="当前没有可用分组" detail="若网页版能创建密钥，这里应返回可用 groups。" compact />
+            )}
+          </div>
+        </SectionCard>
         <SectionCard
           title="密钥管理"
-          subtitle="对齐用户网页版的创建、编辑、启停、删除与重置动作"
+          subtitle="统一管理密钥的创建、编辑、启停与重置操作"
           actions={
             <button className="primary-button" onClick={openNewKey}>
               <Plus size={16} />
@@ -351,13 +420,21 @@ export function KeysPage({
               const platformTone = (key.platform ?? "unknown").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
               const maskedKey = key.rawKey ? maskSecret(key.rawKey) : "自定义密钥未暴露";
               const canCopyKey = Boolean(key.rawKey?.trim());
+              const hasQuotaLimit = Number(key.quota ?? 0) > 0;
               return (
                 <div key={key.id} className="table-row wide key-row">
                   <div className="row-main key-row-main">
-                    <strong>{key.name}</strong>
-                    <div className="key-secret-line">
-                      <span className="key-context-name">{key.groupName ?? "未分组"}</span>
-                      <span className={`key-platform-pill ${platformTone}`}>{key.platform ?? "unknown"}</span>
+                    <div className="key-heading-row">
+                      <div className="key-title-cluster">
+                        <StatusBadge state={key.status === "active" ? "ready" : "expired"} />
+                        <strong>{key.name}</strong>
+                      </div>
+                      <div className="key-secret-line">
+                        <span className="key-context-name">{key.groupName ?? "未分组"}</span>
+                        <span className={`key-platform-pill ${platformTone}`}>{key.platform ?? "unknown"}</span>
+                      </div>
+                    </div>
+                    <div className="key-secret-row">
                       <small className="key-secret-text">{maskedKey}</small>
                       <button
                         type="button"
@@ -369,62 +446,36 @@ export function KeysPage({
                       </button>
                     </div>
                     <div className="row-meta key-row-meta">
-                      <span>额度 ${Number(key.quota ?? 0).toFixed(2)}</span>
-                      <span>{key.lastUsedAt ? formatTime(key.lastUsedAt) : "最近未使用"}</span>
+                      {hasQuotaLimit && <span>限制额度 ${Number(key.quota ?? 0).toFixed(2)}</span>}
+                      <span>{key.lastUsedAt ? `最后使用时间：${formatTime(key.lastUsedAt)}` : "最近未使用"}</span>
                     </div>
                   </div>
-                  <div className="row-actions wrap-actions">
-                    <StatusBadge state={key.status === "active" ? "ready" : "expired"} />
-                    <button className="inline-text-button" onClick={() => openEditKey(key.id)}>
-                      编辑
-                    </button>
-                    <button className="inline-text-button" onClick={() => handleToggleKeyStatus(key)}>
-                      {key.status === "active" ? "停用" : "启用"}
-                    </button>
-                    <button className="inline-text-button danger" onClick={() => handleDeleteKey(key.id)}>
-                      删除
-                    </button>
-                    <button className="inline-text-button" onClick={() => handleResetRateLimitUsage(key)}>
-                      重置限流
-                    </button>
-                    <button className="inline-text-button" onClick={() => handleResetQuota(key)}>
-                      重置额度
-                    </button>
+                  <div className="row-actions wrap-actions key-row-actions">
+                    <div className="key-action-cluster">
+                      <button className="inline-text-button" type="button" onClick={() => openEditKey(key.id)}>
+                        编辑
+                      </button>
+                      <button className="inline-text-button" type="button" onClick={() => handleToggleKeyStatus(key)}>
+                        {key.status === "active" ? "停用" : "启用"}
+                      </button>
+                      <button className="inline-text-button danger" type="button" onClick={() => handleDeleteKey(key.id)}>
+                        删除
+                      </button>
+                    </div>
+                    <div className="key-action-cluster secondary">
+                      <button className="inline-text-button" type="button" onClick={() => handleResetRateLimitUsage(key)}>
+                        重置限流
+                      </button>
+                      <button className="inline-text-button" type="button" onClick={() => handleResetQuota(key)}>
+                        重置额度
+                      </button>
+                    </div>
                   </div>
                 </div>
               );
             })}
             {(!managedKeys || managedKeys.items.length === 0) && (
               <EmptyState title="当前没有密钥数据" detail="先登录并刷新当前账号后再管理密钥。" compact />
-            )}
-          </div>
-        </SectionCard>
-        <SectionCard title="可用分组" subtitle="当前账号真实可创建密钥的分组能力">
-          <div className="stack-list">
-            {groups.map((group) => (
-              <div key={group.id} className="subscription-card">
-                <div className="subscription-card-head">
-                  <div>
-                    <strong>{group.name}</strong>
-                    <p>{group.platform} / {group.subscriptionType ?? "standard"}</p>
-                  </div>
-                  <div className="table-numbers">
-                    <span>x{group.rateMultiplier.toFixed(2)}</span>
-                    <strong>{group.allowMessagesDispatch ? "支持调度" : "仅直连"}</strong>
-                  </div>
-                </div>
-                <div className="summary-stat">
-                  <span>日 / 周 / 余额</span>
-                  <strong>
-                    ${Number(group.dailyLimitUsd ?? 0).toFixed(0)} / $
-                    {Number(group.weeklyLimitUsd ?? 0).toFixed(0)} / $
-                    {Number(profileRecord?.balance ?? 0).toFixed(2)}
-                  </strong>
-                </div>
-              </div>
-            ))}
-            {groups.length === 0 && (
-              <EmptyState title="当前没有可用分组" detail="若网页版能创建密钥，这里应返回可用 groups。" compact />
             )}
           </div>
         </SectionCard>

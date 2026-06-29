@@ -2,8 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   FLOATING_EDGE_HIDE,
+  FLOATING_MENU_HEIGHT,
   FLOATING_ORB_SIZE,
-  computeFloatingWindowPlacement,
+  FLOATING_PANEL_GAP,
+  FLOATING_PREVIEW_HEIGHT,
+  FLOATING_PANEL_SHELL_WIDTH,
+  computeOrbPosition,
+  computePanelWindowPosition,
   resolveFloatingDock
 } from "../src/app/floating-layout";
 
@@ -23,54 +28,43 @@ describe("floating layout", () => {
     expect(resolveFloatingDock(1120, workArea)).toBe("right");
   });
 
-  it("keeps the collapsed left orb partially hidden beyond the screen edge", () => {
-    const placement = computeFloatingWindowPlacement({
+  it("keeps the orb partially hidden beyond the left edge", () => {
+    const placement = computeOrbPosition({
       dock: "left",
-      menuVisible: false,
-      panelVisible: false,
       workArea,
-      ballTop: 620
+      y: 620
     });
 
     expect(placement.x).toBe(-FLOATING_EDGE_HIDE);
-    expect(placement.ballX).toBeGreaterThanOrEqual(0);
-    expect(placement.x + placement.ballX + FLOATING_ORB_SIZE / 2).toBeGreaterThan(0);
+    expect(placement.x + FLOATING_ORB_SIZE / 2).toBeGreaterThan(0);
   });
 
-  it("keeps the collapsed right orb partially hidden beyond the screen edge", () => {
-    const placement = computeFloatingWindowPlacement({
+  it("keeps the orb partially hidden beyond the right edge", () => {
+    const placement = computeOrbPosition({
       dock: "right",
-      menuVisible: false,
-      panelVisible: false,
       workArea,
-      ballTop: 620
+      y: 620
     });
 
-    expect(placement.x + placement.width).toBe(workArea.width + FLOATING_EDGE_HIDE);
-    expect(placement.x + placement.ballX + FLOATING_ORB_SIZE).toBeGreaterThan(workArea.width - FLOATING_ORB_SIZE);
+    expect(placement.x + FLOATING_ORB_SIZE).toBe(workArea.width + FLOATING_EDGE_HIDE);
   });
 
-  it("keeps expanded content fully inside the work area", () => {
-    const leftPlacement = computeFloatingWindowPlacement({
+  it("expands the panel window inward from the orb", () => {
+    const leftPanel = computePanelWindowPosition({
       dock: "left",
-      menuVisible: true,
-      panelVisible: true,
-      workArea,
-      ballTop: 160
+      orbX: -FLOATING_EDGE_HIDE,
+      orbY: 300
     });
-    const rightPlacement = computeFloatingWindowPlacement({
+    const rightOrbX = workArea.width - FLOATING_ORB_SIZE + FLOATING_EDGE_HIDE;
+    const rightPanel = computePanelWindowPosition({
       dock: "right",
-      menuVisible: true,
-      panelVisible: true,
-      workArea,
-      ballTop: 840
+      orbX: rightOrbX,
+      orbY: 300
     });
 
-    expect(leftPlacement.y).toBeGreaterThanOrEqual(0);
-    expect(leftPlacement.x + leftPlacement.menuX).toBeGreaterThanOrEqual(0);
-    expect(leftPlacement.x + leftPlacement.panelX).toBeGreaterThanOrEqual(0);
-    expect(leftPlacement.x + leftPlacement.width).toBeLessThanOrEqual(workArea.width + FLOATING_EDGE_HIDE);
-    expect(rightPlacement.x + rightPlacement.panelX).toBeGreaterThanOrEqual(0);
-    expect(rightPlacement.y + rightPlacement.height).toBeLessThanOrEqual(workArea.height);
+    expect(leftPanel.x).toBe(-FLOATING_EDGE_HIDE + FLOATING_ORB_SIZE + FLOATING_PANEL_GAP);
+    expect(rightPanel.x + FLOATING_PANEL_SHELL_WIDTH + FLOATING_PANEL_GAP).toBe(rightOrbX);
+    expect(leftPanel.y).toBe(300 - Math.max(FLOATING_MENU_HEIGHT, FLOATING_PREVIEW_HEIGHT));
+    expect(rightPanel.y).toBe(300 - Math.max(FLOATING_MENU_HEIGHT, FLOATING_PREVIEW_HEIGHT));
   });
 });

@@ -627,6 +627,8 @@ describe("OverviewPage metric hints", () => {
     expect(html).not.toContain("还没有 Key 数据");
     expect(html).toContain("gpt-5.4");
     expect(html).toContain("/responses");
+    expect(html).toContain("recent-usage-pill");
+    expect(html).toContain("时间 06/28 11:43");
     expect(html).not.toContain("还没有账号数据");
   });
 
@@ -668,6 +670,8 @@ describe("OverviewPage metric hints", () => {
       })
     );
 
-    expect(html).toContain('<section class="stack-list"><section class="section-card"><header class="section-card-header"><div><h3>最近使用</h3>');
+    expect(html).toContain("overview-layout");
+    expect(html).toContain("overview-column");
+    expect(html).toContain("<h3>最近使用</h3>");
   });
 });

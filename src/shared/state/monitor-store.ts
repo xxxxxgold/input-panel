@@ -66,7 +66,7 @@ interface MonitorStore {
 }
 
 function isPreferredRuntimeAccount(account: AccountRuntime) {
-  return account.sessionState === "ready" || Boolean(account.snapshot);
+  return account.sessionState === "ready" || Boolean(account.cacheView);
 }
 
 export function resolveOverviewSelection({

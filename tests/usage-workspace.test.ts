@@ -18,6 +18,34 @@ function shouldResetUsageApiKeyFilter(keys: ManagedKeyRecord[], usageApiKeyFilte
   return !keys.some((item) => item.apiKeyId !== null && item.apiKeyId !== undefined && String(item.apiKeyId) === usageApiKeyFilter);
 }
 
+function normalizeUsagePageSize(value: number) {
+  return [10, 20, 50, 100].includes(value) ? value : 20;
+}
+
+function buildUsageDashboardQuery(
+  usageApiKeyFilter: string,
+  startDate: string,
+  endDate: string
+) {
+  return {
+    days: 7,
+    apiKeyId: usageApiKeyFilter || null,
+    startDate,
+    endDate
+  };
+}
+
+function shouldSyncTodayUsageWindow(
+  startDate: string,
+  endDate: string,
+  today = "2026-06-29"
+) {
+  if (!startDate || !endDate) {
+    return true;
+  }
+  return startDate <= today && endDate >= today;
+}
+
 describe("usage workspace key selection helpers", () => {
   it("prefers the most recently used key for default daily usage selection", () => {
     const keys: ManagedKeyRecord[] = [
@@ -53,5 +81,33 @@ describe("usage workspace key selection helpers", () => {
     expect(shouldResetUsageApiKeyFilter(keys, "5524")).toBe(true);
     expect(shouldResetUsageApiKeyFilter(keys, "3641")).toBe(false);
     expect(shouldResetUsageApiKeyFilter(keys, "")).toBe(false);
+  });
+
+  it("normalizes unsupported usage page sizes back to the default", () => {
+    expect(normalizeUsagePageSize(10)).toBe(10);
+    expect(normalizeUsagePageSize(50)).toBe(50);
+    expect(normalizeUsagePageSize(999)).toBe(20);
+  });
+
+  it("builds dashboard queries from the active usage filters", () => {
+    expect(buildUsageDashboardQuery("", "2026-06-28", "2026-06-28")).toEqual({
+      days: 7,
+      apiKeyId: null,
+      startDate: "2026-06-28",
+      endDate: "2026-06-28"
+    });
+    expect(buildUsageDashboardQuery("3641", "2026-06-24", "2026-06-28")).toEqual({
+      days: 7,
+      apiKeyId: "3641",
+      startDate: "2026-06-24",
+      endDate: "2026-06-28"
+    });
+  });
+
+  it("syncs latest usage only when the selected window still covers today", () => {
+    expect(shouldSyncTodayUsageWindow("", "", "2026-06-29")).toBe(true);
+    expect(shouldSyncTodayUsageWindow("2026-06-29", "2026-06-29", "2026-06-29")).toBe(true);
+    expect(shouldSyncTodayUsageWindow("2026-06-28", "2026-06-29", "2026-06-29")).toBe(true);
+    expect(shouldSyncTodayUsageWindow("2026-06-27", "2026-06-28", "2026-06-29")).toBe(false);
   });
 });

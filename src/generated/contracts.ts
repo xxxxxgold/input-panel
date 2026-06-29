@@ -93,6 +93,15 @@ export interface UsageRow {
   requestType?: string | null;
   stream?: boolean | null;
   billingType?: number | null;
+  imageCount?: number | null;
+  imageSize?: string | null;
+  imageInputSize?: string | null;
+  imageOutputSize?: string | null;
+  imageOutputTokens?: number | null;
+  imageOutputCost?: number | null;
+  imageSizeSource?: string | null;
+  imageSizeBreakdown?: string | null;
+  mediaType?: string | null;
   rateMultiplier?: number | null;
   userAgent?: string | null;
   apiKeyName?: string | null;
@@ -100,12 +109,6 @@ export interface UsageRow {
   subscriptionName?: string | null;
   groupName?: string | null;
   subscriptionType?: string | null;
-}
-
-export interface UsageHistoryRow extends UsageRow {
-  firstSeenAt: string;
-  lastSeenAt: string;
-  isLatest: boolean;
 }
 
 export interface TrendPoint {
@@ -196,29 +199,6 @@ export interface DashboardModelsPayload {
   startDate: string;
   endDate: string;
   models: ModelUsagePoint[];
-}
-
-export interface PaymentConfigRecord {
-  enabled: boolean;
-  minAmount: number;
-  maxAmount: number;
-  dailyLimit: number;
-  orderTimeoutMinutes: number;
-  maxPendingOrders: number;
-  enabledPaymentTypes: string[];
-}
-
-export interface OrderRecord {
-  id: number;
-  status: string;
-  amount: number;
-  providerInstanceId?: number | null;
-  outTradeNo?: string | null;
-  createdAt?: string | null;
-  updatedAt?: string | null;
-  paidAt?: string | null;
-  refundedAt?: string | null;
-  productName?: string | null;
 }
 
 export interface ManagedKeyRecord extends KeyRecord {
@@ -353,15 +333,11 @@ export interface ProfileUpdateInput {
   balanceNotifyThreshold?: number | null;
 }
 
-export interface AccountSnapshot {
+export interface AccountCacheView {
   fetchedAt: string;
   online: boolean;
   siteName: string;
-  siteUrl: string;
-  accountLabel: string;
-  emailMasked?: string | null;
   balance: number;
-  currency: string;
   stats: {
     totalApiKeys: number;
     activeApiKeys: number;
@@ -378,17 +354,15 @@ export interface AccountSnapshot {
     averageDurationMs: number;
     byPlatform: PlatformPoint[];
   };
-  usageSummary: UsageSummary;
   recentUsage: UsageRow[];
-  requestHistory: UsageHistoryRow[];
   trend: TrendPoint[];
   keys: KeyRecord[];
   subscriptions: SubscriptionRecord[];
   activeSubscription?: SubscriptionRecord | null;
-  alerts: SnapshotAlert[];
+  alerts: AccountAlert[];
 }
 
-export interface SnapshotAlert {
+export interface AccountAlert {
   id: string;
   severity: "critical" | "high" | "medium" | "low";
   title: string;
@@ -400,19 +374,26 @@ export interface SnapshotAlert {
 
 export interface AccountRuntime extends AccountRecord {
   site?: SiteRecord;
-  snapshot?: AccountSnapshot | null;
+  cacheView?: AccountCacheView | null;
   sessionState: "ready" | "missing" | "expired";
   lastError?: string | null;
 }
 
 export type RefreshTriggerSource = "manual" | "stale_auto";
 
+export type DataSyncTrigger = "manual" | "stale_auto" | "post_write" | "bootstrap";
+
+export type DataSyncScope = "core" | "keys" | "usage" | "full";
+
+export type AccountSyncState = "idle" | "running" | "succeeded" | "failed";
+
 export type TaskRunStatus = "running" | "succeeded" | "failed";
 
 export interface TaskRunRecord {
   id: string;
   accountId: string;
-  primaryTriggerSource: RefreshTriggerSource;
+  scope: DataSyncScope;
+  primaryTriggerSource: DataSyncTrigger;
   status: TaskRunStatus;
   joinCount: number;
   startedAt: string;
@@ -425,23 +406,40 @@ export interface RefreshAccountTaskResponse {
   run: TaskRunRecord;
 }
 
+export interface AccountSyncStatusRecord {
+  accountId: string;
+  scope: DataSyncScope;
+  state: AccountSyncState;
+  lastAttemptAt?: string | null;
+  lastSuccessAt?: string | null;
+  lastError?: string | null;
+  itemCount: number;
+}
+
+export interface AccountSyncStatusPayload {
+  accountId: string;
+  statuses: AccountSyncStatusRecord[];
+}
+
+export interface SyncAccountDataInput {
+  scope: DataSyncScope;
+  triggerSource: DataSyncTrigger;
+}
+
 export interface OverviewUsageRow extends UsageRow {
   accountId: string;
-  accountLabel: string;
   siteId: string;
   siteName: string;
 }
 
 export interface OverviewSubscriptionRecord extends SubscriptionRecord {
   accountId: string;
-  accountLabel: string;
   siteId: string;
   siteName: string;
 }
 
 export interface OverviewKeyRecord extends KeyRecord {
   accountId: string;
-  accountLabel: string;
   siteId: string;
   siteName: string;
 }
@@ -462,7 +460,7 @@ export interface OverviewPayload {
     todayTokens: number;
     totalTokens: number;
   };
-  alerts: SnapshotAlert[];
+  alerts: AccountAlert[];
   platformSeries: PlatformPoint[];
   trend: TrendPoint[];
   recentUsage: OverviewUsageRow[];
@@ -506,9 +504,16 @@ export interface DesktopUiPrefs {
   launchMode: AppLaunchMode;
   openFloatingInMainMode: boolean;
   keepFloatingPanelVisible: boolean;
+  floatingPanelOpacity: number;
   closeBehavior: CloseBehavior;
   autoRefreshEnabled: boolean;
   autoRefreshIntervalSeconds: number;
+  autoRefreshCoreEnabled: boolean;
+  autoRefreshCoreIntervalSeconds: number;
+  autoRefreshKeysEnabled: boolean;
+  autoRefreshKeysIntervalSeconds: number;
+  autoRefreshUsageEnabled: boolean;
+  autoRefreshUsageIntervalSeconds: number;
   theme: "light" | "dark" | "deep-blue" | string;
 }
 
@@ -516,9 +521,16 @@ export interface DesktopUiPrefsPatch {
   launchMode?: AppLaunchMode;
   openFloatingInMainMode?: boolean;
   keepFloatingPanelVisible?: boolean;
+  floatingPanelOpacity?: number;
   closeBehavior?: CloseBehavior;
   autoRefreshEnabled?: boolean;
   autoRefreshIntervalSeconds?: number;
+  autoRefreshCoreEnabled?: boolean;
+  autoRefreshCoreIntervalSeconds?: number;
+  autoRefreshKeysEnabled?: boolean;
+  autoRefreshKeysIntervalSeconds?: number;
+  autoRefreshUsageEnabled?: boolean;
+  autoRefreshUsageIntervalSeconds?: number;
   theme?: "light" | "dark" | "deep-blue" | string;
 }
 
@@ -544,4 +556,10 @@ export interface ServiceStatusPayload {
   allOk: boolean;
   generatedAt: number;
   services: ServiceStatusServiceRecord[];
+}
+
+
+export interface SchedulerConfigPayload {
+  enabled: boolean;
+  intervalSeconds: number;
 }

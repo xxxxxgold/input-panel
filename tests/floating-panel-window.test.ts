@@ -34,6 +34,7 @@ const overview: OverviewPayload = {
 describe("FloatingPanelWindow", () => {
   const notificationItems: NotificationInboxItem[] = [
     {
+      notificationKey: "service-status:status-1",
       source: "service-status",
       id: "status-1",
       severity: "critical",
@@ -48,16 +49,22 @@ describe("FloatingPanelWindow", () => {
     const html = renderToStaticMarkup(
       createElement(FloatingPanelWindow, {
         overview,
+        currentAccountLabel: "主账号",
+        currentSiteName: "AI INPUT",
+        currentAccountBalance: 42.5,
+        currentAccountSubscriptions: [],
+        currentAccountRecentUsage: [],
         notificationItems,
         loading: false,
         keepVisible: false,
+        floatingPanelOpacity: 0.82,
         onRefresh: () => {}
       })
     );
 
     expect(html).toContain("floating-panel-window-preview");
     expect(html).toContain("floating-panel-window-menu");
-    expect(html).toContain("floating-menu-card visible");
+    expect(html).toContain("floating-menu-card visible dock-right");
     expect(html).toContain("floating-menu-tooltip dock-right");
     expect(html).toContain("floating-panel-window dock-right visible");
     expect(html).not.toContain("floating-preview-bubble-tail");
@@ -74,9 +81,15 @@ describe("FloatingPanelWindow", () => {
           ...overview,
           alerts: []
         },
+        currentAccountLabel: "主账号",
+        currentSiteName: "AI INPUT",
+        currentAccountBalance: 42.5,
+        currentAccountSubscriptions: [],
+        currentAccountRecentUsage: [],
         notificationItems,
         loading: false,
         keepVisible: false,
+        floatingPanelOpacity: 0.82,
         onRefresh: () => {}
       })
     );
@@ -90,24 +103,37 @@ describe("FloatingPanelWindow", () => {
     const html = renderToStaticMarkup(
       createElement(FloatingPanelWindow, {
         overview,
+        currentAccountLabel: "主账号",
+        currentSiteName: "AI INPUT",
+        currentAccountBalance: 42.5,
+        currentAccountSubscriptions: [],
+        currentAccountRecentUsage: [],
         notificationItems,
         loading: false,
         keepVisible: true,
+        floatingPanelOpacity: 0.82,
         onRefresh: () => {},
         initialPanel: "alerts"
       })
     );
 
     expect(html).toContain("floating-panel-window dock-right visible");
+    expect(html).toContain("pinned-glass");
   });
 
   it("renders service status notifications inside the alerts panel", () => {
     const html = renderToStaticMarkup(
       createElement(FloatingPanelWindow, {
         overview,
+        currentAccountLabel: "主账号",
+        currentSiteName: "AI INPUT",
+        currentAccountBalance: 42.5,
+        currentAccountSubscriptions: [],
+        currentAccountRecentUsage: [],
         notificationItems,
         loading: false,
         keepVisible: true,
+        floatingPanelOpacity: 0.82,
         onRefresh: () => {},
         initialPanel: "alerts"
       })

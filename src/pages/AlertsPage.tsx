@@ -1,9 +1,9 @@
-import type { SnapshotAlert } from "../types";
+import type { AccountAlert } from "../types";
 import { formatTime } from "../shared/lib/formatters";
 import { EmptyState } from "../shared/ui/EmptyState";
 import { SectionCard } from "../shared/ui/SectionCard";
 
-export function AlertsPage({ alerts }: { alerts: SnapshotAlert[] }) {
+export function AlertsPage({ alerts }: { alerts: AccountAlert[] }) {
   return (
     <SectionCard title="告警列表" subtitle="按严重级别集中处理低余额、失效和拉取失败">
       <div className="stack-list">

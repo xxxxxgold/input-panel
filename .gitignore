@@ -10,3 +10,6 @@ config/
 test-results/
 *.log
 *.local
+CLAUDE.md
+.claude/skills/gitnexus/
+.claude/skills/generated/

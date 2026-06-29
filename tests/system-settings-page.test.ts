@@ -10,9 +10,16 @@ const desktopUiPrefs: DesktopUiPrefs = {
   launchMode: "main",
   openFloatingInMainMode: true,
   keepFloatingPanelVisible: true,
+  floatingPanelOpacity: 0.82,
   closeBehavior: "ask",
   autoRefreshEnabled: true,
   autoRefreshIntervalSeconds: 9,
+  autoRefreshCoreEnabled: true,
+  autoRefreshCoreIntervalSeconds: 15,
+  autoRefreshKeysEnabled: true,
+  autoRefreshKeysIntervalSeconds: 12,
+  autoRefreshUsageEnabled: false,
+  autoRefreshUsageIntervalSeconds: 30,
   theme: "light"
 };
 
@@ -27,9 +34,22 @@ describe("SystemSettingsPage", () => {
         onLaunchModeChange: () => {},
         onFloatingVisibleChange: () => {},
         onFloatingPanelPinnedChange: () => {},
+        onFloatingPanelOpacityChange: () => {},
         onCloseBehaviorChange: () => {},
         onAutoRefreshEnabledChange: () => {},
-        onAutoRefreshIntervalSecondsChange: () => {}
+        onServiceStatusRefreshIntervalSecondsChange: () => {},
+        onAutoRefreshCoreEnabledChange: () => {},
+        onAutoRefreshCoreIntervalSecondsChange: () => {},
+        onAutoRefreshKeysEnabledChange: () => {},
+        onAutoRefreshKeysIntervalSecondsChange: () => {},
+        onAutoRefreshUsageEnabledChange: () => {},
+        onAutoRefreshUsageIntervalSecondsChange: () => {},
+        schedulerConfig: {
+          enabled: true,
+          intervalSeconds: 5
+        },
+        schedulerConfigLoading: false,
+        onSchedulerConfigChange: () => {}
       })
     );
 
@@ -48,7 +68,17 @@ describe("SystemSettingsPage", () => {
     expect(html).toContain("审计档案室");
     expect(html).toContain("有账号时自动刷新数据");
     expect(html).toContain("静默拉取当前页数据, 不会整页刷新");
+    expect(html).toContain("服务状态刷新间隔(秒)");
+    expect(html).toContain("核心数据 / 订阅 / 站点账号配置");
+    expect(html).toContain("密钥");
+    expect(html).toContain("用量 / 单 Key / 图表实验室");
     expect(html).toContain('type="number"');
     expect(html).toContain('min="1"');
+    expect(html).toContain("number-stepper");
+    expect(html).toContain('aria-label="间隔(秒)增加 1 秒"');
+    expect(html).toContain('aria-label="间隔(秒)减少 1 秒"');
+    expect(html).toContain('data-testid="core-refresh-interval"');
+    expect(html).toContain("system-settings-layout");
+    expect(html).toContain("system-settings-column");
   });
 });

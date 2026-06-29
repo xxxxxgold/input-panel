@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { toDateValue } from "../../shared/lib/formatters";
 import type {
+  DataSyncTrigger,
   DailyUsagePoint,
   DashboardModelsPayload,
   NavKey,
@@ -11,6 +12,7 @@ import type {
   UsageStatsRecord,
   UsageTrendPayload
 } from "../../types";
+import { syncAccountData } from "../accounts/client";
 import {
   getApiKeyDailyUsage,
   getDashboardModels,
@@ -88,6 +90,8 @@ export function useUsageWorkspace({
   const [keyUsageRows, setKeyUsageRows] = useState<DailyUsagePoint[]>([]);
   const usageRequestSequenceRef = useRef(0);
   const blockingUsageRequestCountRef = useRef(0);
+  const usageScopeSyncRef = useRef<Promise<void> | null>(null);
+  const usageScopeSyncAccountIdRef = useRef<string | null>(null);
   const usageFeaturesActive = nav === "usage" || nav === "trends" || nav === "keyUsage";
   const analyticsLabActive = nav === "trends";
   const keyUsagePageActive = nav === "keyUsage";
@@ -121,6 +125,49 @@ export function useUsageWorkspace({
       startDate,
       endDate
     };
+  }
+
+  async function syncLatestUsageScope(accountId: string, triggerSource: DataSyncTrigger) {
+    if (usageScopeSyncRef.current && usageScopeSyncAccountIdRef.current === accountId) {
+      return usageScopeSyncRef.current;
+    }
+
+    const pending = syncAccountData(accountId, {
+      scope: "usage",
+      triggerSource
+    })
+      .then(() => undefined)
+      .finally(() => {
+        if (usageScopeSyncRef.current === pending) {
+          usageScopeSyncRef.current = null;
+          usageScopeSyncAccountIdRef.current = null;
+        }
+      });
+
+    usageScopeSyncRef.current = pending;
+    usageScopeSyncAccountIdRef.current = accountId;
+    return pending;
+  }
+
+  async function maybeSyncLatestUsageScope(options: {
+    accountId: string;
+    startDate: string;
+    endDate: string;
+    triggerSource: DataSyncTrigger;
+    forceLatest?: boolean;
+    suppressError?: boolean;
+  }) {
+    const shouldSync = options.forceLatest || shouldSyncTodayUsageWindow(options.startDate, options.endDate);
+    if (!shouldSync) {
+      return;
+    }
+    try {
+      await syncLatestUsageScope(options.accountId, options.triggerSource);
+    } catch (cause) {
+      if (!options.suppressError) {
+        throw cause;
+      }
+    }
   }
 
   useEffect(() => {
@@ -237,6 +284,14 @@ export function useUsageWorkspace({
     beginBlockingUsageRequest();
     const requestSequence = beginUsageRequest();
     setUsageModelSummariesLoading(true);
+    await maybeSyncLatestUsageScope({
+      accountId,
+      startDate,
+      endDate,
+      triggerSource: "stale_auto",
+      forceLatest: keyUsagePageActive,
+      suppressError: true
+    });
     if (analyticsLabActive) {
       setUsageScopeRows([]);
       setUsageScopeMeta(null);
@@ -472,30 +527,39 @@ export function useUsageWorkspace({
       return;
     }
 
+    const effectiveStart = usageStartDate || toDateValue(new Date());
+    const effectiveEnd = usageEndDate || toDateValue(new Date());
     beginBlockingUsageRequest();
     setBusyText("正在刷新用量明细...");
     setError(null);
     setUsageModelSummariesLoading(true);
     const requestSequence = beginUsageRequest();
-    if (analyticsLabActive) {
-      setUsageScopeRows([]);
-      setUsageScopeMeta(null);
-      setUsageRecords(null);
-      setUsageStats(null);
-      setUsageTrend(null);
-      setUsageModels(null);
-    }
-    const scopeRowsPromise = analyticsLabActive
-      ? startUsageScopeRowsRefresh(
-          selectedAccountId,
-          usageStartDate,
-          usageEndDate,
-          usageApiKeyFilter,
-          requestSequence,
-          true
-        )
-      : Promise.resolve<UsageRow[]>([]);
+    let scopeRowsPromise = Promise.resolve<UsageRow[]>([]);
     try {
+      await maybeSyncLatestUsageScope({
+        accountId: selectedAccountId,
+        startDate: effectiveStart,
+        endDate: effectiveEnd,
+        triggerSource: "manual"
+      });
+      if (analyticsLabActive) {
+        setUsageScopeRows([]);
+        setUsageScopeMeta(null);
+        setUsageRecords(null);
+        setUsageStats(null);
+        setUsageTrend(null);
+        setUsageModels(null);
+      }
+      scopeRowsPromise = analyticsLabActive
+        ? startUsageScopeRowsRefresh(
+            selectedAccountId,
+            effectiveStart,
+            effectiveEnd,
+            usageApiKeyFilter,
+            requestSequence,
+            true
+          )
+        : Promise.resolve<UsageRow[]>([]);
       setUsagePage(1);
       if (analyticsLabActive) {
         const nextScopeRows = await scopeRowsPromise;
@@ -514,26 +578,26 @@ export function useUsageWorkspace({
 
       const [stats, , trend, models] = await Promise.all([
         getUsageStats(selectedAccountId, {
-          startDate: usageStartDate,
-          endDate: usageEndDate,
+          startDate: effectiveStart,
+          endDate: effectiveEnd,
           apiKeyId: usageApiKeyFilter || null
         }),
         loadUsageRecordsForFilters(
           selectedAccountId,
-          usageStartDate,
-          usageEndDate,
+          effectiveStart,
+          effectiveEnd,
           usageApiKeyFilter,
           1,
           usagePageSize,
           requestSequence
         ),
-        getDashboardTrend(selectedAccountId, buildUsageDashboardQuery(usageStartDate, usageEndDate)).catch((cause) => {
+        getDashboardTrend(selectedAccountId, buildUsageDashboardQuery(effectiveStart, effectiveEnd)).catch((cause) => {
           if (isOptionalEndpointUnavailable(cause)) {
             return null;
           }
           throw cause;
         }),
-        getDashboardModels(selectedAccountId, buildUsageDashboardQuery(usageStartDate, usageEndDate)).catch((cause) => {
+        getDashboardModels(selectedAccountId, buildUsageDashboardQuery(effectiveStart, effectiveEnd)).catch((cause) => {
           if (isOptionalEndpointUnavailable(cause)) {
             return null;
           }
@@ -545,8 +609,8 @@ export function useUsageWorkspace({
       }
       setUsageStats(
         applyUsageRateFallback(stats, {
-          startDate: usageStartDate,
-          endDate: usageEndDate
+          startDate: effectiveStart,
+          endDate: effectiveEnd
         })
       );
       setUsageTrend(trend);
@@ -680,25 +744,32 @@ export function useUsageWorkspace({
     setError(null);
     setUsageModelSummariesLoading(true);
     const requestSequence = beginUsageRequest();
-    if (analyticsLabActive) {
-      setUsageScopeRows([]);
-      setUsageScopeMeta(null);
-      setUsageRecords(null);
-      setUsageStats(null);
-      setUsageTrend(null);
-      setUsageModels(null);
-    }
-    const scopeRowsPromise = analyticsLabActive
-      ? startUsageScopeRowsRefresh(
-          selectedAccountId,
-          nextStart,
-          nextEnd,
-          usageApiKeyFilter,
-          requestSequence,
-          true
-        )
-      : Promise.resolve<UsageRow[]>([]);
+    let scopeRowsPromise = Promise.resolve<UsageRow[]>([]);
     try {
+      await maybeSyncLatestUsageScope({
+        accountId: selectedAccountId,
+        startDate: nextStart,
+        endDate: nextEnd,
+        triggerSource: "manual"
+      });
+      if (analyticsLabActive) {
+        setUsageScopeRows([]);
+        setUsageScopeMeta(null);
+        setUsageRecords(null);
+        setUsageStats(null);
+        setUsageTrend(null);
+        setUsageModels(null);
+      }
+      scopeRowsPromise = analyticsLabActive
+        ? startUsageScopeRowsRefresh(
+            selectedAccountId,
+            nextStart,
+            nextEnd,
+            usageApiKeyFilter,
+            requestSequence,
+            true
+          )
+        : Promise.resolve<UsageRow[]>([]);
       if (analyticsLabActive) {
         const nextScopeRows = await scopeRowsPromise;
         if (!isLatestUsageRequest(requestSequence)) {
@@ -774,12 +845,25 @@ export function useUsageWorkspace({
       return;
     }
 
+    const effectiveStart = usageStartDate || toDateValue(new Date());
+    const effectiveEnd = usageEndDate || toDateValue(new Date());
     const requestSequence = beginUsageRequest();
     if (announce) {
       setBusyText("正在加载单 Key 用量...");
       setError(null);
     }
     try {
+      await maybeSyncLatestUsageScope({
+        accountId: selectedAccountId,
+        startDate: effectiveStart,
+        endDate: effectiveEnd,
+        triggerSource: announce ? "manual" : "stale_auto",
+        forceLatest: true,
+        suppressError: !announce
+      });
+      if (!isLatestUsageRequest(requestSequence)) {
+        return;
+      }
       setKeyUsageKeyId(keyId);
       const daily = await getApiKeyDailyUsage(selectedAccountId, keyId, 30);
       if (!isLatestUsageRequest(requestSequence)) {
@@ -806,20 +890,30 @@ export function useUsageWorkspace({
       return;
     }
 
+    const effectiveStart = usageStartDate || toDateValue(new Date());
+    const effectiveEnd = usageEndDate || toDateValue(new Date());
     const requestSequence = beginUsageRequest();
     setUsageModelSummariesLoading(true);
-    const scopeRowsPromise: Promise<UsageRow[]> =
-      nav === "overview" || !analyticsLabActive
-        ? Promise.resolve([])
-        : startUsageScopeRowsRefresh(
-            selectedAccountId,
-            usageStartDate || toDateValue(new Date()),
-            usageEndDate || toDateValue(new Date()),
-            usageApiKeyFilter,
-            requestSequence,
-            analyticsLabActive
-          );
+    let scopeRowsPromise: Promise<UsageRow[]> = Promise.resolve([]);
     try {
+      await maybeSyncLatestUsageScope({
+        accountId: selectedAccountId,
+        startDate: effectiveStart,
+        endDate: effectiveEnd,
+        triggerSource: "stale_auto",
+        forceLatest: keyUsagePageActive
+      });
+      scopeRowsPromise =
+        nav === "overview" || !analyticsLabActive
+          ? Promise.resolve([])
+          : startUsageScopeRowsRefresh(
+              selectedAccountId,
+              effectiveStart,
+              effectiveEnd,
+              usageApiKeyFilter,
+              requestSequence,
+              analyticsLabActive
+            );
       if (nav === "overview") {
         const stats = await getUsageStats(selectedAccountId, { period: "today" });
         if (!isLatestUsageRequest(requestSequence)) {
@@ -872,8 +966,6 @@ export function useUsageWorkspace({
       setUsageScopeRows([]);
       setUsageScopeMeta(null);
 
-      const effectiveStart = usageStartDate || toDateValue(new Date());
-      const effectiveEnd = usageEndDate || toDateValue(new Date());
       const targetUsagePage = usageRecords?.page ?? usagePage;
 
       const [stats, records, trend, models] = await Promise.all([
@@ -1097,6 +1189,13 @@ function formatUsageRangeLabel(preset: UsageRangePreset, startDate: string, endD
     return `${startDate} - ${endDate}`;
   }
   return "选择时间范围";
+}
+
+function shouldSyncTodayUsageWindow(startDate: string, endDate: string, today = toDateValue(new Date())) {
+  if (!startDate || !endDate) {
+    return true;
+  }
+  return startDate <= today && endDate >= today;
 }
 
 function pickDefaultKeyUsageKeyId(keys: ManagedKeyRecord[]) {

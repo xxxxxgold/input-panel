@@ -3,16 +3,17 @@ import { Bell } from "lucide-react";
 import { formatTime } from "../../../shared/lib/formatters";
 import { EmptyState } from "../../../shared/ui/EmptyState";
 import { Modal } from "../../../shared/ui/Modal";
-import type { SnapshotAlert } from "../../../types";
+import type { AccountAlert } from "../../../types";
 import type { AppNotificationItem } from "../../service-status/notifications";
 
-export type AlertInboxItem = SnapshotAlert & {
+export type AlertInboxItem = AccountAlert & {
   siteName?: string | null;
   accountLabel?: string | null;
 };
 
 export type NotificationInboxItem =
   | {
+      notificationKey: string;
       source: "overview-alert";
       id: string;
       severity: "critical" | "high" | "medium" | "low";
@@ -24,6 +25,7 @@ export type NotificationInboxItem =
       models?: string[];
     }
   | {
+      notificationKey: string;
       source: "service-status";
       id: string;
       severity: AppNotificationItem["severity"];
@@ -37,10 +39,12 @@ export type NotificationInboxItem =
 
 export function AlertInboxModal({
   items,
-  onClose
+  onClose,
+  onAcknowledge
 }: {
   items: NotificationInboxItem[];
   onClose: () => void;
+  onAcknowledge: (item: NotificationInboxItem) => void;
 }) {
   return (
     <Modal
@@ -62,9 +66,14 @@ export function AlertInboxModal({
       </section>
 
       {items.length > 0 ? (
-        <div className="alert-inbox-list" role="list">
-          {items.map((item) => (
-            <article key={item.id} className={`alert-inbox-item ${resolveInboxTone(item)}`} role="listitem">
+        <div className="alert-inbox-list motion-stagger-grid" role="list">
+          {items.map((item, index) => (
+            <article
+              key={item.id}
+              className={`alert-inbox-item motion-stagger-item ${resolveInboxTone(item)}`}
+              role="listitem"
+              style={{ ["--motion-order" as string]: index }}
+            >
               <div className="alert-inbox-item-main">
                 <div className={`alert-inbox-severity ${resolveInboxTone(item)}`}>
                   {resolveInboxLabel(item)}
@@ -81,6 +90,13 @@ export function AlertInboxModal({
                 <span>{item.source === "service-status" ? "服务状态监控" : item.siteName ?? "未知站点"}</span>
                 <span>{item.source === "service-status" ? "本地运行态" : item.accountLabel ?? "未知账号"}</span>
                 <time dateTime={item.createdAt}>{formatTime(item.createdAt)}</time>
+                <button
+                  type="button"
+                  className="inline-text-button alert-inbox-dismiss"
+                  onClick={() => onAcknowledge(item)}
+                >
+                  知道了
+                </button>
               </div>
             </article>
           ))}

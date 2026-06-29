@@ -109,4 +109,38 @@ describe("SubscriptionList quota bar tiers", () => {
     expect(html).toContain("到期情况: 剩余 340 天");
     expect(html).toContain("到期时间: 2027/05/18 22:42:23");
   });
+
+  it("renders clickable subscription cards when a detail handler is provided", () => {
+    const subscriptions: SubscriptionRecord[] = [
+      {
+        id: "sub-clickable",
+        groupId: 18,
+        name: "CodeX Plus 年度",
+        groupName: "CodeX Plus 年度",
+        status: "active",
+        expiresAt: "2027-05-18T22:42:23+08:00",
+        platform: "openai",
+        daily: {
+          current: 243.8,
+          limit: 500,
+          windowStart: "2026-06-15T00:00:00+08:00"
+        },
+        weekly: null,
+        monthly: null
+      }
+    ];
+
+    const html = renderToStaticMarkup(
+      createElement(SubscriptionList, {
+        subscriptions,
+        selectedSubscriptionId: "sub-clickable",
+        onSelectSubscription: () => {}
+      })
+    );
+
+    expect(html).toContain("subscription-card-button");
+    expect(html).toContain("aria-pressed=\"true\"");
+    expect(html).toContain("查看 CodeX Plus 年度 的订阅详情");
+    expect(html).toContain("subscription-card subscription-card-button selected");
+  });
 });

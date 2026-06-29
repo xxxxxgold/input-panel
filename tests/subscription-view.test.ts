@@ -14,8 +14,8 @@ import type {
 } from "../src/types";
 
 describe("mergeSubscriptionRecords", () => {
-  it("returns snapshot records when summary is unavailable", () => {
-    const snapshotSubscriptions: SubscriptionRecord[] = [
+  it("returns cacheView records when summary is unavailable", () => {
+    const cacheViewSubscriptions: SubscriptionRecord[] = [
       {
         id: "sub-yearly",
         groupId: 4,
@@ -32,11 +32,11 @@ describe("mergeSubscriptionRecords", () => {
       }
     ];
 
-    expect(mergeSubscriptionRecords(snapshotSubscriptions, null)).toEqual(snapshotSubscriptions);
+    expect(mergeSubscriptionRecords(cacheViewSubscriptions, null)).toEqual(cacheViewSubscriptions);
   });
 
-  it("prefers summary rows when they expose more subscriptions than the snapshot", () => {
-    const snapshotSubscriptions: SubscriptionRecord[] = [
+  it("prefers summary rows when they expose more subscriptions than the cacheView", () => {
+    const cacheViewSubscriptions: SubscriptionRecord[] = [
       {
         id: "sub-yearly",
         groupId: 4,
@@ -81,7 +81,7 @@ describe("mergeSubscriptionRecords", () => {
       ]
     };
 
-    const merged = mergeSubscriptionRecords(snapshotSubscriptions, summary);
+    const merged = mergeSubscriptionRecords(cacheViewSubscriptions, summary);
 
     expect(merged).toHaveLength(2);
     expect(merged.map((item) => item.groupName)).toEqual(["CodeX Plus 月度", "CodeX Plus 年度"]);
@@ -353,7 +353,7 @@ describe("buildSubscriptionUsageInsights", () => {
 
     const result = buildSubscriptionUsageInsights({
       summary,
-      snapshotSubscriptions: []
+      cacheViewSubscriptions: []
     });
 
     expect(result.rows).toHaveLength(1);
@@ -365,8 +365,8 @@ describe("buildSubscriptionUsageInsights", () => {
     });
   });
 
-  it("falls back to snapshot subscriptions when summary is unavailable", () => {
-    const snapshotSubscriptions: SubscriptionRecord[] = [
+  it("falls back to cacheView subscriptions when summary is unavailable", () => {
+    const cacheViewSubscriptions: SubscriptionRecord[] = [
       {
         id: "sub-current",
         groupId: 7,
@@ -391,7 +391,7 @@ describe("buildSubscriptionUsageInsights", () => {
 
     const result = buildSubscriptionUsageInsights({
       summary: null,
-      snapshotSubscriptions
+      cacheViewSubscriptions
     });
 
     expect(result.rows).toHaveLength(1);

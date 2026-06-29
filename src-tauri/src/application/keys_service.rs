@@ -2,29 +2,17 @@ use anyhow::Result;
 use serde_json::Value;
 
 use crate::contracts::{GroupRecord, KeyMutationInput, KeyPatchInput, ManagedKeyRecord, PaginatedResult};
+use crate::infrastructure::sqlite::repositories;
 use crate::infrastructure::sub2api::normalizers::{
-    build_paginated, normalize_group_record, normalize_items, normalize_managed_key_record,
+    normalize_managed_key_record,
 };
 
-use super::{proxy_service, AppContext};
+use super::{upstream_service, AppContext};
 
 pub async fn get_available_groups(ctx: &AppContext, account_id: &str) -> Result<Vec<GroupRecord>> {
-    let raw = match proxy_service::account_proxy_request(
-        ctx,
-        account_id,
-        "/api/v1/groups/available",
-        "GET",
-        None,
-    )
-    .await
-    {
-        Ok(raw) => raw,
-        Err(error) if is_optional_endpoint_unavailable(&error) => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    Ok(normalize_items(&raw)
-        .iter()
-        .map(normalize_group_record)
+    Ok(repositories::list_group_cache(&ctx.db, account_id)?
+        .into_iter()
+        .map(|record| record.row)
         .collect())
 }
 
@@ -34,19 +22,11 @@ pub async fn list_managed_keys(
     page: i64,
     page_size: i64,
 ) -> Result<PaginatedResult<ManagedKeyRecord>> {
-    let raw = proxy_service::account_proxy_request(
-        ctx,
-        account_id,
-        &format!("/api/v1/keys?page={page}&page_size={page_size}"),
-        "GET",
-        None,
-    )
-    .await?;
-    let items = normalize_items(&raw)
-        .iter()
-        .map(normalize_managed_key_record)
-        .collect();
-    Ok(build_paginated(&raw, items, page, page_size))
+    let rows = repositories::list_key_cache(&ctx.db, account_id)?
+        .into_iter()
+        .map(|record| record.row)
+        .collect::<Vec<_>>();
+    Ok(paginate_cached_keys(rows, page, page_size))
 }
 
 pub async fn get_managed_key(
@@ -54,24 +34,9 @@ pub async fn get_managed_key(
     account_id: &str,
     key_id: &str,
 ) -> Result<ManagedKeyRecord> {
-    match proxy_service::account_proxy_request(
-        ctx,
-        account_id,
-        &format!("/api/v1/keys/{key_id}"),
-        "GET",
-        None,
-    )
-    .await
-    {
-        Ok(raw) => Ok(normalize_managed_key_record(&raw)),
-        Err(error) if is_optional_endpoint_unavailable(&error) => {
-            if let Some(record) = load_managed_key_from_list(ctx, account_id, key_id).await? {
-                return Ok(record);
-            }
-            Err(error)
-        }
-        Err(error) => Err(error),
-    }
+    repositories::find_key_cache(&ctx.db, account_id, key_id)?
+        .map(|record| record.row)
+        .ok_or_else(|| anyhow::anyhow!("Key 不存在。"))
 }
 
 pub async fn create_managed_key(
@@ -79,12 +44,18 @@ pub async fn create_managed_key(
     account_id: &str,
     payload: KeyMutationInput,
 ) -> Result<ManagedKeyRecord> {
-    let raw = proxy_service::account_proxy_request(
+    let raw = upstream_service::account_upstream_request(
         ctx,
         account_id,
         "/api/v1/keys",
         "POST",
         Some(key_mutation_payload(&payload, false)),
+    )
+    .await?;
+    super::data_center_service::sync_keys_scope(
+        ctx,
+        account_id,
+        crate::contracts::DataSyncTrigger::PostWrite,
     )
     .await?;
     Ok(normalize_managed_key_record(&raw))
@@ -96,7 +67,7 @@ pub async fn update_managed_key(
     key_id: &str,
     payload: KeyPatchInput,
 ) -> Result<ManagedKeyRecord> {
-    let raw = proxy_service::account_proxy_request(
+    let raw = upstream_service::account_upstream_request(
         ctx,
         account_id,
         &format!("/api/v1/keys/{key_id}"),
@@ -104,16 +75,28 @@ pub async fn update_managed_key(
         Some(key_patch_payload(&payload)),
     )
     .await?;
+    super::data_center_service::sync_keys_scope(
+        ctx,
+        account_id,
+        crate::contracts::DataSyncTrigger::PostWrite,
+    )
+    .await?;
     Ok(normalize_managed_key_record(&raw))
 }
 
 pub async fn delete_managed_key(ctx: &AppContext, account_id: &str, key_id: &str) -> Result<bool> {
-    proxy_service::account_proxy_request(
+    upstream_service::account_upstream_request(
         ctx,
         account_id,
         &format!("/api/v1/keys/{key_id}"),
         "DELETE",
         None,
+    )
+    .await?;
+    super::data_center_service::sync_keys_scope(
+        ctx,
+        account_id,
+        crate::contracts::DataSyncTrigger::PostWrite,
     )
     .await?;
     Ok(true)
@@ -213,77 +196,52 @@ fn key_patch_payload(payload: &KeyPatchInput) -> Value {
     Value::Object(body)
 }
 
-fn is_optional_endpoint_unavailable(error: &anyhow::Error) -> bool {
-    let message = error.to_string();
-    message.contains("未找到可用的接口路径") || message.contains("404")
-}
-
-async fn load_managed_key_from_list(
-    ctx: &AppContext,
-    account_id: &str,
-    key_id: &str,
-) -> Result<Option<ManagedKeyRecord>> {
-    let raw = proxy_service::account_proxy_request(
-        ctx,
-        account_id,
-        "/api/v1/keys?page=1&page_size=100",
-        "GET",
-        None,
-    )
-    .await?;
-    Ok(find_managed_key_in_list_payload(&raw, key_id))
-}
-
-fn find_managed_key_in_list_payload(raw: &Value, key_id: &str) -> Option<ManagedKeyRecord> {
-    normalize_items(raw)
+fn paginate_cached_keys(
+    rows: Vec<ManagedKeyRecord>,
+    page: i64,
+    page_size: i64,
+) -> PaginatedResult<ManagedKeyRecord> {
+    let safe_page_size = page_size.max(1);
+    let safe_page = page.max(1);
+    let total = rows.len() as i64;
+    let pages = ((total as f64) / safe_page_size as f64).ceil().max(1.0) as i64;
+    let start = ((safe_page - 1) * safe_page_size) as usize;
+    let items = rows
         .into_iter()
-        .map(|item| normalize_managed_key_record(&item))
-        .find(|record| record.key.id == key_id)
+        .skip(start)
+        .take(safe_page_size as usize)
+        .collect::<Vec<_>>();
+    PaginatedResult {
+        items,
+        page: safe_page,
+        page_size: safe_page_size,
+        total,
+        pages,
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{key_patch_payload, paginate_cached_keys};
+    use crate::contracts::{KeyPatchInput, ManagedKeyRecord, KeyRecord};
     use serde_json::json;
 
-    use super::{find_managed_key_in_list_payload, key_patch_payload};
-    use crate::contracts::KeyPatchInput;
-
     #[test]
-    fn finds_matching_key_from_list_payload() {
-        let raw = json!({
-            "items": [
-                {
-                    "id": "key-1",
-                    "name": "First Key",
-                    "status": "active",
-                    "group": { "name": "Annual", "platform": "openai" }
-                },
-                {
-                    "id": "key-2",
-                    "name": "Second Key",
-                    "status": "inactive",
-                    "group": { "name": "Monthly", "platform": "anthropic" }
-                }
-            ]
-        });
+    fn paginates_cached_keys() {
+        let rows = vec![
+            build_key("key-1", "First Key"),
+            build_key("key-2", "Second Key"),
+            build_key("key-3", "Third Key"),
+        ];
 
-        let record = find_managed_key_in_list_payload(&raw, "key-2").expect("expected key to be found");
+        let page = paginate_cached_keys(rows, 2, 2);
 
-        assert_eq!(record.key.id, "key-2");
-        assert_eq!(record.key.name, "Second Key");
-        assert_eq!(record.key.group_name.as_deref(), Some("Monthly"));
-        assert_eq!(record.key.platform.as_deref(), Some("anthropic"));
-    }
-
-    #[test]
-    fn returns_none_when_key_is_missing_from_list_payload() {
-        let raw = json!({
-            "items": [
-                { "id": "key-1", "name": "First Key", "status": "active" }
-            ]
-        });
-
-        assert!(find_managed_key_in_list_payload(&raw, "missing-key").is_none());
+        assert_eq!(page.page, 2);
+        assert_eq!(page.page_size, 2);
+        assert_eq!(page.total, 3);
+        assert_eq!(page.pages, 2);
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].key.id, "key-3");
     }
 
     #[test]
@@ -296,5 +254,36 @@ mod tests {
         let body = key_patch_payload(&payload);
 
         assert_eq!(body, json!({ "status": "inactive" }));
+    }
+
+    fn build_key(id: &str, name: &str) -> ManagedKeyRecord {
+        ManagedKeyRecord {
+            key: KeyRecord {
+                id: id.into(),
+                group_id: None,
+                name: name.into(),
+                status: "active".into(),
+                platform: Some("openai".into()),
+                group_name: Some("Annual".into()),
+                expires_at: None,
+                last_used_at: None,
+                quota: None,
+                quota_used: None,
+                rate_limit5h: None,
+                rate_limit1d: None,
+                rate_limit7d: None,
+                usage5h: None,
+                usage1d: None,
+                usage7d: None,
+            },
+            api_key_id: None,
+            raw_key: None,
+            user_id: None,
+            ip_whitelist: None,
+            ip_blacklist: None,
+            window5h_start: None,
+            window1d_start: None,
+            window7d_start: None,
+        }
     }
 }

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use crate::contracts::{
     DailyUsagePoint, DashboardModelsPayload, GroupRecord, KeyRecord, ManagedKeyRecord,
-    ModelUsagePoint, OrderRecord, PaginatedResult, PaymentConfigRecord, PlatformQuotaPayload,
+    ModelUsagePoint, PaginatedResult, PlatformQuotaPayload,
     PlatformQuotaRecord, ProfileUpdateInput, SubscriptionQuotaWindow, SubscriptionSummaryPayload,
     SubscriptionSummaryRecord, UsageRow, UsageStatsRecord, UsageTrendPayload, UserIdentityBinding,
     UserProfileRecord,
@@ -144,6 +144,15 @@ pub fn normalize_usage_row(item: &Value) -> UsageRow {
         request_type: pick_string(item, &["request_type"], None),
         stream: pick_value(item, "stream").and_then(Value::as_bool),
         billing_type: pick_optional_number(item, &["billing_type"]).map(|item| item as i64),
+        image_count: pick_optional_number(item, &["image_count"]).map(|item| item as i64),
+        image_size: pick_string(item, &["image_size"], None),
+        image_input_size: pick_string(item, &["image_input_size"], None),
+        image_output_size: pick_string(item, &["image_output_size"], None),
+        image_output_tokens: pick_optional_number(item, &["image_output_tokens"]).map(|item| item as i64),
+        image_output_cost: pick_optional_number(item, &["image_output_cost"]),
+        image_size_source: pick_string(item, &["image_size_source"], None),
+        image_size_breakdown: pick_value(item, "image_size_breakdown").map(|value| value.to_string()),
+        media_type: pick_string(item, &["media_type"], None),
         rate_multiplier: pick_optional_number(item, &["rate_multiplier"]),
         user_agent: pick_string(item, &["user_agent"], None),
         api_key_name: pick_string(item, &["api_key.name", "api_key_name"], None),
@@ -395,42 +404,6 @@ pub fn normalize_platform_quotas(raw: &Value) -> PlatformQuotaPayload {
                 remaining: pick_optional_number(&item, &["remaining"]),
             })
             .collect(),
-    }
-}
-
-pub fn normalize_payment_config(raw: &Value) -> PaymentConfigRecord {
-    PaymentConfigRecord {
-        enabled: pick_bool(raw, "enabled"),
-        min_amount: pick_number(raw, &["min_amount"], 0.0),
-        max_amount: pick_number(raw, &["max_amount"], 0.0),
-        daily_limit: pick_number(raw, &["daily_limit"], 0.0),
-        order_timeout_minutes: pick_number(raw, &["order_timeout_minutes"], 0.0) as i64,
-        max_pending_orders: pick_number(raw, &["max_pending_orders"], 0.0) as i64,
-        enabled_payment_types: raw
-            .get("enabled_payment_types")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items.iter()
-                    .filter_map(Value::as_str)
-                    .map(ToString::to_string)
-                    .collect()
-            })
-            .unwrap_or_default(),
-    }
-}
-
-pub fn normalize_order_record(item: &Value) -> OrderRecord {
-    OrderRecord {
-        id: pick_number(item, &["id"], 0.0) as i64,
-        status: pick_string(item, &["status"], Some("unknown")).unwrap_or_else(|| "unknown".into()),
-        amount: pick_number(item, &["amount"], 0.0),
-        provider_instance_id: pick_optional_number(item, &["provider_instance_id"]).map(|item| item as i64),
-        out_trade_no: pick_string(item, &["out_trade_no"], None),
-        created_at: pick_string(item, &["created_at"], None),
-        updated_at: pick_string(item, &["updated_at"], None),
-        paid_at: pick_string(item, &["paid_at"], None),
-        refunded_at: pick_string(item, &["refunded_at"], None),
-        product_name: pick_string(item, &["product_name", "plan_name", "name"], None),
     }
 }
 

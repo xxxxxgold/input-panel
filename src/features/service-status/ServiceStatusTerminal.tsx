@@ -23,6 +23,7 @@ export function ServiceStatusTerminal({
   loading,
   refreshing,
   lastError,
+  lastSyncedAt,
   enabled = true,
   refreshIntervalSeconds = 5,
   onRefresh
@@ -31,6 +32,7 @@ export function ServiceStatusTerminal({
   loading: boolean;
   refreshing: boolean;
   lastError: string | null;
+  lastSyncedAt?: number | null;
   enabled?: boolean;
   refreshIntervalSeconds?: number;
   onRefresh: () => void | Promise<void>;
@@ -38,6 +40,7 @@ export function ServiceStatusTerminal({
   const services = status?.services ?? [];
   const allOk = status?.allOk ?? false;
   const generatedAtText = status ? formatUnixDateTime(status.generatedAt) : "-";
+  const lastSyncedText = lastSyncedAt ? formatDateTimeFull(new Date(lastSyncedAt).toISOString()) : generatedAtText;
   const onlineCount = services.filter((service) => service.last?.ok).length;
   const totalSamples = services.reduce((sum, service) => sum + service.history.length, 0);
   const avgLatency = computeAverageLatency(services);
@@ -57,7 +60,8 @@ export function ServiceStatusTerminal({
           detail={
             <>
               <DetailItem label="状态总览" value={allOk ? "全部正常" : "存在异常"} />
-              <DetailItem label="最后更新时间" value={generatedAtText} />
+              <DetailItem label="最近同步时间" value={lastSyncedText} />
+              <DetailItem label="最近探测结果" value={generatedAtText} />
               <DetailItem label="已采样点数" value={String(totalSamples)} />
             </>
           }
@@ -163,7 +167,7 @@ export function ServiceStatusTerminal({
               <div>
                 <strong>{allOk ? "all systems operational" : "degraded status detected"}</strong>
                 <p>
-                  上次刷新 {generatedAtText} · 本地时钟 {formatLiveClockTime(new Date())}
+                  上次同步 {lastSyncedText} · 最近探测 {generatedAtText} · 本地时钟 {formatLiveClockTime(new Date())}
                   {lastError ? ` · 最近一次刷新失败` : ""}
                 </p>
               </div>
@@ -175,7 +179,8 @@ export function ServiceStatusTerminal({
             <div className="status-terminal-body">
               <div className="status-terminal-block">
                 <p className="status-terminal-comment"># AI.INPUT.IM service monitor · polling every {refreshIntervalSeconds}s</p>
-                <p className="status-terminal-comment"># Last synced: {generatedAtText}</p>
+                <p className="status-terminal-comment"># Last synced: {lastSyncedText}</p>
+                <p className="status-terminal-comment"># Latest probe result: {generatedAtText}</p>
               </div>
 
               <div className="status-terminal-block">

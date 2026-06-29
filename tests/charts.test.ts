@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildChartOptionSignature,
   buildPlatformBarChartOption,
   buildPlatformDonutChartOption,
   buildTrendAreaChartOption,
@@ -114,5 +115,39 @@ describe("charts helpers", () => {
     expect(option.xAxis?.data).toEqual(["azure", "openai"]);
     expect(option.series?.[0]?.type).toBe("bar");
     expect(option.series?.[0]?.data).toEqual([0.44, 1.22]);
+  });
+
+  it("builds a stable signature for semantically identical chart options", () => {
+    const formatter = (value: number) => `${value}%`;
+    const left = {
+      tooltip: {
+        trigger: "axis",
+        formatter
+      },
+      yAxis: {
+        axisLabel: {
+          formatter
+        }
+      },
+      series: [
+        { name: "请求数", type: "bar", data: [1, 2, 3] }
+      ]
+    };
+    const right = {
+      series: [
+        { data: [1, 2, 3], type: "bar", name: "请求数" }
+      ],
+      yAxis: {
+        axisLabel: {
+          formatter
+        }
+      },
+      tooltip: {
+        formatter,
+        trigger: "axis"
+      }
+    };
+
+    expect(buildChartOptionSignature(left)).toBe(buildChartOptionSignature(right));
   });
 });

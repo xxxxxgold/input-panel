@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildQqAvatarUrl, resolveAccountAvatarUrl } from "../src/shared/lib/account-avatar";
+import { resolveAccountAvatarUrl } from "../src/shared/lib/account-avatar";
 import type { UserProfileRecord } from "../src/types";
 
 function buildProfileRecord(overrides: Partial<UserProfileRecord> = {}): UserProfileRecord {
@@ -28,32 +28,20 @@ function buildProfileRecord(overrides: Partial<UserProfileRecord> = {}): UserPro
   };
 }
 
-describe("buildQqAvatarUrl", () => {
-  it("builds a qq avatar url for qq mailbox accounts", () => {
-    expect(buildQqAvatarUrl("2906036532@qq.com")).toBe("https://q1.qlogo.cn/g?b=qq&nk=2906036532&s=100");
-  });
-
-  it("returns null for non-qq mailboxes", () => {
-    expect(buildQqAvatarUrl("demo@example.com")).toBeNull();
-  });
-});
-
 describe("resolveAccountAvatarUrl", () => {
   it("prefers the explicit profile avatar when available", () => {
     expect(
       resolveAccountAvatarUrl({
-        accountEmail: "2906036532@qq.com",
         profileRecord: buildProfileRecord({ avatarUrl: "https://cdn.example.com/avatar.png" })
       })
     ).toBe("https://cdn.example.com/avatar.png");
   });
 
-  it("falls back to qq avatar resolution from the account email", () => {
+  it("returns null when sub2api profile does not provide avatar_url", () => {
     expect(
       resolveAccountAvatarUrl({
-        accountEmail: "2906036532@qq.com",
         profileRecord: buildProfileRecord({ avatarUrl: null })
       })
-    ).toBe("https://q1.qlogo.cn/g?b=qq&nk=2906036532&s=100");
+    ).toBeNull();
   });
 });

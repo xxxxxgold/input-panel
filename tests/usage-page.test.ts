@@ -72,6 +72,8 @@ describe("UsagePage", () => {
           total: 1,
           pages: 1
         },
+        usagePageSize: 20,
+        usagePageSizeOptions: [10, 20, 50, 100],
         usageScopeRows: [
           {
             id: "usage-1",
@@ -160,6 +162,7 @@ describe("UsagePage", () => {
         ],
         handleUsageSearch: async () => {},
         handleUsagePageChange: async () => {},
+        handleUsagePageSizeChange: async () => {},
         usageTrend: null,
         usageModels: null
       })
@@ -192,5 +195,90 @@ describe("UsagePage", () => {
     expect(html).toContain("缓存读取单价");
     expect(html).toContain("8.01 秒");
     expect(html).toContain("15.84 秒");
+    expect(html).toContain("每页条数");
+    expect(html).toContain(">20 条<");
+  });
+
+  it("renders condensed pagination with jump controls", () => {
+    const html = renderToStaticMarkup(
+      createElement(UsagePage, {
+        managedKeys: null,
+        usageApiKeyFilter: "",
+        setUsageApiKeyFilter: () => {},
+        usageRangePickerRef: createRef<HTMLDivElement>(),
+        usageRangePickerOpen: false,
+        toggleUsageRangePicker: () => {},
+        usageRangeLabel: "近 30 天",
+        usageRangePreset: "last30Days",
+        applyUsagePreset: () => {},
+        usageDraftRange: { startDate: "2026-05-16", endDate: "2026-06-14" },
+        setUsageDraftRange: () => ({ startDate: "2026-05-16", endDate: "2026-06-14" }),
+        applyUsageRange: async () => {},
+        usageStats: null,
+        usageModelSummaries: [],
+        usageModelSummariesLoading: false,
+        usageRecords: {
+          items: [
+            {
+              id: "usage-1",
+              apiKeyId: 3641,
+              createdAt: "2026-06-14T14:21:16.000Z",
+              model: "gpt-5.4",
+              reasoningEffort: "medium",
+              endpoint: "/responses",
+              upstreamEndpoint: "/v1/responses",
+              actualCost: 0.1,
+              totalCost: 0.1,
+              inputTokens: 1000,
+              outputTokens: 200,
+              cacheCreationTokens: 100,
+              cacheReadTokens: 50,
+              totalTokens: 1350,
+              firstTokenMs: 2000,
+              durationMs: 5000,
+              billingMode: "token",
+              requestType: "stream",
+              stream: true,
+              billingType: 1,
+              rateMultiplier: 1,
+              userAgent: "Codex Desktop",
+              apiKeyName: "codex",
+              platform: "openai",
+              subscriptionName: "CodeX Plus",
+              groupName: "CodeX Plus"
+            }
+          ],
+          page: 10,
+          pageSize: 20,
+          total: 1286,
+          pages: 65
+        },
+        usagePageSize: 50,
+        usagePageSizeOptions: [10, 20, 50, 100],
+        usageScopeRows: [],
+        handleUsageSearch: async () => {},
+        handleUsagePageChange: async () => {},
+        handleUsagePageSizeChange: async () => {},
+        usageTrend: null,
+        usageModels: null
+      })
+    );
+
+    expect(html).toContain("共 1,286 条");
+    expect(html).toContain("第 10 / 65 页");
+    expect(html).toContain("usage-pagination-page active");
+    expect(html).toContain(">1<");
+    expect(html).toContain(">2<");
+    expect(html).toContain(">3<");
+    expect(html).toContain(">9<");
+    expect(html).toContain(">10<");
+    expect(html).toContain(">11<");
+    expect(html).toContain(">63<");
+    expect(html).toContain(">64<");
+    expect(html).toContain(">65<");
+    expect(html).toContain("usage-pagination-ellipsis");
+    expect(html).toContain("跳转页码");
+    expect(html).toContain(">跳转<");
+    expect(html).toContain(">50 条<");
   });
 });

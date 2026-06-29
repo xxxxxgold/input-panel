@@ -4,15 +4,22 @@ import {
   DISABLED_BALANCE_WARNING,
   normalizeBalanceWarning
 } from "../../account-warning";
-import type { AccountInput, AccountRuntime, SiteInput, SiteRecord } from "../../types";
+import type {
+  AccountInput,
+  AccountRuntime,
+  AccountSyncStatusRecord,
+  SiteInput,
+  SiteRecord
+} from "../../types";
 import {
   completeAccount2fa,
   createAccount,
   createSite,
+  getAccountSyncStatus,
   loginAccount,
-  refreshAccount,
   removeAccount,
   removeSite,
+  syncAccountData,
   updateAccount,
   updateSite
 } from "./client";
@@ -38,6 +45,14 @@ export interface AccountLoginModalState {
   emailMasked?: string | null;
 }
 
+interface RefreshAccountOptions {
+  busyText?: string;
+  successMessage?: string;
+  silent?: boolean;
+  triggerSource?: "manual" | "stale_auto";
+  scope?: "core" | "keys" | "usage" | "full";
+}
+
 export function useAccountWorkspace({
   sites,
   accounts,
@@ -46,6 +61,7 @@ export function useAccountWorkspace({
   setSelectedSiteId,
   setSelectedAccountId,
   loadOverview,
+  onSyncStatusChange,
   setBusyText,
   setError
 }: {
@@ -55,7 +71,8 @@ export function useAccountWorkspace({
   selectedAccountId: string | null;
   setSelectedSiteId: (value: string | null) => void;
   setSelectedAccountId: (value: string | null) => void;
-  loadOverview: () => Promise<void>;
+  loadOverview: (options?: { busyText?: string; successMessage?: string }) => Promise<void>;
+  onSyncStatusChange?: (accountId: string, statuses: AccountSyncStatusRecord[]) => void;
   setBusyText: (value: string | null) => void;
   setError: (value: string | null) => void;
 }) {
@@ -88,7 +105,7 @@ export function useAccountWorkspace({
       return (
         item.label.toLowerCase().includes(deferredAccountSearch) ||
         item.email.toLowerCase().includes(deferredAccountSearch) ||
-        item.site?.name.toLowerCase().includes(deferredAccountSearch)
+        item.site?.name?.toLowerCase().includes(deferredAccountSearch)
       );
     });
   }, [accounts, deferredAccountSearch, selectedSiteId]);
@@ -157,10 +174,12 @@ export function useAccountWorkspace({
     setAccountForm((prev) => ({ ...prev, balanceWarning: normalizeBalanceWarning(parsed) }));
   }
 
-  function openAccountManager(account: AccountRuntime) {
+  function openAccountManager(account?: AccountRuntime | null) {
     setAccountSearch("");
-    setSelectedSiteId(account.siteId);
-    setSelectedAccountId(account.id);
+    if (account) {
+      setSelectedSiteId(account.siteId);
+      setSelectedAccountId(account.id);
+    }
     setAccountManagerOpen(true);
   }
 
@@ -317,18 +336,39 @@ export function useAccountWorkspace({
     }
   }
 
-  async function handleRefreshAccount(accountId: string) {
-    setBusyText("正在刷新账号数据...");
-    setError(null);
+  async function handleRefreshAccount(accountId: string, options?: RefreshAccountOptions) {
+    const busyText = options?.busyText ?? "正在刷新账号数据...";
+    if (!options?.silent) {
+      setBusyText(busyText);
+      setError(null);
+    }
     try {
-      const updated = await refreshAccount(accountId);
-      setSelectedAccountId(updated.id);
-      setSelectedSiteId(updated.siteId);
-      await loadOverview();
+      const syncStatus = await syncAccountData(accountId, {
+        scope: options?.scope ?? "full",
+        triggerSource: options?.triggerSource ?? "manual"
+      });
+      onSyncStatusChange?.(accountId, syncStatus.statuses);
+      await loadOverview(
+        options?.successMessage
+          ? {
+              successMessage: options.successMessage
+            }
+          : undefined
+      );
     } catch (cause) {
-      setError((cause as Error).message);
+      try {
+        const latestStatus = await getAccountSyncStatus(accountId);
+        onSyncStatusChange?.(accountId, latestStatus.statuses);
+      } catch {
+        // 以原始同步错误为准。
+      }
+      if (!options?.silent) {
+        setError((cause as Error).message);
+      }
     } finally {
-      setBusyText(null);
+      if (!options?.silent) {
+        setBusyText(null);
+      }
     }
   }
 

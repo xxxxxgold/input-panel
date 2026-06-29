@@ -46,6 +46,15 @@ describe("UsagePage image billing presentation", () => {
               requestType: "sync",
               stream: false,
               billingType: 1,
+              imageCount: 4,
+              imageSize: "2K",
+              imageInputSize: "2048x2048",
+              imageOutputSize: null,
+              imageOutputTokens: 26000,
+              imageOutputCost: 0,
+              imageSizeSource: "input",
+              imageSizeBreakdown: null,
+              mediaType: null,
               rateMultiplier: 1,
               userAgent: "node",
               apiKeyName: "image",
@@ -79,12 +88,14 @@ describe("UsagePage image billing presentation", () => {
     expect(html).toContain(">计费尺寸<");
     expect(html).toContain(">2K<");
     expect(html).toContain(">估算分辨率<");
-    expect(html).toContain("2048×2048");
+    expect(html).toContain("2048x2048");
     expect(html).toContain(">尺寸来源<");
-    expect(html).toContain("输出 Token 估算");
+    expect(html).toContain("请求入参");
     expect(html).toContain(">单张价格<");
     expect(html).toContain("$0.201000");
     expect(html).toContain(">图片总价<");
     expect(html).toContain("$0.804000");
+    expect(html).toContain(">图片输出 Token<");
+    expect(html).toContain("26.0K");
   });
 });

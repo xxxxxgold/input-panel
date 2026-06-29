@@ -6,7 +6,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { openMainWindow } from "../features/desktop-ui/client";
 import type { NotificationInboxItem } from "../features/overview/components/AlertInboxModal";
-import type { OverviewPayload } from "../types";
+import type { OverviewPayload, SubscriptionRecord, UsageRow } from "../types";
 import { compact, formatTime, formatUsd } from "../shared/lib/formatters";
 import { EmptyState } from "../shared/ui/EmptyState";
 import { isTauriRuntime } from "../shared/transport/runtime";
@@ -148,20 +148,23 @@ function FloatingAlertsPanel({
 }
 
 function FloatingSubscriptionsPanel({
-  overview,
+  accountLabel,
+  siteName,
+  balance,
+  subscriptions,
   onOpenMain
 }: {
-  overview: OverviewPayload | null;
+  accountLabel: string | null;
+  siteName: string | null;
+  balance: number | null;
+  subscriptions: SubscriptionRecord[];
   onOpenMain: () => void;
 }) {
-  const topAccount = overview?.accounts.find((item) => item.snapshot) ?? overview?.accounts[0] ?? null;
-  const subscriptions = topAccount?.snapshot?.subscriptions.slice(0, 3) ?? [];
-
-  if (!topAccount?.snapshot) {
+  if (balance === null) {
     return (
       <>
         <FloatingPreviewHeader icon={Crown} title="订阅与账号" ctaLabel="订阅详情" onOpenMain={onOpenMain} />
-        <EmptyState title="暂无订阅信息" detail="当前账号还没有可展示的订阅快照。" compact />
+        <EmptyState title="暂无订阅信息" detail="当前账号还没有可展示的订阅数据。" compact />
       </>
     );
   }
@@ -172,12 +175,12 @@ function FloatingSubscriptionsPanel({
       <div className="floating-preview-list">
         <button type="button" className="floating-preview-row neutral" onClick={onOpenMain}>
           <div>
-            <strong>{topAccount.label}</strong>
-            <p>{topAccount.site?.name ?? topAccount.snapshot.siteName}</p>
+            <strong>{accountLabel ?? "当前账号"}</strong>
+            <p>{siteName ?? "未命名站点"}</p>
           </div>
-          <span>{formatUsd(topAccount.snapshot.balance, 2)}</span>
+          <span>{formatUsd(balance, 2)}</span>
         </button>
-        {subscriptions.map((subscription) => (
+        {subscriptions.slice(0, 3).map((subscription) => (
           <button key={subscription.id} type="button" className="floating-preview-row neutral" onClick={onOpenMain}>
             <div>
               <strong>{subscription.name}</strong>
@@ -191,9 +194,7 @@ function FloatingSubscriptionsPanel({
   );
 }
 
-function FloatingUsagePanel({ overview, onOpenMain }: { overview: OverviewPayload | null; onOpenMain: () => void }) {
-  const topAccount = overview?.accounts.find((item) => item.snapshot) ?? overview?.accounts[0] ?? null;
-  const recentUsage = topAccount?.snapshot?.recentUsage.slice(0, 5) ?? [];
+function FloatingUsagePanel({ recentUsage, onOpenMain }: { recentUsage: UsageRow[]; onOpenMain: () => void }) {
 
   if (recentUsage.length === 0) {
     return (
@@ -226,16 +227,28 @@ function FloatingUsagePanel({ overview, onOpenMain }: { overview: OverviewPayloa
 
 export function FloatingPanelWindow({
   overview,
+  currentAccountLabel,
+  currentSiteName,
+  currentAccountBalance,
+  currentAccountSubscriptions,
+  currentAccountRecentUsage,
   notificationItems,
   loading,
   keepVisible,
+  floatingPanelOpacity,
   onRefresh,
   initialPanel = "overview"
 }: {
   overview: OverviewPayload | null;
+  currentAccountLabel: string | null;
+  currentSiteName: string | null;
+  currentAccountBalance: number | null;
+  currentAccountSubscriptions: SubscriptionRecord[];
+  currentAccountRecentUsage: UsageRow[];
   notificationItems: NotificationInboxItem[];
   loading: boolean;
   keepVisible: boolean;
+  floatingPanelOpacity: number;
   onRefresh: () => void;
   initialPanel?: FloatingPanelKey;
 }) {
@@ -340,9 +353,22 @@ export function FloatingPanelWindow({
       case "alerts":
         return <FloatingAlertsPanel items={notificationItems} onOpenMain={() => handleOpenMain("alerts")} />;
       case "subscriptions":
-        return <FloatingSubscriptionsPanel overview={overview} onOpenMain={() => handleOpenMain("subscriptions")} />;
+        return (
+          <FloatingSubscriptionsPanel
+            accountLabel={currentAccountLabel}
+            siteName={currentSiteName}
+            balance={currentAccountBalance}
+            subscriptions={currentAccountSubscriptions}
+            onOpenMain={() => handleOpenMain("subscriptions")}
+          />
+        );
       case "usage":
-        return <FloatingUsagePanel overview={overview} onOpenMain={() => handleOpenMain("usage")} />;
+        return (
+          <FloatingUsagePanel
+            recentUsage={currentAccountRecentUsage.slice(0, 5)}
+            onOpenMain={() => handleOpenMain("usage")}
+          />
+        );
       case "overview":
       default:
         return <FloatingOverviewPanel overview={overview} onOpenMain={() => handleOpenMain("overview")} />;
@@ -351,7 +377,8 @@ export function FloatingPanelWindow({
 
   return (
     <main
-      className={`floating-panel-window dock-${dock} ${visible ? "visible" : "hidden"}`}
+      className={`floating-panel-window dock-${dock} ${visible ? "visible" : "hidden"} ${keepVisible ? "pinned-glass" : ""}`}
+      style={{ ["--floating-panel-opacity" as string]: floatingPanelOpacity }}
       onMouseEnter={() => {
         if (!tauriRuntime) {
           return;
@@ -367,11 +394,13 @@ export function FloatingPanelWindow({
     >
       <div className={`floating-panel-shell dock-${dock}`}>
         <section className="floating-panel-window-preview">
-          <div className="floating-preview-card visible">{renderPanel()}</div>
+          <div className={`floating-preview-card visible dock-${dock} ${keepVisible ? "pinned" : "hover-preview"}`.trim()}>
+            {renderPanel()}
+          </div>
         </section>
 
         <section className="floating-panel-window-menu">
-          <div className="floating-menu-card visible">
+          <div className={`floating-menu-card visible dock-${dock}`}>
             <div className="floating-menu-header">
               <strong>导航</strong>
               <button

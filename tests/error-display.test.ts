@@ -16,4 +16,10 @@ describe("formatAppErrorMessage", () => {
       "请求过于频繁, 请稍后再试。"
     );
   });
+
+  it("maps service status upstream failures to a user-friendly message", () => {
+    expect(
+      formatAppErrorMessage("error sending request for url (https://status.input.im/api/status)")
+    ).toBe("服务状态请求失败, 远端监控接口暂时不可用。");
+  });
 });

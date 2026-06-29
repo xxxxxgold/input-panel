@@ -68,6 +68,108 @@ export function OverviewPage({
       return left.platform.localeCompare(right.platform, "zh-CN");
     });
 
+  function renderPlatformDistributionCard() {
+    return (
+      <SectionCard title="平台分布" subtitle="按平台汇总实际成本与 tokens">
+        {platformCards.length > 0 ? (
+          <div className="platform-distribution-grid motion-stagger-grid">
+            {platformCards.map((item, index) => (
+              <article
+                key={item.platform}
+                className="platform-distribution-card motion-stagger-item"
+                style={{ ["--motion-order" as string]: index }}
+              >
+                <div className="platform-distribution-head">
+                  <div className="platform-distribution-copy">
+                    <span className="platform-distribution-rank">TOP {index + 1}</span>
+                    <strong>{item.platform}</strong>
+                    <p>{item.totalRequests.toLocaleString()} 请求</p>
+                  </div>
+                  <div className="platform-distribution-cost">
+                    <span>累计实际成本</span>
+                    <strong>${item.totalActualCost.toFixed(4)}</strong>
+                  </div>
+                </div>
+                <div className="platform-distribution-metrics">
+                  <div className="summary-stat compact-stat">
+                    <span>今日成本</span>
+                    <strong>${item.todayActualCost.toFixed(4)}</strong>
+                  </div>
+                  <div className="summary-stat compact-stat">
+                    <span>总 Tokens</span>
+                    <strong>{compact(item.totalTokens)}</strong>
+                  </div>
+                  <div className="summary-stat compact-stat">
+                    <span>总请求</span>
+                    <strong>{item.totalRequests.toLocaleString()}</strong>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <EmptyState title="当前没有平台汇总数据" detail="刷新账号后, 这里会按平台展示成本与 tokens 摘要。" compact />
+        )}
+      </SectionCard>
+    );
+  }
+
+  function renderSubscriptionsCard() {
+    return (
+      <SectionCard title="全部订阅" subtitle="当前账号返回的全部套餐与额度窗口">
+        {mergedCurrentAccountSubscriptions.length > 0 ? (
+          <SubscriptionList subscriptions={mergedCurrentAccountSubscriptions} />
+        ) : (
+          <EmptyState title="当前没有订阅数据" detail="该账号未返回有效订阅或套餐信息。" compact />
+        )}
+      </SectionCard>
+    );
+  }
+
+  function renderApiKeysCard() {
+    return (
+      <SectionCard title="全部 API Keys" subtitle="状态、最近使用、额度与限流摘要">
+        {currentAccountKeys.length > 0 ? (
+          <ApiKeyList keys={currentAccountKeys} />
+        ) : (
+          <EmptyState title="还没有 Key 数据" detail="登录并刷新后这里会展示 key 列表。" compact />
+        )}
+      </SectionCard>
+    );
+  }
+
+  function renderRecentUsageCard() {
+    return (
+      <SectionCard title="最近使用" subtitle="当前选中账号的近期调用">
+        <div className="table-list">
+          {currentAccountRecentUsage.slice(0, 8).map((row, index) => (
+            <div
+              key={row.id}
+              className="table-row table-row-motion"
+              style={{ ["--motion-order" as string]: index }}
+            >
+              <div className="recent-usage-copy">
+                <strong>{row.model}</strong>
+                <div className="recent-usage-meta">
+                  <span className="recent-usage-pill">{row.apiKeyName ?? "未知 Key"}</span>
+                  <span className="recent-usage-pill recent-usage-pill-endpoint">{row.endpoint ?? "-"}</span>
+                </div>
+              </div>
+              <div className="table-numbers recent-usage-numbers">
+                <strong>${row.actualCost.toFixed(5)}</strong>
+                <span>{compact(row.totalTokens)} tokens</span>
+                <small>时间 {formatTime(row.createdAt)}</small>
+              </div>
+            </div>
+          ))}
+          {currentAccountRecentUsage.length === 0 && (
+            <EmptyState title="还没有账号数据" detail="先登录账号并刷新数据。" compact />
+          )}
+        </div>
+      </SectionCard>
+    );
+  }
+
   return (
     <>
       <section className="metric-grid motion-stagger-grid overview-metric-grid">
@@ -147,100 +249,40 @@ export function OverviewPage({
         />
       </section>
 
-      <section className="content-grid overview-content-grid">
-        <UsageTrendSection
-          title="近 7 天趋势"
-          subtitle="对齐 dashboard/trend 接口, 聚合全部账号的成本、请求与缓存表现"
-          points={overview.trend}
-          emptyTitle="当前没有总览趋势数据"
-          emptyDetail="至少刷新一个账号后, 这里才会出现全部账号的聚合趋势。"
-        />
-
-        <SectionCard title="平台分布" subtitle="按平台汇总实际成本与 tokens">
-          {platformCards.length > 0 ? (
-            <div className="platform-distribution-grid motion-stagger-grid">
-              {platformCards.map((item, index) => (
-                <article
-                  key={item.platform}
-                  className="platform-distribution-card motion-stagger-item"
-                  style={{ ["--motion-order" as string]: index }}
-                >
-                  <div className="platform-distribution-head">
-                    <div className="platform-distribution-copy">
-                      <span className="platform-distribution-rank">TOP {index + 1}</span>
-                      <strong>{item.platform}</strong>
-                      <p>{item.totalRequests.toLocaleString()} 请求</p>
-                    </div>
-                    <div className="platform-distribution-cost">
-                      <span>累计实际成本</span>
-                      <strong>${item.totalActualCost.toFixed(4)}</strong>
-                    </div>
-                  </div>
-                  <div className="platform-distribution-metrics">
-                    <div className="summary-stat compact-stat">
-                      <span>今日成本</span>
-                      <strong>${item.todayActualCost.toFixed(4)}</strong>
-                    </div>
-                    <div className="summary-stat compact-stat">
-                      <span>总 Tokens</span>
-                      <strong>{compact(item.totalTokens)}</strong>
-                    </div>
-                    <div className="summary-stat compact-stat">
-                      <span>总请求</span>
-                      <strong>{item.totalRequests.toLocaleString()}</strong>
-                    </div>
-                  </div>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <EmptyState title="当前没有平台汇总数据" detail="刷新账号后, 这里会按平台展示成本与 tokens 摘要。" compact />
-          )}
-        </SectionCard>
-      </section>
-
-      <section className="content-grid overview-content-grid">
-        <SectionCard title="全部订阅" subtitle="当前账号返回的全部套餐与额度窗口">
-          {mergedCurrentAccountSubscriptions.length > 0 ? (
-            <SubscriptionList subscriptions={mergedCurrentAccountSubscriptions} />
-          ) : (
-            <EmptyState title="当前没有订阅数据" detail="该账号未返回有效订阅或套餐信息。" compact />
-          )}
-        </SectionCard>
-
-        <SectionCard title="全部 API Keys" subtitle="状态、最近使用、额度与限流摘要">
-          {currentAccountKeys.length > 0 ? (
-            <ApiKeyList keys={currentAccountKeys} />
-          ) : (
-            <EmptyState title="还没有 Key 数据" detail="登录并刷新后这里会展示 key 列表。" compact />
-          )}
-        </SectionCard>
-      </section>
-
-      <section className="stack-list">
-        <SectionCard title="最近使用" subtitle="当前选中账号的近期调用">
-          <div className="table-list">
-            {currentAccountRecentUsage.slice(0, 8).map((row, index) => (
-              <div
-                key={row.id}
-                className="table-row table-row-motion"
-                style={{ ["--motion-order" as string]: index }}
-              >
-                <div>
-                  <strong>{row.model}</strong>
-                  <p>{row.apiKeyName ?? "未知 Key"} / {row.endpoint ?? "-"}</p>
-                </div>
-                <div className="table-numbers">
-                  <strong>${row.actualCost.toFixed(5)}</strong>
-                  <span>{compact(row.totalTokens)} tokens</span>
-                </div>
-              </div>
-            ))}
-            {currentAccountRecentUsage.length === 0 && (
-              <EmptyState title="还没有账号数据" detail="先登录账号并刷新数据。" compact />
-            )}
+      <section className="overview-layout overview-layout-desktop">
+        <div className="overview-column">
+          <div className="overview-layout-card overview-layout-card--trend">
+            <UsageTrendSection
+              title="近 7 天趋势"
+              subtitle="对齐 dashboard/trend 接口, 聚合全部账号的成本、请求与缓存表现"
+              points={overview.trend}
+              emptyTitle="当前没有总览趋势数据"
+              emptyDetail="至少刷新一个账号后, 这里才会出现全部账号的聚合趋势。"
+            />
           </div>
-        </SectionCard>
+          <div className="overview-layout-card overview-layout-card--subscriptions">{renderSubscriptionsCard()}</div>
+          <div className="overview-layout-card overview-layout-card--recent">{renderRecentUsageCard()}</div>
+        </div>
+        <div className="overview-column">
+          <div className="overview-layout-card overview-layout-card--platforms">{renderPlatformDistributionCard()}</div>
+          <div className="overview-layout-card overview-layout-card--keys">{renderApiKeysCard()}</div>
+        </div>
+      </section>
+
+      <section className="overview-layout-mobile">
+        <div className="overview-layout-card overview-layout-card--trend">
+          <UsageTrendSection
+            title="近 7 天趋势"
+            subtitle="对齐 dashboard/trend 接口, 聚合全部账号的成本、请求与缓存表现"
+            points={overview.trend}
+            emptyTitle="当前没有总览趋势数据"
+            emptyDetail="至少刷新一个账号后, 这里才会出现全部账号的聚合趋势。"
+          />
+        </div>
+        <div className="overview-layout-card overview-layout-card--platforms">{renderPlatformDistributionCard()}</div>
+        <div className="overview-layout-card overview-layout-card--subscriptions">{renderSubscriptionsCard()}</div>
+        <div className="overview-layout-card overview-layout-card--keys">{renderApiKeysCard()}</div>
+        <div className="overview-layout-card overview-layout-card--recent">{renderRecentUsageCard()}</div>
       </section>
     </>
   );

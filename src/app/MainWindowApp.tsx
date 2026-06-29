@@ -5,6 +5,7 @@ import {
   lazy,
   useEffect,
   useEffectEvent,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent
@@ -25,6 +26,7 @@ import { THEME_IDS, normalizeThemeId, type ThemeId } from "../shared/lib/theme";
 import { useAccountDataWorkspace } from "../features/accounts/useAccountDataWorkspace";
 import { AccountWorkspaceModals } from "../features/accounts/components/AccountWorkspaceModals";
 import { getAccountSyncStatus, syncAccountData } from "../features/accounts/client";
+import { getSchedulerConfig, updateSchedulerConfig } from "../api";
 import { useAccountWorkspace } from "../features/accounts/useAccountWorkspace";
 import { pushFloatingPanelToast } from "../features/desktop-ui/client";
 import { AlertInboxModal, type AlertInboxItem } from "../features/overview/components/AlertInboxModal";
@@ -40,6 +42,7 @@ import { useSettingsWorkspace } from "../features/settings/useSettingsWorkspace"
 import { useUsageWorkspace } from "../features/usage/useUsageWorkspace";
 import { useDesktopUiPrefs } from "../features/desktop-ui/useDesktopUiPrefs";
 import {
+  buildAutoRefreshWatcherKey,
   DEFAULT_AUTO_REFRESH_INTERVAL_SECONDS,
   isAccountDataStaleForToday,
   isAutoRefreshScopeEnabled,
@@ -78,7 +81,8 @@ import {
 import type {
   AccountSyncStatusRecord,
   AccountRuntime,
-  NavKey
+  NavKey,
+  SchedulerConfigPayload
 } from "../types";
 
 const ALLOWED_THEMES = new Set<string>(THEME_IDS);
@@ -129,6 +133,17 @@ export function MainWindowApp() {
     selectedAccountIdRef.current = selectedAccountId;
   }, [selectedAccountId]);
   const desktopUi = useDesktopUiPrefs("main");
+  const prefsRef = useRef(desktopUi.prefs);
+  prefsRef.current = desktopUi.prefs;
+  const [schedulerConfig, setSchedulerConfig] = useState<SchedulerConfigPayload>({ enabled: true, intervalSeconds: 9 });
+  const [schedulerConfigLoading, setSchedulerConfigLoading] = useState(false);
+  useEffect(() => {
+    setSchedulerConfigLoading(true);
+    getSchedulerConfig()
+      .then((config) => setSchedulerConfig(config))
+      .catch(() => {})
+      .finally(() => setSchedulerConfigLoading(false));
+  }, []);
   const sites = overview?.sites ?? [];
   const accounts = overview?.accounts ?? [];
   const hasAnyAccount = accounts.length > 0;
@@ -138,7 +153,7 @@ export function MainWindowApp() {
   );
   const shellWorkspace = useShellWorkspace({ accounts });
   const overviewSubscriptionPanelVisible =
-    nav === "subscriptions" || shellWorkspace.topbarSubscriptionsExpanded;
+    nav === "overview" || nav === "subscriptions" || shellWorkspace.topbarSubscriptionsExpanded;
   const subscriptionSummaryVisible =
     overviewSubscriptionPanelVisible;
   const keysResources = {
@@ -378,14 +393,19 @@ export function MainWindowApp() {
     };
   }, [selectedAccountId, overview?.generatedAt]);
 
-  const selectedSiteAccounts = selectedSiteId
-    ? accounts.filter((item) => item.siteId === selectedSiteId)
-    : accounts;
-  const selectedAccount =
-    accounts.find((item) => item.id === selectedAccountId && (!selectedSiteId || item.siteId === selectedSiteId)) ??
-    (selectedSiteId
-      ? selectedSiteAccounts[0] ?? null
-      : accounts.find((item) => item.id === selectedAccountId) ?? accounts[0] ?? null);
+  const selectedSiteAccounts = useMemo(() => {
+    return selectedSiteId
+      ? accounts.filter((item) => item.siteId === selectedSiteId)
+      : accounts;
+  }, [accounts, selectedSiteId]);
+  const selectedAccount = useMemo(() => {
+    return (
+      accounts.find((item) => item.id === selectedAccountId && (!selectedSiteId || item.siteId === selectedSiteId)) ??
+      (selectedSiteId
+        ? selectedSiteAccounts[0] ?? null
+        : accounts.find((item) => item.id === selectedAccountId) ?? accounts[0] ?? null)
+    );
+  }, [accounts, selectedAccountId, selectedSiteId]);
   const selectedSite =
     sites.find((item) => item.id === selectedSiteId) ??
     (selectedAccount ? sites.find((item) => item.id === selectedAccount.siteId) ?? null : null);
@@ -415,6 +435,12 @@ export function MainWindowApp() {
     : "未选择账号";
   const selectedAccountAvatarUrl = resolveAccountAvatarUrl({
     profileRecord: accountDataWorkspace.profileRecord
+  });
+  const autoRefreshWatcherKey = buildAutoRefreshWatcherKey({
+    nav,
+    pageVisible,
+    selectedAccount,
+    prefs: desktopUi.prefs
   });
   const mergedTopbarSubscriptions = buildTopbarSubscriptionPreviewRecords({
     overviewSubscriptions: [],
@@ -524,14 +550,14 @@ export function MainWindowApp() {
   }, [nav, selectedAccount]);
 
   const refreshSelectedPageSilently = useEffectEvent(async () => {
-    const autoRefreshEnabled = desktopUi.prefs.autoRefreshEnabled;
+    const autoRefreshEnabled = prefsRef.current.autoRefreshEnabled;
     const scope = resolveAutoRefreshScope(nav);
     const canRefreshSelectedAccount = shouldAutoRefreshSelectedAccountData({
       nav,
       autoRefreshEnabled,
       pageVisible,
       selectedAccount,
-      prefs: desktopUi.prefs
+      prefs: prefsRef.current
     });
 
     if (!canRefreshSelectedAccount) {
@@ -542,28 +568,15 @@ export function MainWindowApp() {
       case "core":
         if (selectedAccount) {
           if (nav === "overview") {
-            await refreshOverviewAccountSilently(selectedAccount.id, "stale_auto");
+            await loadOverview();
+            await accountDataWorkspace.refreshAccountData();
           } else {
-            const syncStatus = await syncAccountData(selectedAccount.id, {
-              scope: "core",
-              triggerSource: "stale_auto"
-            });
-            if (selectedAccountIdRef.current === selectedAccount.id) {
-              setAccountSyncStatuses(syncStatus.statuses);
-            }
             await loadOverview();
           }
         }
         break;
       case "keys":
         if (selectedAccount) {
-          const syncStatus = await syncAccountData(selectedAccount.id, {
-            scope: "keys",
-            triggerSource: "stale_auto"
-          });
-          if (selectedAccountIdRef.current === selectedAccount.id) {
-            setAccountSyncStatuses(syncStatus.statuses);
-          }
           await Promise.all([
             accountDataWorkspace.refreshAccountData(),
             loadOverview()
@@ -572,13 +585,6 @@ export function MainWindowApp() {
         break;
       case "usage":
         if (selectedAccount) {
-          const syncStatus = await syncAccountData(selectedAccount.id, {
-            scope: "usage",
-            triggerSource: "stale_auto"
-          });
-          if (selectedAccountIdRef.current === selectedAccount.id) {
-            setAccountSyncStatuses(syncStatus.statuses);
-          }
           await Promise.all([
             refreshUsageWorkspaceSilently(),
             loadOverview()
@@ -589,8 +595,8 @@ export function MainWindowApp() {
         break;
     }
 
-    if (scope !== "none" && isAutoRefreshScopeEnabled(desktopUi.prefs, scope)) {
-      return resolveAutoRefreshIntervalSecondsForScope(desktopUi.prefs, scope);
+    if (scope !== "none" && isAutoRefreshScopeEnabled(prefsRef.current, scope)) {
+      return resolveAutoRefreshIntervalSecondsForScope(prefsRef.current, scope);
     }
   });
 
@@ -615,8 +621,8 @@ export function MainWindowApp() {
       running = true;
       try {
         const scope = resolveAutoRefreshScope(nav);
-        const fallbackIntervalSeconds = scope !== "none" && isAutoRefreshScopeEnabled(desktopUi.prefs, scope)
-          ? resolveAutoRefreshIntervalSecondsForScope(desktopUi.prefs, scope)
+        const fallbackIntervalSeconds = scope !== "none" && isAutoRefreshScopeEnabled(prefsRef.current, scope)
+          ? resolveAutoRefreshIntervalSecondsForScope(prefsRef.current, scope)
           : undefined;
         const intervalSeconds = await refreshSelectedPageSilently();
         if (cancelled) {
@@ -625,10 +631,10 @@ export function MainWindowApp() {
         scheduleNextTick(intervalSeconds ?? fallbackIntervalSeconds);
       } catch {
         const scope = resolveAutoRefreshScope(nav);
-        if (cancelled || scope === "none" || !isAutoRefreshScopeEnabled(desktopUi.prefs, scope)) {
+        if (cancelled || scope === "none" || !isAutoRefreshScopeEnabled(prefsRef.current, scope)) {
           return;
         }
-        scheduleNextTick(resolveAutoRefreshIntervalSecondsForScope(desktopUi.prefs, scope));
+        scheduleNextTick(resolveAutoRefreshIntervalSecondsForScope(prefsRef.current, scope));
       } finally {
         running = false;
       }
@@ -637,15 +643,15 @@ export function MainWindowApp() {
     if (
       shouldAutoRefreshSelectedAccountData({
         nav,
-        autoRefreshEnabled: desktopUi.prefs.autoRefreshEnabled,
+        autoRefreshEnabled: prefsRef.current.autoRefreshEnabled,
         pageVisible,
         selectedAccount,
-        prefs: desktopUi.prefs
+        prefs: prefsRef.current
       })
     ) {
       const scope = resolveAutoRefreshScope(nav);
-      if (scope !== "none" && isAutoRefreshScopeEnabled(desktopUi.prefs, scope)) {
-        scheduleNextTick(resolveAutoRefreshIntervalSecondsForScope(desktopUi.prefs, scope));
+      if (scope !== "none" && isAutoRefreshScopeEnabled(prefsRef.current, scope)) {
+        scheduleNextTick(resolveAutoRefreshIntervalSecondsForScope(prefsRef.current, scope));
       }
     }
 
@@ -655,7 +661,7 @@ export function MainWindowApp() {
         window.clearTimeout(timerId);
       }
     };
-  }, [desktopUi.prefs, nav, pageVisible, refreshSelectedPageSilently, selectedAccount]);
+  }, [autoRefreshWatcherKey]);
 
   useEffect(() => {
     const enteredServiceStatusPage = nav === "serviceStatus" && lastServiceStatusNavRef.current !== "serviceStatus";
@@ -758,9 +764,20 @@ export function MainWindowApp() {
   });
   const workspaceSummary = (
     <>
-      {workspaceSummaryTexts.map((text) => (
-        <span key={text}>{text}</span>
-      ))}
+      {workspaceSummaryTexts.map((item) =>
+        "segments" in item ? (
+          <span key={item.key} className="workspace-summary-pill workspace-summary-pill-token-group">
+            {item.segments.map((segment) => (
+              <span key={segment.key} className="workspace-summary-token-tag">
+                <strong>{segment.label}</strong>
+                <span>{segment.value}</span>
+              </span>
+            ))}
+          </span>
+        ) : (
+          <span key={item.key} className="workspace-summary-pill">{item.label}</span>
+        )
+      )}
     </>
   );
 
@@ -821,6 +838,7 @@ export function MainWindowApp() {
           onRefresh={() => {
             if (selectedAccountId) {
               void accountDataWorkspace.refreshAccountData();
+              void loadOverview();
             }
           }}
           onError={setError}
@@ -960,6 +978,15 @@ export function MainWindowApp() {
               autoRefreshUsageIntervalSeconds: normalizeAutoRefreshIntervalSeconds(value)
             })
           }
+          schedulerConfig={schedulerConfig}
+          schedulerConfigLoading={schedulerConfigLoading}
+          onSchedulerConfigChange={(value) => {
+            setSchedulerConfigLoading(true);
+            updateSchedulerConfig(value)
+              .then((config) => setSchedulerConfig(config))
+              .catch(() => {})
+              .finally(() => setSchedulerConfigLoading(false));
+          }}
         />
       )}
     </div>

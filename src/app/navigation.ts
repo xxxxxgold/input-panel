@@ -55,8 +55,6 @@ export function navTitle(key: NavKey) {
       return "账号";
     case "profile":
       return "个人中心";
-    case "orders":
-      return "订单";
     default:
       return "工作台";
   }

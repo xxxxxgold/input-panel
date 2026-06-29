@@ -16,6 +16,7 @@ export function ServiceStatusPage({
       loading={workspace.loading}
       refreshing={workspace.refreshing}
       lastError={workspace.lastError}
+      lastSyncedAt={workspace.lastSyncedAt}
       enabled={enabled}
       refreshIntervalSeconds={refreshIntervalSeconds}
       onRefresh={workspace.refreshNow}

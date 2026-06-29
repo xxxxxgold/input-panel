@@ -2,7 +2,7 @@ use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
 
 use crate::contracts::StoredSession;
-use super::Database;
+use crate::infrastructure::sqlite::Database;
 
 pub fn save_session(db: &Database, account_id: &str, session: &StoredSession) -> Result<()> {
     let conn = db.connect()?;
@@ -52,3 +52,4 @@ pub fn remove_session(db: &Database, account_id: &str) -> Result<()> {
     conn.execute("DELETE FROM sessions WHERE account_id = ?1", params![account_id])?;
     Ok(())
 }
+
