@@ -3,7 +3,6 @@ import { emitTo } from "@tauri-apps/api/event";
 import {
   Suspense,
   lazy,
-  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -57,7 +56,8 @@ import {
   type AccountDataResources
 } from "../features/accounts/useAccountDataWorkspace";
 import { getAccountSyncStatus, syncAccountData } from "../features/accounts/client";
-import { getSchedulerConfig, listManagedKeys, updateSchedulerConfig } from "../api";
+import { listManagedKeys } from "../api";
+import { useSchedulerConfig } from "./useSchedulerConfig";
 import { useAccountWorkspace } from "../features/accounts/useAccountWorkspace";
 import { clearRuntimeData } from "../features/maintenance/client";
 import { getOverviewDashboardStats, syncAllAccounts } from "../features/overview/client";
@@ -109,7 +109,6 @@ import {
   mergeSubscriptionRecords
 } from "../subscription-view";
 import projectLogo from "../assets/project-logo-64.webp";
-import { OverviewPage } from "../pages/OverviewPage";
 import { ERROR_TOAST_DURATION_MS, INFO_TOAST_DURATION_MS, resolveOverviewSelection, useMonitorStore } from "../store/monitor-store";
 import type {
   AccountSyncStatusRecord,
@@ -121,19 +120,11 @@ import type {
   OverviewPayload,
   OverviewModelPoint,
   PlatformPoint,
-  SchedulerConfigPayload,
   UsageInsightsPayload,
   UsageStatsRecord
 } from "../types";
 
 const ALLOWED_THEMES = new Set<string>(THEME_IDS);
-const SCHEDULER_CONFIG_SAVE_DEBOUNCE_MS = 180;
-
-type SchedulerConfigPendingSave = {
-  value: SchedulerConfigPayload;
-  revision: number;
-  failed: boolean;
-};
 
 function lazyComponent<TProps>(
   loader: () => Promise<{ default: ComponentType<TProps> }>
@@ -141,6 +132,9 @@ function lazyComponent<TProps>(
   return lazy(loader);
 }
 
+const OverviewPage = lazyComponent(async () => ({
+  default: (await import("../pages/OverviewPage")).OverviewPage
+}));
 const AccountWorkspaceModals = lazyComponent(async () => ({
   default: (await import("../features/accounts/components/AccountWorkspaceModals")).AccountWorkspaceModals
 }));
@@ -580,158 +574,17 @@ export function MainWindowApp() {
   });
   const prefsRef = useRef(desktopUi.prefs);
   prefsRef.current = desktopUi.prefs;
-  const [schedulerConfig, setSchedulerConfig] = useState<SchedulerConfigPayload>({ enabled: true, intervalSeconds: 15 });
-  const [schedulerConfirmedConfig, setSchedulerConfirmedConfig] = useState<SchedulerConfigPayload>({
-    enabled: true,
-    intervalSeconds: 15
-  });
-  const [schedulerConfigLoading, setSchedulerConfigLoading] = useState(false);
-  const [schedulerConfigSaving, setSchedulerConfigSaving] = useState(false);
-  const [schedulerLoadError, setSchedulerLoadError] = useState<string | null>(null);
-  const [schedulerSaveError, setSchedulerSaveError] = useState<string | null>(null);
-  const schedulerConfigRef = useRef(schedulerConfig);
-  const schedulerPendingSaveRef = useRef<SchedulerConfigPendingSave | null>(null);
-  const schedulerSaveRunningRef = useRef(false);
-  const schedulerSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const schedulerSaveRevisionRef = useRef(0);
-  const schedulerLoadRevisionRef = useRef(0);
-  schedulerConfigRef.current = schedulerConfig;
-
-  const loadSchedulerConfig = useCallback(async () => {
-    const revision = schedulerLoadRevisionRef.current + 1;
-    schedulerLoadRevisionRef.current = revision;
-    setSchedulerConfigLoading(true);
-    setSchedulerLoadError(null);
-    try {
-      const config = await getSchedulerConfig();
-      if (schedulerLoadRevisionRef.current !== revision) {
-        return;
-      }
-      setSchedulerConfirmedConfig(config);
-      if (!schedulerPendingSaveRef.current) {
-        setSchedulerConfig(config);
-      }
-    } catch (cause) {
-      if (schedulerLoadRevisionRef.current !== revision) {
-        return;
-      }
-      setSchedulerLoadError(
-        cause instanceof Error && cause.message.trim()
-          ? cause.message
-          : "后端用量同步器设置读取失败。"
-      );
-    } finally {
-      if (schedulerLoadRevisionRef.current === revision) {
-        setSchedulerConfigLoading(false);
-      }
-    }
-  }, []);
-
-  function clearScheduledSchedulerSave() {
-    if (schedulerSaveTimerRef.current !== null) {
-      window.clearTimeout(schedulerSaveTimerRef.current);
-      schedulerSaveTimerRef.current = null;
-    }
-  }
-
-  function scheduleSchedulerSave(debounce: boolean) {
-    const pending = schedulerPendingSaveRef.current;
-    if (!pending || pending.failed) {
-      return;
-    }
-    clearScheduledSchedulerSave();
-    schedulerSaveTimerRef.current = window.setTimeout(
-      () => {
-        schedulerSaveTimerRef.current = null;
-        void flushSchedulerConfigSave();
-      },
-      debounce ? SCHEDULER_CONFIG_SAVE_DEBOUNCE_MS : 0
-    );
-  }
-
-  async function flushSchedulerConfigSave() {
-    if (schedulerSaveRunningRef.current) {
-      return;
-    }
-    const pending = schedulerPendingSaveRef.current;
-    if (!pending || pending.failed) {
-      return;
-    }
-
-    schedulerPendingSaveRef.current = null;
-    schedulerSaveRunningRef.current = true;
-    setSchedulerConfigSaving(true);
-    try {
-      const confirmed = await updateSchedulerConfig(pending.value);
-      setSchedulerConfirmedConfig(confirmed);
-      if (!schedulerPendingSaveRef.current) {
-        setSchedulerConfig(confirmed);
-      }
-      setSchedulerSaveError(null);
-    } catch (cause) {
-      const newerPending = schedulerPendingSaveRef.current as SchedulerConfigPendingSave | null;
-      if (!newerPending || newerPending.revision <= pending.revision) {
-        schedulerPendingSaveRef.current = { ...pending, failed: true };
-        setSchedulerSaveError(
-          cause instanceof Error && cause.message.trim()
-            ? cause.message
-            : "设置保存失败，请重试。"
-        );
-      }
-    } finally {
-      schedulerSaveRunningRef.current = false;
-      const nextPending = schedulerPendingSaveRef.current as SchedulerConfigPendingSave | null;
-      setSchedulerConfigSaving(Boolean(nextPending && !nextPending.failed));
-      if (nextPending && !nextPending.failed) {
-        scheduleSchedulerSave(false);
-      }
-    }
-  }
-
-  function handleSchedulerConfigChange(
-    value: SchedulerConfigPayload,
-    options: { debounce?: boolean } = {}
-  ) {
-    const normalized: SchedulerConfigPayload = {
-      enabled: value.enabled,
-      intervalSeconds: Math.max(5, Math.round(value.intervalSeconds))
-    };
-    schedulerLoadRevisionRef.current += 1;
-    schedulerSaveRevisionRef.current += 1;
-    schedulerPendingSaveRef.current = {
-      value: normalized,
-      revision: schedulerSaveRevisionRef.current,
-      failed: false
-    };
-    setSchedulerConfig(normalized);
-    setSchedulerLoadError(null);
-    setSchedulerSaveError(null);
-    setSchedulerConfigSaving(true);
-    scheduleSchedulerSave(options.debounce === true);
-  }
-
-  function retrySchedulerConfigSave() {
-    const pending = schedulerPendingSaveRef.current;
-    if (!pending || !pending.failed) {
-      return;
-    }
-    schedulerPendingSaveRef.current = { ...pending, failed: false };
-    setSchedulerSaveError(null);
-    setSchedulerConfigSaving(true);
-    scheduleSchedulerSave(false);
-  }
-
-  function retrySchedulerConfigLoad() {
-    void loadSchedulerConfig();
-  }
-
-  useEffect(() => {
-    void loadSchedulerConfig();
-    return () => {
-      schedulerLoadRevisionRef.current += 1;
-    };
-  }, [loadSchedulerConfig]);
-  useEffect(() => () => clearScheduledSchedulerSave(), []);
+  const {
+    schedulerConfig,
+    schedulerConfirmedConfig,
+    schedulerConfigLoading,
+    schedulerConfigSaving,
+    schedulerLoadError,
+    schedulerSaveError,
+    handleSchedulerConfigChange,
+    retrySchedulerConfigSave,
+    retrySchedulerConfigLoad
+  } = useSchedulerConfig();
   const sites = overview?.sites ?? [];
   const accounts = overview?.accounts ?? [];
   const hasAnyAccount = accounts.length > 0;
@@ -1062,8 +915,10 @@ export function MainWindowApp() {
     if (nav !== "settings") {
       return;
     }
+    // shell 读的是调度器持续写入的本地缓存；full 会对全账号发起 live 上游请求，
+    // 不允许由页面停留隐式触发。
     const timerId = window.setTimeout(() => {
-      void loadOverview({ source: "full" });
+      void loadOverview({ source: "shell" });
     }, 700);
     return () => window.clearTimeout(timerId);
   }, [loadOverview, nav]);
@@ -1209,7 +1064,10 @@ export function MainWindowApp() {
         window.clearTimeout(timerId);
       }
     };
-  }, [selectedAccountId, selectionSyncNonce, overview?.generatedAt]);
+    // 依赖里不能挂 overview?.generatedAt：总览每轮后台刷新都会换新时间戳，
+    // 会把这条 IPC 轮询放大成每轮刷新一次。running 态的续轮由内部 setTimeout 驱动，
+    // 手动同步完成后由 selectionSyncNonce（refreshSelectedAccountSync）显式触发。
+  }, [selectedAccountId, selectionSyncNonce]);
 
   useEffect(() => {
     if (!selectedAccountId) {
@@ -1233,7 +1091,7 @@ export function MainWindowApp() {
     refreshedFullSyncRunRef.current = runKey;
     invalidateUsageAccount(selectedAccountId);
     void Promise.all([
-      loadOverview({ source: nav === "overview" ? "shell" : "full" }),
+      loadOverview({ source: "shell" }),
       accountDataWorkspace.refreshAccountData({ force: true }),
       refreshUsageWorkspaceSilently({ mode: "background" })
     ]).catch((cause) => {
@@ -1531,15 +1389,20 @@ export function MainWindowApp() {
   const loadOverviewForCurrentSurface = useStableCallback(async (options?: {
     busyText?: string;
     successMessage?: string;
+    live?: boolean;
   }) => {
+    const { live, ...rest } = options ?? {};
+    // full 会对全账号发起 live 上游请求（也是唯一能在线检出过期会话的路径），
+    // 只允许用户显式刷新触发；后台预热/自动刷新一律读 shell 本地缓存，
+    // 避免非总览页每轮预热引发全账号请求风暴。
     await loadOverview({
-      ...options,
-      source: nav === "overview" ? "shell" : "full"
+      ...rest,
+      source: live && nav !== "overview" ? "full" : "shell"
     });
   });
   const retryOverviewForCurrentScope = useStableCallback(async () => {
     const refreshes: Array<Promise<unknown>> = [
-      loadOverviewForCurrentSurface(),
+      loadOverviewForCurrentSurface({ live: true }),
       loadOverviewDirectUsageStats({ force: true, bypassHydration: true })
     ];
     if (overviewUsageStatsMode === "all-accounts") {
@@ -1886,8 +1749,9 @@ export function MainWindowApp() {
   }
 
   const refreshOverviewSnapshotSilently = useStableCallback(async (): Promise<WarmupTaskResult> => {
+    // 后台预热只读本地缓存快照；live 数据由调度器在 Rust 侧持续写入。
     const refreshed = await loadOverview({
-      source: nav === "overview" ? "shell" : "full",
+      source: "shell",
       silent: true
     });
     return refreshed ? "success" : "cancelled";
@@ -2200,6 +2064,7 @@ export function MainWindowApp() {
   const pageContent = (
     <div className={`page-stack page-stack-${nav}`}>
       {nav === "overview" && overview && (
+        <Suspense fallback={renderDeferredPageFallback()}>
         <OverviewPage
           overview={overview}
           currentAccount={selectedAccount}
@@ -2233,6 +2098,7 @@ export function MainWindowApp() {
           onUsageStatsModeChange={setOverviewUsageStatsMode}
           usageStatsRows={overviewUsageStatsRows}
         />
+        </Suspense>
       )}
       {nav === "serviceStatus" && (
         <RetryableLazyPage
