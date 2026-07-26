@@ -1,29 +1,65 @@
 import { useEffect, useRef } from "react";
-import { BarChart, HeatmapChart, LineChart, PieChart, ScatterChart } from "echarts/charts";
-import { GridComponent, LegendComponent, TooltipComponent, VisualMapComponent } from "echarts/components";
-import { init, use, type EChartsType } from "echarts/core";
-import { CanvasRenderer } from "echarts/renderers";
 
-use([
-  BarChart,
-  HeatmapChart,
-  LineChart,
-  PieChart,
-  ScatterChart,
-  GridComponent,
-  LegendComponent,
-  TooltipComponent,
-  VisualMapComponent,
-  CanvasRenderer
-]);
+type ChartInstance = {
+  clear: () => void;
+  dispatchAction: (payload: unknown) => void;
+  dispose: () => void;
+  resize: () => void;
+  setOption: (option: unknown, options?: { notMerge?: boolean }) => void;
+};
+
+type ChartRuntime = {
+  init: (host: HTMLElement) => ChartInstance;
+};
+
+let chartRuntimePromise: Promise<ChartRuntime> | null = null;
+
+async function loadChartRuntime() {
+  if (!chartRuntimePromise) {
+    chartRuntimePromise = (async () => {
+      const runtimeModule = await import("./charts-runtime");
+      return {
+        init: runtimeModule.init as ChartRuntime["init"]
+      };
+    })();
+  }
+  return chartRuntimePromise;
+}
 
 export type ChartOption = Record<string, unknown>;
 
+const FALLBACK_CHART_DATA_FONT_FAMILY =
+  '"JetBrains Mono", "Fira Code", "Cascadia Mono", Consolas, monospace';
+
+export function withChartDataTypography(option: ChartOption): ChartOption {
+  const fontFamily = readChartDataFontFamily();
+  return {
+    ...option,
+    tooltip: mapChartOptionParts(option.tooltip, (tooltip) => ({
+      ...tooltip,
+      textStyle: mergeChartTextStyle(tooltip.textStyle, fontFamily)
+    })),
+    legend: mapChartOptionParts(option.legend, (legend) => ({
+      ...legend,
+      textStyle: mergeChartTextStyle(legend.textStyle, fontFamily)
+    })),
+    xAxis: mapChartOptionParts(option.xAxis, (axis) => withChartAxisTypography(axis, fontFamily)),
+    yAxis: mapChartOptionParts(option.yAxis, (axis) => withChartAxisTypography(axis, fontFamily)),
+    visualMap: mapChartOptionParts(option.visualMap, (visualMap) => ({
+      ...visualMap,
+      textStyle: mergeChartTextStyle(visualMap.textStyle, fontFamily)
+    })),
+    series: mapChartOptionParts(option.series, (series) => withChartSeriesTypography(series, fontFamily))
+  };
+}
+
 export function EChartCard({ option }: { option: ChartOption | null }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const chartRef = useRef<EChartsType | null>(null);
+  const chartRef = useRef<ChartInstance | null>(null);
   const optionSignatureRef = useRef<string | null>(null);
   const hoverPointRef = useRef<{ x: number; y: number } | null>(null);
+  const latestOptionRef = useRef<ChartOption | null>(option);
+  latestOptionRef.current = option;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -31,14 +67,85 @@ export function EChartCard({ option }: { option: ChartOption | null }) {
       return;
     }
 
-    const chart = init(host);
-    chartRef.current = chart;
+    let disposed = false;
+    let layoutFrame: number | null = null;
+    let layoutSettleTimer: number | null = null;
 
-    const observer = new ResizeObserver(() => {
+    const resizeChart = () => {
+      const chart = chartRef.current;
+      if (!chart || !hasChartHostSize(host)) {
+        return;
+      }
       chart.resize();
       scheduleRestoreChartTooltip(chart, hoverPointRef.current, chartRef);
+    };
+    const clearLayoutSync = () => {
+      if (typeof window === "undefined") {
+        return;
+      }
+      if (layoutFrame !== null) {
+        window.cancelAnimationFrame(layoutFrame);
+        layoutFrame = null;
+      }
+      if (layoutSettleTimer !== null) {
+        window.clearTimeout(layoutSettleTimer);
+        layoutSettleTimer = null;
+      }
+    };
+    const scheduleLayoutSync = () => {
+      if (typeof window === "undefined") {
+        return;
+      }
+      clearLayoutSync();
+      layoutFrame = window.requestAnimationFrame(() => {
+        layoutFrame = null;
+        resizeChart();
+        layoutSettleTimer = window.setTimeout(() => {
+          layoutSettleTimer = null;
+          resizeChart();
+        }, 120);
+      });
+    };
+
+    const tryMountChart = async () => {
+      if (disposed || chartRef.current || !hasChartHostSize(host)) {
+        return;
+      }
+      const runtime = await loadChartRuntime();
+      if (disposed || chartRef.current || !hasChartHostSize(host)) {
+        return;
+      }
+      chartRef.current = runtime.init(host);
+      const currentOption = latestOptionRef.current;
+      if (currentOption) {
+        const typedOption = withChartDataTypography(currentOption);
+        chartRef.current.setOption(typedOption, { notMerge: true });
+        optionSignatureRef.current = buildChartOptionSignature(typedOption);
+      }
+      scheduleLayoutSync();
+    };
+    const observer = new ResizeObserver(() => {
+      void tryMountChart();
+      scheduleLayoutSync();
     });
     observer.observe(host);
+    const visibilityObserver = typeof IntersectionObserver === "undefined"
+      ? null
+      : new IntersectionObserver((entries) => {
+          if (entries.some((entry) => entry.isIntersecting)) {
+            void tryMountChart();
+            scheduleLayoutSync();
+          }
+        });
+    visibilityObserver?.observe(host);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void tryMountChart();
+        scheduleLayoutSync();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    void tryMountChart();
 
     const handlePointerMove = (event: PointerEvent) => {
       const rect = host.getBoundingClientRect();
@@ -54,10 +161,14 @@ export function EChartCard({ option }: { option: ChartOption | null }) {
     host.addEventListener("pointerleave", handlePointerLeave);
 
     return () => {
+      disposed = true;
       observer.disconnect();
+      visibilityObserver?.disconnect();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      clearLayoutSync();
       host.removeEventListener("pointermove", handlePointerMove);
       host.removeEventListener("pointerleave", handlePointerLeave);
-      chart.dispose();
+      chartRef.current?.dispose();
       chartRef.current = null;
       optionSignatureRef.current = null;
       hoverPointRef.current = null;
@@ -75,11 +186,12 @@ export function EChartCard({ option }: { option: ChartOption | null }) {
       }
       return;
     }
-    const nextSignature = buildChartOptionSignature(option);
+    const typedOption = withChartDataTypography(option);
+    const nextSignature = buildChartOptionSignature(typedOption);
     if (optionSignatureRef.current === nextSignature) {
       return;
     }
-    chartRef.current.setOption(option as never, { notMerge: true });
+    chartRef.current.setOption(typedOption, { notMerge: true });
     optionSignatureRef.current = nextSignature;
     scheduleRestoreChartTooltip(chartRef.current, hoverPointRef.current, chartRef);
   }, [option]);
@@ -90,6 +202,63 @@ export function EChartCard({ option }: { option: ChartOption | null }) {
       {!option && <div className="echart-overlay">当前没有图表数据</div>}
     </div>
   );
+}
+
+function hasChartHostSize(host: HTMLElement) {
+  const rect = host.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+
+function readChartDataFontFamily() {
+  if (typeof window === "undefined") {
+    return FALLBACK_CHART_DATA_FONT_FAMILY;
+  }
+  return (
+    getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim() ||
+    FALLBACK_CHART_DATA_FONT_FAMILY
+  );
+}
+
+function mapChartOptionParts(
+  value: unknown,
+  transform: (part: ChartOption) => ChartOption
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => (isChartOption(item) ? transform(item) : item));
+  }
+  return isChartOption(value) ? transform(value) : value;
+}
+
+function withChartAxisTypography(axis: ChartOption, fontFamily: string): ChartOption {
+  return {
+    ...axis,
+    axisLabel: mergeChartTextStyle(axis.axisLabel, fontFamily),
+    nameTextStyle: mergeChartTextStyle(axis.nameTextStyle, fontFamily)
+  };
+}
+
+function withChartSeriesTypography(series: ChartOption, fontFamily: string): ChartOption {
+  return {
+    ...series,
+    label: mergeChartTextStyle(series.label, fontFamily),
+    emphasis: isChartOption(series.emphasis)
+      ? {
+          ...series.emphasis,
+          label: mergeChartTextStyle(series.emphasis.label, fontFamily)
+        }
+      : series.emphasis
+  };
+}
+
+function mergeChartTextStyle(value: unknown, fontFamily: string): ChartOption {
+  return {
+    ...(isChartOption(value) ? value : {}),
+    fontFamily
+  };
+}
+
+function isChartOption(value: unknown): value is ChartOption {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 export interface TrendChartPoint {
@@ -346,35 +515,108 @@ export function buildPlatformBarChartOption(
   };
 }
 
-function readChartPalette() {
+export function buildOverviewModelDonutChartOption(
+  rows: Array<{ model: string; actualCost: number; totalCost: number; requests: number; totalTokens: number }>
+): ChartOption | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  const palette = readChartPalette();
+  return {
+    color: [palette.accent, palette.secondary, palette.warning, palette.rose, palette.indigo, palette.sky],
+    tooltip: {
+      trigger: "item",
+      formatter: (params: unknown) => {
+        const payload = (params ?? {}) as { name?: unknown; value?: unknown; percent?: unknown };
+        const value = Number(payload.value ?? 0);
+        const percent = Number(payload.percent ?? 0);
+        const item = rows.find((row) => row.model === String(payload.name ?? ""));
+        if (!item) {
+          return `${String(payload.name ?? "")}<br/>实际成本 ${formatTrendMetricValue("actualCost", value)}<br/>占比 ${percent.toFixed(1)}%`;
+        }
+        return [
+          String(payload.name ?? ""),
+          `请求 ${item.requests.toLocaleString()}`,
+          `Token ${Math.round(item.totalTokens).toLocaleString()}`,
+          `实际 ${formatTrendMetricValue("actualCost", item.actualCost)}`,
+          `标准 ${formatTrendMetricValue("actualCost", item.totalCost)}`,
+          `占比 ${percent.toFixed(1)}%`
+        ].join("<br/>");
+      }
+    },
+    legend: {
+      orient: "vertical",
+      right: 0,
+      top: "middle",
+      textStyle: { color: palette.textSoft }
+    },
+    series: [
+      {
+        type: "pie",
+        radius: ["44%", "72%"],
+        center: ["32%", "50%"],
+        minAngle: 3,
+        avoidLabelOverlap: true,
+        label: { show: false },
+        labelLine: { show: false },
+        data: rows.map((item) => ({
+          name: item.model,
+          value: item.actualCost
+        }))
+      }
+    ]
+  };
+}
+
+export interface ChartPalette {
+  accent: string;
+  secondary: string;
+  tertiary: string;
+  warning: string;
+  rose: string;
+  indigo: string;
+  sky: string;
+  textStrong: string;
+  textSoft: string;
+  border: string;
+  grid: string;
+  chartBg: string;
+  chartGrid: string;
+}
+
+export function readChartPalette(): ChartPalette {
   if (typeof window === "undefined") {
     return {
-      accent: "#68c4ba",
-      secondary: "#5e8cff",
-      warning: "#e3a62c",
-      rose: "#d6455f",
-      indigo: "#8d78ff",
-      sky: "#4fc8f0",
-      textSoft: "#6a778d",
-      border: "rgba(16, 24, 38, 0.12)",
-      grid: "rgba(148, 163, 184, 0.18)",
-      chartBg: "transparent",
-      chartGrid: "rgba(148, 163, 184, 0.18)"
+      accent: "#7ec6ff",
+      secondary: "#66ddd3",
+      tertiary: "#7fe6af",
+      warning: "#f3bb62",
+      rose: "#ff7d99",
+      indigo: "#9e8cff",
+      sky: "#66ddd3",
+      textStrong: "#eef4ff",
+      textSoft: "#8492a8",
+      border: "rgba(171, 189, 212, 0.1)",
+      grid: "rgba(130, 150, 176, 0.14)",
+      chartBg: "rgba(10, 16, 26, 0.94)",
+      chartGrid: "rgba(130, 150, 176, 0.14)"
     };
   }
   const style = getComputedStyle(document.documentElement);
   return {
-    accent: style.getPropertyValue("--accent").trim() || "#68c4ba",
-    secondary: style.getPropertyValue("--chart-2").trim() || "#5e8cff",
-    warning: style.getPropertyValue("--chart-3").trim() || "#e3a62c",
-    rose: style.getPropertyValue("--danger").trim() || "#d6455f",
-    indigo: style.getPropertyValue("--chart-5").trim() || "#8d78ff",
-    sky: style.getPropertyValue("--chart-4").trim() || "#4fc8f0",
-    textSoft: style.getPropertyValue("--text-subtle").trim() || "#6a778d",
-    border: style.getPropertyValue("--border").trim() || "rgba(16, 24, 38, 0.12)",
-    grid: style.getPropertyValue("--chart-grid").trim() || "rgba(148, 163, 184, 0.18)",
-    chartBg: style.getPropertyValue("--chart-bg").trim() || "transparent",
-    chartGrid: style.getPropertyValue("--chart-grid").trim() || "rgba(148, 163, 184, 0.18)"
+    accent: style.getPropertyValue("--accent").trim() || "#7ec6ff",
+    secondary: style.getPropertyValue("--chart-2").trim() || "#66ddd3",
+    tertiary: style.getPropertyValue("--chart-6").trim() || "#7fe6af",
+    warning: style.getPropertyValue("--chart-3").trim() || "#f3bb62",
+    rose: style.getPropertyValue("--danger").trim() || "#ff7d99",
+    indigo: style.getPropertyValue("--chart-5").trim() || "#9e8cff",
+    sky: style.getPropertyValue("--chart-4").trim() || "#66ddd3",
+    textStrong: style.getPropertyValue("--text-strong").trim() || "#eef4ff",
+    textSoft: style.getPropertyValue("--text-subtle").trim() || "#8492a8",
+    border: style.getPropertyValue("--border").trim() || "rgba(171, 189, 212, 0.1)",
+    grid: style.getPropertyValue("--chart-grid").trim() || "rgba(130, 150, 176, 0.14)",
+    chartBg: style.getPropertyValue("--chart-bg").trim() || "rgba(10, 16, 26, 0.94)",
+    chartGrid: style.getPropertyValue("--chart-grid").trim() || "rgba(130, 150, 176, 0.14)"
   };
 }
 
@@ -386,9 +628,9 @@ export function buildChartOptionSignature(option: ChartOption | null) {
 }
 
 function scheduleRestoreChartTooltip(
-  chart: EChartsType,
+  chart: ChartInstance,
   hoverPoint: { x: number; y: number } | null,
-  chartRef: { current: EChartsType | null }
+  chartRef: { current: ChartInstance | null }
 ) {
   if (!hoverPoint) {
     return;
@@ -401,7 +643,7 @@ function scheduleRestoreChartTooltip(
       type: "showTip",
       x: hoverPoint.x,
       y: hoverPoint.y
-    } as never);
+    });
   };
   if (typeof window !== "undefined") {
     window.requestAnimationFrame(restore);
