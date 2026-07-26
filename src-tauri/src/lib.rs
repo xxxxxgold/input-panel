@@ -295,6 +295,10 @@ const FLOATING_TASKBAR_STYLE_SUBCLASS_NOTIFICATION_ID: usize = 0xF10A7103;
 const WM_SHOWWINDOW: u32 = 0x0018;
 
 static FLOATING_NATIVE_STATE: OnceLock<Arc<Mutex<FloatingNativeState>>> = OnceLock::new();
+/// 主窗口是否已因前端首帧就绪（或超时兜底）而显示过；show 逻辑必须幂等，
+/// dev 模式 HMR 重放 frontend_ready 时不能重复触发聚焦。
+static MAIN_WINDOW_REVEALED: AtomicBool = AtomicBool::new(false);
+const MAIN_WINDOW_REVEAL_FALLBACK_MS: u64 = 3_000;
 static FLOATING_NOTIFICATION_MAILBOX: OnceLock<Arc<Mutex<FloatingNotificationMailbox>>> =
     OnceLock::new();
 static FLOATING_NOTIFICATION_SYNC_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -630,6 +634,15 @@ pub(crate) fn begin_floating_native_pointer_session_from_webview() -> bool {
     {
         false
     }
+}
+
+/// 用户显式打开主窗口的路径调用：跳过"等待前端就绪"的启动门禁。
+pub(crate) fn mark_main_window_revealed() {
+    MAIN_WINDOW_REVEALED.store(true, Ordering::SeqCst);
+}
+
+pub(crate) fn reveal_main_window_on_frontend_ready(app: &AppHandle) {
+    reveal_main_window(app, "前端首帧就绪");
 }
 
 fn mark_floating_native_panel_hidden() {
@@ -1918,6 +1931,7 @@ fn open_main_window_from_native(app: &AppHandle) {
         &ctx,
         crate::contracts::AppLaunchMode::Main,
     ) {
+        mark_main_window_revealed();
         if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
             let _ = window.show();
             let _ = window.unminimize();
@@ -3522,6 +3536,38 @@ fn hide_floating_group(app: &AppHandle) {
     mark_floating_native_panel_hidden();
 }
 
+/// 首帧就绪（frontend_ready command）或超时兜底后显示主窗口。幂等：只成功一次。
+fn reveal_main_window(app: &AppHandle, reason: &str) {
+    if MAIN_WINDOW_REVEALED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        MAIN_WINDOW_REVEALED.store(false, Ordering::SeqCst);
+        return;
+    };
+    // 悬浮启动模式下主窗口保持隐藏，标志位仍置位以吞掉后续 frontend_ready。
+    let launch_floating = app
+        .try_state::<application::AppContext>()
+        .and_then(|ctx| application::desktop_ui_service::get_desktop_ui_prefs(&ctx).ok())
+        .map(|prefs| prefs.launch_mode == crate::contracts::AppLaunchMode::Floating)
+        .unwrap_or(false);
+    if launch_floating {
+        return;
+    }
+    log::info!("[window] 主窗口显示（{reason}）");
+    show_window(&main);
+}
+
+fn schedule_main_window_reveal_fallback(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(MAIN_WINDOW_REVEAL_FALLBACK_MS)).await;
+        let app_for_main_thread = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            reveal_main_window(&app_for_main_thread, "超时兜底");
+        });
+    });
+}
+
 fn sync_mode_windows(app: &AppHandle, prefs: &crate::contracts::DesktopUiPrefs) {
     hide_floating_notification_window(app);
     if prefs.launch_mode == crate::contracts::AppLaunchMode::Floating {
@@ -3538,7 +3584,11 @@ fn sync_mode_windows(app: &AppHandle, prefs: &crate::contracts::DesktopUiPrefs) 
     }
 
     if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        show_window(&main);
+        // 启动阶段（主窗口尚未首次显示）不在这里 show——等待前端 frontend_ready
+        // 或 3s 兜底，避免默认主题首帧闪变；此后的模式切换沿用即时 show。
+        if MAIN_WINDOW_REVEALED.load(Ordering::SeqCst) {
+            show_window(&main);
+        }
     }
     let _ = ensure_floating_panel_window(app);
     if let Ok(window) = ensure_floating_window(app) {
@@ -3594,6 +3644,8 @@ fn open_main_window_from_tray(app: &AppHandle, ctx: &application::AppContext) {
     if let Ok(prefs) =
         application::desktop_ui_service::set_launch_mode(ctx, crate::contracts::AppLaunchMode::Main)
     {
+        // 用户显式打开：无需再等前端就绪信号。
+        MAIN_WINDOW_REVEALED.store(true, Ordering::SeqCst);
         sync_mode_windows(app, &prefs);
         let _ = app.emit("desktop-ui-prefs-updated", &prefs);
     }
@@ -3781,6 +3833,10 @@ pub fn run() {
                 if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                     let _ = main.hide();
                 }
+            } else {
+                // 主模式启动：等前端 frontend_ready（内联主题脚本已生效）再显示，
+                // 3 秒未收到则兜底强制显示，避免异常时永远白屏。
+                schedule_main_window_reveal_fallback(app_handle.clone());
             }
             Ok(())
         })
@@ -3827,6 +3883,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             adapters::desktop::commands::health,
+            adapters::desktop::commands::frontend_ready,
             adapters::desktop::commands::get_overview_shell,
             adapters::desktop::commands::get_overview_shell_lite,
             adapters::desktop::commands::get_overview,
