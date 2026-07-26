@@ -1,43 +1,35 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "node:path";
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react()],
+  clearScreen: false,
   build: {
     rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (id.includes("/node_modules/echarts/charts")) {
-            return "echarts-charts";
-          }
-          if (id.includes("/node_modules/echarts/components")) {
-            return "echarts-components";
-          }
-          if (id.includes("/node_modules/echarts/renderers")) {
-            return "echarts-renderers";
-          }
-          if (id.includes("/node_modules/zrender/")) {
-            return "zrender";
-          }
-          if (
-            id.includes("/src/features/analytics/AnalyticsLab.tsx") ||
-            id.includes("/src/charts.tsx")
-          ) {
-            return "analytics-lab";
-          }
-        }
-      },
       input: {
         main: resolve(__dirname, "index.html"),
         floatingOrb: resolve(__dirname, "floating-orb.html"),
-        floatingPanel: resolve(__dirname, "floating-panel.html")
+        floatingPanel: resolve(__dirname, "floating-panel.html"),
+        floatingNotification: resolve(__dirname, "floating-notification.html")
       }
     }
   },
   server: {
     port: 5777,
+    strictPort: true,
+    watch: {
+      ignored: [
+        "**/.trellis/**",
+        "**/.agents/**",
+        "**/.claude/**",
+        "**/.codex/**",
+        "**/.gitnexus/**",
+        "**/tmp/**",
+        "**/.tmp/**",
+        "**/src-tauri/target/**"
+      ]
+    },
     proxy: {
       "/api": "http://127.0.0.1:5559"
     }

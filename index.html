@@ -1,9 +1,18 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="titan-noir">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/webp" href="/src/assets/project-logo-64.webp" />
+    <script>
+      // 首帧前恢复上次主题，避免默认主题闪一下再切换（key 见 apply-theme.ts）。
+      try {
+        var lastTheme = localStorage.getItem("input-panel.last-theme");
+        if (lastTheme && /^[a-z][a-z-]*$/.test(lastTheme)) {
+          document.documentElement.className = lastTheme;
+        }
+      } catch (e) {}
+    </script>
     <title>Input面板</title>
   </head>
   <body>

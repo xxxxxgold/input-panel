@@ -23,6 +23,7 @@
     "build": "pnpm build:web",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
+    "check:css": "node scripts/check-css-duplicates.mjs",
     "build:desktop": "pwsh -NoLogo -NoProfile -File ./scripts/prepare-desktop-build.ps1 && pnpm tauri build --no-bundle",
     "build:desktop:debug": "pwsh -NoLogo -NoProfile -File ./scripts/prepare-desktop-build.ps1 && pnpm tauri build --debug --no-bundle",
     "preview": "vite preview",
@@ -45,7 +46,6 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@tailwindcss/vite": "^4.3.0",
     "@tauri-apps/cli": "^2.11.2",
     "@testing-library/react": "^16.3.0",
     "@types/node": "^22.13.10",
@@ -59,7 +59,6 @@
     "globals": "^17.7.0",
     "jsdom": "^26.1.0",
     "supertest": "^7.0.0",
-    "tailwindcss": "^4.3.0",
     "tsx": "^4.19.3",
     "typescript-eslint": "^8.65.0",
     "typescript": "^5.8.2",

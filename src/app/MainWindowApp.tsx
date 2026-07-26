@@ -1,4 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import { emitTo } from "@tauri-apps/api/event";
 import {
   Suspense,
@@ -46,6 +47,7 @@ import {
 import { navTitle as workspaceNavTitle } from "./navigation";
 import { useShellWorkspace } from "./useShellWorkspace";
 import { THEME_IDS, normalizeThemeId, type ThemeId } from "../shared/lib/theme";
+import { applyThemeToDocument } from "../shared/lib/apply-theme";
 import { createBoundedExecutor } from "../shared/lib/bounded-map";
 import { useStableCallback } from "../shared/hooks/useStableCallback";
 import { ScopedResourceCache } from "../shared/state/scoped-resource-cache";
@@ -561,6 +563,8 @@ export function MainWindowApp() {
       const appWindow = getCurrentWindow();
       await ignoreWindowMutation(appWindow.setDecorations(false));
       await ignoreWindowMutation(appWindow.setShadow(false));
+      // 首帧就绪信号：Rust 侧据此显示主窗口（超时 3s 有兜底，失败可忽略）。
+      await invoke("frontend_ready").catch(() => undefined);
     })();
     return () => {
       document.documentElement.classList.remove("desktop-main-root");
@@ -832,8 +836,7 @@ export function MainWindowApp() {
   }, [desktopUi.prefs.theme, setTheme, theme]);
 
   useEffect(() => {
-    document.documentElement.classList.remove(...THEME_IDS);
-    document.documentElement.classList.add(theme);
+    applyThemeToDocument(theme);
   }, [theme]);
 
   useEffect(() => {

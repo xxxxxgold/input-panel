@@ -4,6 +4,7 @@ import { FloatingOrbWindow } from "./FloatingOrbWindow";
 import { useDesktopUiPrefs } from "../features/desktop-ui/useDesktopUiPrefs";
 import { useMonitorStore } from "../store/monitor-store";
 import { THEME_IDS, normalizeThemeId } from "../shared/lib/theme";
+import { applyThemeToDocument } from "../shared/lib/apply-theme";
 
 const ALLOWED_THEMES = new Set<string>(THEME_IDS);
 
@@ -19,8 +20,7 @@ export function FloatingWindowRoot() {
   }, [desktopUi.prefs.theme, setTheme, theme]);
 
   useEffect(() => {
-    document.documentElement.classList.remove(...THEME_IDS);
-    document.documentElement.classList.add(theme);
+    applyThemeToDocument(theme);
   }, [theme]);
 
   return <FloatingOrbWindow keepPanelVisible={desktopUi.prefs.keepFloatingPanelVisible} />;
