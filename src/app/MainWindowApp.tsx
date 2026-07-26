@@ -580,10 +580,10 @@ export function MainWindowApp() {
   });
   const prefsRef = useRef(desktopUi.prefs);
   prefsRef.current = desktopUi.prefs;
-  const [schedulerConfig, setSchedulerConfig] = useState<SchedulerConfigPayload>({ enabled: true, intervalSeconds: 9 });
+  const [schedulerConfig, setSchedulerConfig] = useState<SchedulerConfigPayload>({ enabled: true, intervalSeconds: 15 });
   const [schedulerConfirmedConfig, setSchedulerConfirmedConfig] = useState<SchedulerConfigPayload>({
     enabled: true,
-    intervalSeconds: 9
+    intervalSeconds: 15
   });
   const [schedulerConfigLoading, setSchedulerConfigLoading] = useState(false);
   const [schedulerConfigSaving, setSchedulerConfigSaving] = useState(false);

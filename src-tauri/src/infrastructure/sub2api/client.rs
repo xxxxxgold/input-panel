@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
@@ -6,12 +8,32 @@ use reqwest::{Client, Method};
 use serde_json::{json, Value};
 
 use crate::contracts::{
-    AccountRecord, AccountCacheView, KeyRecord, LoginChallenge, PlatformPoint, SiteRecord,
+    AccountRecord, AccountCacheView, KeyRecord, LoginChallenge, SiteRecord,
     AccountCacheStats, StoredSession, SubscriptionQuotaWindow, SubscriptionRecord,
     TrendPoint, UsageRow,
 };
 use crate::domain::alerts::build_alerts;
-use crate::infrastructure::sub2api::normalizers::normalize_trend_payload;
+use crate::infrastructure::datetime::{now_storage_timestamp, shanghai_today};
+use crate::infrastructure::sub2api::normalizers::{
+    normalize_dashboard_cache_stats, normalize_trend_payload,
+};
+
+const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// 只读请求（bearer 鉴权、无 cookie 依赖）共享同一个 reqwest Client，
+/// 复用连接池与 TLS 会话；登录/写路径仍按账号独立持有 cookie jar。
+fn shared_read_http_client() -> Result<Client> {
+    static SHARED: OnceLock<Client> = OnceLock::new();
+    if let Some(client) = SHARED.get() {
+        return Ok(client.clone());
+    }
+    let client = Client::builder()
+        .connect_timeout(UPSTREAM_CONNECT_TIMEOUT)
+        .timeout(UPSTREAM_REQUEST_TIMEOUT)
+        .build()?;
+    Ok(SHARED.get_or_init(|| client).clone())
+}
 
 pub struct Sub2ApiClient {
     client: Client,
@@ -20,10 +42,35 @@ pub struct Sub2ApiClient {
     refresh_token: Option<String>,
 }
 
+#[derive(Clone)]
+pub(crate) struct Sub2ApiReadClient {
+    client: Client,
+    base_url: String,
+    access_token: String,
+}
+
 impl Sub2ApiClient {
     pub fn new(base_url: &str, session: Option<StoredSession>) -> Result<Self> {
+        Self::new_with_timeouts(
+            base_url,
+            session,
+            UPSTREAM_CONNECT_TIMEOUT,
+            UPSTREAM_REQUEST_TIMEOUT,
+        )
+    }
+
+    fn new_with_timeouts(
+        base_url: &str,
+        session: Option<StoredSession>,
+        connect_timeout: Duration,
+        request_timeout: Duration,
+    ) -> Result<Self> {
         Ok(Self {
-            client: Client::builder().cookie_store(true).build()?,
+            client: Client::builder()
+                .cookie_store(true)
+                .connect_timeout(connect_timeout)
+                .timeout(request_timeout)
+                .build()?,
             base_url: if base_url.ends_with('/') {
                 base_url.to_string()
             } else {
@@ -36,7 +83,7 @@ impl Sub2ApiClient {
 
     pub fn serialize(&self) -> StoredSession {
         StoredSession {
-            saved_at: Utc::now().to_rfc3339(),
+            saved_at: now_storage_timestamp(),
             access_token: self.access_token.clone(),
             refresh_token: self.refresh_token.clone(),
             token_type: self.access_token.as_ref().map(|_| "bearer".to_string()),
@@ -46,6 +93,23 @@ impl Sub2ApiClient {
 
     pub fn has_tokens(&self) -> bool {
         self.access_token.is_some() || self.refresh_token.is_some()
+    }
+
+    pub fn has_access_token(&self) -> bool {
+        self.access_token.is_some()
+    }
+
+    pub(crate) fn read_only_handle(&self) -> Result<Sub2ApiReadClient> {
+        let access_token = self
+            .access_token
+            .clone()
+            .filter(|token| !token.trim().is_empty())
+            .ok_or_else(|| anyhow!("认证已失效"))?;
+        Ok(Sub2ApiReadClient {
+            client: shared_read_http_client()?,
+            base_url: self.base_url.clone(),
+            access_token,
+        })
     }
 
     pub fn clear_tokens(&mut self) {
@@ -69,12 +133,16 @@ impl Sub2ApiClient {
                     .request(Method::POST, url)
                     .json(&json!({ "email": email, "password": password }))
             };
-            let response = request.send().await?;
+            let response = request.send().await.map_err(normalize_upstream_request_error)?;
             if response.status().as_u16() == 404 {
                 continue;
             }
             let is_success = response.status().is_success();
-            let value: Value = response.json().await.context("登录响应解析失败")?;
+            let value: Value = response
+                .json()
+                .await
+                .map_err(normalize_upstream_request_error)
+                .context("登录响应解析失败")?;
             if !is_success {
                 return Err(anyhow!(extract_message(&value, "登录失败")));
             }
@@ -102,15 +170,20 @@ impl Sub2ApiClient {
                 .request(Method::POST, url)
                 .json(&json!({
                     "temp_token": temp_token,
-                    "code": code
+                    "totp_code": code
                 }))
                 .send()
-                .await?;
+                .await
+                .map_err(normalize_upstream_request_error)?;
             if response.status().as_u16() == 404 {
                 continue;
             }
             let is_success = response.status().is_success();
-            let value: Value = response.json().await.context("2FA 响应解析失败")?;
+            let value: Value = response
+                .json()
+                .await
+                .map_err(normalize_upstream_request_error)
+                .context("2FA 响应解析失败")?;
             if !is_success {
                 return Err(anyhow!(extract_message(&value, "2FA 验证失败")));
             }
@@ -135,6 +208,46 @@ impl Sub2ApiClient {
         let parsed_method = Method::from_bytes(method.as_bytes())
             .map_err(|_| anyhow!("不支持的请求方法"))?;
         self.request_json_with_method(&[path], parsed_method, body).await
+    }
+
+    pub async fn request_api_read_only(
+        &self,
+        path: &str,
+        method: &str,
+        body: Option<Value>,
+    ) -> Result<Value> {
+        if method != "GET" || body.is_some() {
+            return Err(anyhow!("只读上游请求只允许 GET。"));
+        }
+        self.read_only_handle()?.get_api(path).await
+    }
+
+    pub async fn request_api_key_usage(&self, path: &str, api_key: &str) -> Result<Value> {
+        if !path.starts_with("/v1/usage") {
+            return Err(anyhow!("仅允许代理密钥用量 API 路径。"));
+        }
+        let token = api_key.trim();
+        if token.is_empty() {
+            return Err(anyhow!("当前密钥为空，无法读取完整用量。"));
+        }
+
+        let url = format!("{}{}", self.base_url.trim_end_matches('/'), path);
+        let response = shared_read_http_client()?
+            .request(Method::GET, url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(normalize_upstream_request_error)?;
+        let is_success = response.status().is_success();
+        let value: Value = response
+            .json()
+            .await
+            .map_err(normalize_upstream_request_error)
+            .context("密钥用量响应解析失败")?;
+        if !is_success {
+            return Err(anyhow!(extract_message(&value, "密钥用量请求失败")));
+        }
+        unwrap_envelope(value)
     }
 
     pub async fn build_runtime_cache_view_for_smoke(
@@ -192,14 +305,15 @@ impl Sub2ApiClient {
                 .request(Method::POST, url)
                 .json(&json!({ "refresh_token": refresh }))
                 .send()
-                .await?;
+                .await
+                .map_err(normalize_upstream_request_error)?;
             if response.status().as_u16() == 404 {
                 continue;
             }
             if !response.status().is_success() {
                 return Err(anyhow!("刷新 token 失败"));
             }
-            let value: Value = response.json().await?;
+            let value: Value = response.json().await.map_err(normalize_upstream_request_error)?;
             let payload = unwrap_envelope(value)?;
             self.access_token =
                 pick_string(&payload, &["access_token", "token", "jwt"]).or_else(|| self.access_token.clone());
@@ -212,33 +326,7 @@ impl Sub2ApiClient {
 
     async fn dashboard_stats(&mut self) -> Result<AccountCacheStats> {
         let raw = self.request_json(&["/api/v1/usage/dashboard/stats"]).await?;
-        let by_platform = array_at(&raw, &["by_platform", "platforms"])
-            .into_iter()
-            .map(|item| PlatformPoint {
-                platform: pick_string(&item, &["platform", "name"]).unwrap_or_else(|| "unknown".into()),
-                total_actual_cost: pick_f64(&item, &["total_actual_cost", "actual_cost"]).unwrap_or(0.0),
-                today_actual_cost: pick_f64(&item, &["today_actual_cost"]).unwrap_or(0.0),
-                total_requests: pick_i64(&item, &["total_requests", "requests"]).unwrap_or(0),
-                total_tokens: pick_i64(&item, &["total_tokens", "tokens"]).unwrap_or(0),
-            })
-            .collect();
-
-        Ok(AccountCacheStats {
-            total_api_keys: pick_i64(&raw, &["total_api_keys"]).unwrap_or(0),
-            active_api_keys: pick_i64(&raw, &["active_api_keys"]).unwrap_or(0),
-            today_requests: pick_i64(&raw, &["today_requests"]).unwrap_or(0),
-            total_requests: pick_i64(&raw, &["total_requests"]).unwrap_or(0),
-            today_actual_cost: pick_f64(&raw, &["today_actual_cost", "actual_cost"]).unwrap_or(0.0),
-            total_actual_cost: pick_f64(&raw, &["total_actual_cost", "actual_cost"]).unwrap_or(0.0),
-            today_cost: pick_f64(&raw, &["today_cost"]).unwrap_or(0.0),
-            total_cost: pick_f64(&raw, &["total_cost"]).unwrap_or(0.0),
-            today_tokens: pick_i64(&raw, &["today_tokens"]).unwrap_or(0),
-            total_tokens: pick_i64(&raw, &["total_tokens"]).unwrap_or(0),
-            today_input_tokens: pick_i64(&raw, &["today_input_tokens", "input_tokens"]).unwrap_or(0),
-            today_output_tokens: pick_i64(&raw, &["today_output_tokens", "output_tokens"]).unwrap_or(0),
-            average_duration_ms: pick_f64(&raw, &["average_duration_ms", "avg_duration_ms"]).unwrap_or(0.0),
-            by_platform,
-        })
+        Ok(normalize_dashboard_cache_stats(&raw))
     }
 
     async fn keys(&mut self) -> Result<Vec<KeyRecord>> {
@@ -262,6 +350,7 @@ impl Sub2ApiClient {
                 usage5h: pick_f64(&item, &["usage_5h"]),
                 usage1d: pick_f64(&item, &["usage_1d"]),
                 usage7d: pick_f64(&item, &["usage_7d"]),
+                current_concurrency: pick_i64(&item, &["current_concurrency"]),
             })
             .collect())
     }
@@ -299,12 +388,17 @@ impl Sub2ApiClient {
                     pick_i64(&item, &["cache_read_tokens", "total_cache_tokens"]).unwrap_or(0);
                 UsageRow {
                     id: pick_string(&item, &["id"]).unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                    upstream_user_id: pick_i64(&item, &["user_id"]),
                     api_key_id: pick_i64(&item, &["api_key_id"]),
+                    upstream_account_id: pick_i64(&item, &["account_id"]),
+                    request_id: pick_string(&item, &["request_id"]),
                     created_at: pick_string(&item, &["created_at"]).unwrap_or_else(|| Utc::now().to_rfc3339()),
                     model: pick_string(&item, &["model"]).unwrap_or_else(|| "unknown".into()),
                     reasoning_effort: pick_string(&item, &["reasoning_effort"]),
                     endpoint: pick_string(&item, &["endpoint", "inbound_endpoint"]),
                     upstream_endpoint: pick_string(&item, &["upstream_endpoint"]),
+                    group_id: pick_i64(&item, &["group_id"]),
+                    subscription_id: pick_i64(&item, &["subscription_id"]),
                     actual_cost: pick_f64(&item, &["actual_cost", "total_actual_cost"]).unwrap_or(0.0),
                     total_cost: pick_f64(&item, &["total_cost", "cost"]).unwrap_or(0.0),
                     input_tokens,
@@ -313,6 +407,8 @@ impl Sub2ApiClient {
                     output_cost: pick_f64(&item, &["output_cost"]),
                     cache_creation_tokens: Some(cache_creation_tokens),
                     cache_read_tokens: Some(cache_read_tokens),
+                    cache_creation_5m_tokens: pick_i64(&item, &["cache_creation_5m_tokens"]),
+                    cache_creation_1h_tokens: pick_i64(&item, &["cache_creation_1h_tokens"]),
                     cache_creation_cost: pick_f64(&item, &["cache_creation_cost"]),
                     cache_read_cost: pick_f64(&item, &["cache_read_cost"]),
                     total_tokens: pick_i64(&item, &["total_tokens"])
@@ -322,6 +418,7 @@ impl Sub2ApiClient {
                     billing_mode: pick_string(&item, &["billing_mode"]),
                     request_type: pick_string(&item, &["request_type"]),
                     stream: item.get("stream").and_then(Value::as_bool),
+                    openai_ws_mode: item.get("openai_ws_mode").and_then(Value::as_bool),
                     billing_type: pick_i64(&item, &["billing_type"]),
                     image_count: pick_i64(&item, &["image_count"]),
                     image_size: pick_string(&item, &["image_size"]),
@@ -334,6 +431,8 @@ impl Sub2ApiClient {
                     media_type: pick_string(&item, &["media_type"]),
                     rate_multiplier: pick_f64(&item, &["rate_multiplier"]),
                     user_agent: pick_string(&item, &["user_agent"]),
+                    ip_address: pick_string(&item, &["ip_address"]),
+                    cache_ttl_overridden: item.get("cache_ttl_overridden").and_then(Value::as_bool),
                     api_key_name: pick_string(&item, &["api_key.name", "api_key_name"]),
                     platform: pick_string(&item, &["group.platform", "platform"]),
                     subscription_name: pick_string(
@@ -392,7 +491,13 @@ impl Sub2ApiClient {
     }
 
     async fn dashboard_trend(&mut self, days: i64) -> Result<Vec<TrendPoint>> {
-        let raw = self.request_json(&[&format!("/api/v1/usage/dashboard/trend?days={days}")]).await?;
+        let end_date = shanghai_today();
+        let start_date = end_date - chrono::Days::new(days.saturating_sub(1).max(0) as u64);
+        let raw = self
+            .request_json(&[&format!(
+                "/api/v1/usage/dashboard/trend?start_date={start_date}&end_date={end_date}&granularity=day"
+            )])
+            .await?;
         let payload = normalize_trend_payload(&raw);
         let mut trend = payload
             .trend
@@ -423,6 +528,17 @@ impl Sub2ApiClient {
         method: Method,
         body: Option<Value>,
     ) -> Result<Value> {
+        self.request_json_with_method_with_auth_recovery(paths, method, body, true)
+            .await
+    }
+
+    async fn request_json_with_method_with_auth_recovery(
+        &mut self,
+        paths: &[&str],
+        method: Method,
+        body: Option<Value>,
+        allow_auth_recovery: bool,
+    ) -> Result<Value> {
         let mut last_error: Option<anyhow::Error> = None;
 
         for path in paths {
@@ -434,13 +550,16 @@ impl Sub2ApiClient {
             if let Some(payload) = body.clone() {
                 request = request.json(&payload);
             }
-            let response = request.send().await?;
+            let response = request.send().await.map_err(normalize_upstream_request_error)?;
 
             if response.status().as_u16() == 404 {
                 continue;
             }
 
-            if response.status().as_u16() == 401 && self.refresh_token.is_some() {
+            if allow_auth_recovery
+                && response.status().as_u16() == 401
+                && self.refresh_token.is_some()
+            {
                 if self.refresh_token_if_needed().await.is_err() {
                     self.clear_tokens();
                     return Err(anyhow!("认证已失效"));
@@ -454,10 +573,10 @@ impl Sub2ApiClient {
                 if let Some(payload) = body.clone() {
                     retry = retry.json(&payload);
                 }
-                let retried = retry.send().await?;
+                let retried = retry.send().await.map_err(normalize_upstream_request_error)?;
                 let retried_status = retried.status().as_u16();
                 let retried_ok = retried_status < 400;
-                let value: Value = retried.json().await?;
+                let value: Value = retried.json().await.map_err(normalize_upstream_request_error)?;
                 if retried_ok {
                     return unwrap_envelope(value);
                 }
@@ -475,7 +594,7 @@ impl Sub2ApiClient {
             }
 
             let is_success = response.status().is_success();
-            let value: Value = response.json().await?;
+            let value: Value = response.json().await.map_err(normalize_upstream_request_error)?;
             if !is_success {
                 last_error = Some(anyhow!(extract_message(&value, "请求失败")));
                 break;
@@ -484,6 +603,46 @@ impl Sub2ApiClient {
         }
 
         Err(last_error.unwrap_or_else(|| anyhow!("未找到可用的接口路径。")))
+    }
+}
+
+impl Sub2ApiReadClient {
+    pub async fn get_api(&self, path: &str) -> Result<Value> {
+        if !path.starts_with("/api/v1/") {
+            return Err(anyhow!("仅允许代理用户中心 API 路径。"));
+        }
+
+        let url = format!("{}{}", self.base_url.trim_end_matches('/'), path);
+        let response = self
+            .client
+            .request(Method::GET, url)
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+            .map_err(normalize_upstream_request_error)?;
+        let status = response.status();
+        if status.as_u16() == 401 {
+            return Err(anyhow!("认证已失效"));
+        }
+        if status.is_server_error() {
+            return Err(anyhow!("上游服务临时失败（HTTP {}）。", status.as_u16()));
+        }
+        let value: Value = response
+            .json()
+            .await
+            .map_err(normalize_upstream_request_error)?;
+        if !status.is_success() {
+            return Err(anyhow!(extract_message(&value, "请求失败")));
+        }
+        unwrap_envelope(value)
+    }
+}
+
+fn normalize_upstream_request_error(error: reqwest::Error) -> anyhow::Error {
+    if error.is_timeout() {
+        anyhow!("上游服务响应超时，请稍后重试。")
+    } else {
+        anyhow!("请求上游服务失败: {error}")
     }
 }
 
@@ -506,15 +665,6 @@ fn normalize_items(value: &Value) -> Vec<Value> {
         }
     }
     value.as_array().cloned().unwrap_or_default()
-}
-
-fn array_at(value: &Value, keys: &[&str]) -> Vec<Value> {
-    for key in keys {
-        if let Some(array) = pick_value(value, key).and_then(Value::as_array) {
-            return array.clone();
-        }
-    }
-    Vec::new()
 }
 
 fn quota_window(value: &Value, prefix: &str) -> Option<SubscriptionQuotaWindow> {
@@ -598,6 +748,8 @@ fn extract_message(value: &Value, fallback: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use axum::{
         extract::Json,
         routing::{get, post},
@@ -607,6 +759,42 @@ mod tests {
 
     use super::Sub2ApiClient;
     use crate::contracts::{AccountRecord, SiteRecord};
+
+    #[tokio::test]
+    async fn login_returns_readable_error_when_upstream_times_out() {
+        let app = Router::new().route(
+            "/api/v1/auth/login",
+            post(|| async {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                Json(json!({ "code": 0, "data": {} }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let address = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve test app");
+        });
+
+        let mut client = Sub2ApiClient::new_with_timeouts(
+            &format!("http://{address}"),
+            None,
+            Duration::from_millis(20),
+            Duration::from_millis(50),
+        )
+        .expect("create client");
+        let error = tokio::time::timeout(
+            Duration::from_millis(250),
+            client.login("demo@example.com", "secret"),
+        )
+        .await
+        .expect("client request must finish")
+        .expect_err("request must time out");
+
+        server.abort();
+        assert_eq!(error.to_string(), "上游服务响应超时，请稍后重试。");
+    }
 
     #[tokio::test]
     async fn supports_2fa_flow_and_build_runtime_cache_view_for_smoke() {
@@ -622,7 +810,7 @@ mod tests {
             }))
             .route("/api/v1/auth/login/2fa", post(|Json(body): Json<Value>| async move {
                 let ok = body.get("temp_token").and_then(Value::as_str) == Some("temp-123")
-                    && body.get("code").and_then(Value::as_str) == Some("654321");
+                    && body.get("totp_code").and_then(Value::as_str) == Some("654321");
                 if ok {
                     Json(json!({
                         "code": 0,

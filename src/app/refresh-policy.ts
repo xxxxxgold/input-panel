@@ -1,51 +1,85 @@
 import type { AccountRuntime, DesktopUiPrefs, NavKey } from "../types";
 
-export const MIN_AUTO_REFRESH_INTERVAL_SECONDS = 1;
+export const MIN_AUTO_REFRESH_INTERVAL_SECONDS = 5;
 export const DEFAULT_AUTO_REFRESH_INTERVAL_SECONDS = 9;
 
 export type AutoRefreshScope = "core" | "keys" | "usage" | "none";
+export type AutoRefreshResource =
+  | "overview"
+  | "subscriptions"
+  | "keys"
+  | "usage"
+  | "modelStats"
+  | "keyUsage"
+  | "trends"
+  | "settings"
+  | "serviceStatus";
+
+export type AutoRefreshGroupPolicy = {
+  enabled: boolean;
+  intervalMs: number;
+};
 
 const ACCOUNT_DATA_REFRESH_NAVS: NavKey[] = [
   "overview",
   "keys",
   "usage",
+  "modelStats",
   "subscriptions",
   "keyUsage",
-  "trends",
-  "settings",
-  "alerts"
+  "trends"
 ];
 
-const CORE_REFRESH_NAVS: NavKey[] = [
-  "overview",
-  "subscriptions",
-  "settings",
-  "alerts"
-];
+const AUTO_REFRESH_RESOURCE_BY_NAV: Partial<Record<NavKey, AutoRefreshResource>> = {
+  overview: "overview",
+  subscriptions: "subscriptions",
+  keys: "keys",
+  usage: "usage",
+  modelStats: "modelStats",
+  keyUsage: "keyUsage",
+  trends: "trends",
+  settings: "settings",
+  serviceStatus: "serviceStatus"
+};
 
-const AUTO_REFRESH_CORE_NAVS: NavKey[] = [
-  "overview",
-  "subscriptions",
-  "settings",
-  "alerts"
-];
-
-const AUTO_REFRESH_KEYS_NAVS: NavKey[] = [
-  "keys"
-];
-
-const AUTO_REFRESH_USAGE_NAVS: NavKey[] = [
-  "usage",
-  "trends",
-  "keyUsage"
-];
+const AUTO_REFRESH_SCOPE_BY_RESOURCE: Record<AutoRefreshResource, AutoRefreshScope> = {
+  overview: "core",
+  subscriptions: "core",
+  keys: "keys",
+  usage: "usage",
+  modelStats: "usage",
+  keyUsage: "usage",
+  trends: "usage",
+  settings: "none",
+  serviceStatus: "none"
+};
 
 export function shouldRefreshAccountData(nav: NavKey) {
   return ACCOUNT_DATA_REFRESH_NAVS.includes(nav);
 }
 
 export function shouldRefreshCoreForNav(nav: NavKey) {
-  return CORE_REFRESH_NAVS.includes(nav);
+  return resolveAutoRefreshScope(nav) === "core";
+}
+
+export function shouldHydrateOverviewRealtime(options: {
+  nav: NavKey;
+  pageVisible: boolean;
+  windowFocused: boolean;
+  allowUnfocusedInitialHydration?: boolean;
+}) {
+  const {
+    nav,
+    pageVisible,
+    windowFocused,
+    allowUnfocusedInitialHydration = false
+  } = options;
+
+  return (
+    nav === "overview"
+    && pageVisible
+    && (windowFocused || allowUnfocusedInitialHydration)
+  );
 }
 
 export function normalizeAutoRefreshIntervalSeconds(value: number | null | undefined) {
@@ -56,16 +90,16 @@ export function normalizeAutoRefreshIntervalSeconds(value: number | null | undef
 }
 
 export function resolveAutoRefreshScope(nav: NavKey): AutoRefreshScope {
-  if (AUTO_REFRESH_CORE_NAVS.includes(nav)) {
-    return "core";
-  }
-  if (AUTO_REFRESH_KEYS_NAVS.includes(nav)) {
-    return "keys";
-  }
-  if (AUTO_REFRESH_USAGE_NAVS.includes(nav)) {
-    return "usage";
-  }
-  return "none";
+  const resource = getAutoRefreshResourceForNav(nav);
+  return resource ? resolveAutoRefreshScopeForResource(resource) : "none";
+}
+
+export function getAutoRefreshResourceForNav(nav: NavKey): AutoRefreshResource | null {
+  return AUTO_REFRESH_RESOURCE_BY_NAV[nav] ?? null;
+}
+
+export function resolveAutoRefreshScopeForResource(resource: AutoRefreshResource): AutoRefreshScope {
+  return AUTO_REFRESH_SCOPE_BY_RESOURCE[resource];
 }
 
 export function isAutoRefreshScopeEnabled(
@@ -94,6 +128,25 @@ export function resolveAutoRefreshIntervalSecondsForScope(
     case "usage":
       return normalizeAutoRefreshIntervalSeconds(prefs.autoRefreshUsageIntervalSeconds);
   }
+}
+
+export function resolveAutoRefreshGroupPolicy(
+  prefs: DesktopUiPrefs,
+  scope: Exclude<AutoRefreshScope, "none">
+): AutoRefreshGroupPolicy {
+  return {
+    enabled: prefs.autoRefreshEnabled && isAutoRefreshScopeEnabled(prefs, scope),
+    intervalMs: resolveAutoRefreshIntervalSecondsForScope(prefs, scope) * 1000
+  };
+}
+
+export function resolveServiceStatusAutoRefreshPolicy(
+  prefs: DesktopUiPrefs
+): AutoRefreshGroupPolicy {
+  return {
+    enabled: prefs.autoRefreshEnabled && prefs.autoRefreshServiceStatusEnabled,
+    intervalMs: normalizeAutoRefreshIntervalSeconds(prefs.autoRefreshIntervalSeconds) * 1000
+  };
 }
 
 export function shouldAutoRefreshSelectedAccountData(options: {
@@ -164,4 +217,27 @@ export function isAccountDataStaleForToday(
   }
 
   return cacheViewTime.toDateString() !== now.toDateString();
+}
+
+export function shouldRefreshSwitchRulesOnSettingsOpen(options: {
+  nav: NavKey;
+  pageVisible: boolean;
+  selectedAccount: AccountRuntime | null;
+  fetchedAt: string | null | undefined;
+  now?: Date;
+}) {
+  const {
+    nav,
+    pageVisible,
+    selectedAccount,
+    fetchedAt,
+    now
+  } = options;
+  return (
+    nav === "settings"
+    && pageVisible
+    && Boolean(selectedAccount)
+    && selectedAccount?.sessionState === "ready"
+    && isAccountDataStaleForToday(fetchedAt, now)
+  );
 }
