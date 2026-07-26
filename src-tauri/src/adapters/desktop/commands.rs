@@ -66,6 +66,13 @@ pub fn health() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+/// 前端首帧就绪信号：主窗口据此显示（内联主题脚本已生效，避免 FOUC）。
+/// 幂等，HMR 重放安全；3 秒未收到时由 Rust 侧兜底强制显示。
+#[tauri::command]
+pub fn frontend_ready(app: AppHandle) {
+    crate::reveal_main_window_on_frontend_ready(&app);
+}
+
 #[tauri::command]
 pub fn get_overview(ctx: State<'_, AppContext>) -> Result<OverviewPayload, String> {
     dashboard_service::get_overview(&ctx).map_err(to_message)
@@ -107,6 +114,7 @@ pub fn switch_app_mode(
     let floating_panel = app.get_webview_window("floating-panel");
     match launch_mode {
         AppLaunchMode::Main => {
+            crate::mark_main_window_revealed();
             if let Some(window) = &main {
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -258,6 +266,7 @@ pub fn open_main_window(
     payload: Option<OpenMainWindowPayload>,
 ) -> Result<DesktopUiPrefs, String> {
     let prefs = desktop_ui_service::set_launch_mode(&ctx, AppLaunchMode::Main).map_err(to_message)?;
+    crate::mark_main_window_revealed();
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
