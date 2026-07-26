@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./fonts.css";
 
 :root {
   --font-sans: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -22,11 +23,11 @@
   --status-danger-fg: #be123c;
   --status-info-fg: #1d4ed8;
   --chart-1: var(--accent);
-  --chart-2: #5e8cff;
-  --chart-3: #e3a62c;
-  --chart-4: #4fc8f0;
-  --chart-5: #8d78ff;
-  --chart-6: #53cdb5;
+  --chart-2: #66ddd3;
+  --chart-3: #f3bb62;
+  --chart-4: #9e8cff;
+  --chart-5: #ff8ab2;
+  --chart-6: #7fe6af;
   --tier-green: #22c55e;
   --tier-green-light: #4ade80;
   --tier-lime: #84cc16;
@@ -56,6 +57,7 @@ html,
 body,
 #root {
   margin: 0;
+  height: 100%;
   min-height: 100%;
 }
 
@@ -63,6 +65,33 @@ body {
   font-family: var(--font-sans);
   background: var(--bg-page);
   color: var(--text-strong);
+}
+
+code,
+kbd,
+pre,
+samp,
+.font-data,
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+html.desktop-main-root,
+body.desktop-main-window-body,
+#root.desktop-main-window-root {
+  height: 100%;
+  background: transparent;
+}
+
+body.desktop-main-window-body {
+  overflow: hidden;
+}
+
+#root.desktop-main-window-root {
+  padding: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+  background: transparent;
 }
 
 /* Custom scrollbar - Windows刚需 */
@@ -104,4 +133,3 @@ body {
     backdrop-filter: none !important;
   }
 }
-

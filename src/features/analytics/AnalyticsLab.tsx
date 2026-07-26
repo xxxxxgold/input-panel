@@ -1,8 +1,15 @@
-import type { ReactNode } from "react";
-import { EChartCard as BaseEChartCard, type ChartOption } from "../../charts";
+import { useState, type KeyboardEvent, type ReactNode } from "react";
+import "../../charts-runtime-lab";
+import {
+  EChartCard as BaseEChartCard,
+  readChartPalette,
+  type ChartOption,
+  type ChartPalette
+} from "../../charts";
 import type {
   AccountRuntime,
   DailyUsagePoint,
+  KeyRecord,
   ManagedKeyRecord,
   OverviewPayload,
   PaginatedResult,
@@ -20,6 +27,7 @@ import type {
 interface AnalyticsLabProps {
   overview: OverviewPayload | null;
   selectedAccount: AccountRuntime | null;
+  loading?: boolean;
   managedKeys: PaginatedResult<ManagedKeyRecord> | null;
   usageStats: UsageStatsRecord | null;
   usageTrend: UsageTrendPayload | null;
@@ -49,10 +57,41 @@ interface AnalyticsLabProps {
 
 const ANALYTICS_SAMPLE_ROWS = 20;
 
+const ANALYTICS_VIEWS = [
+  { id: "overview", label: "核心概览", chartCount: 4 },
+  { id: "cost-models", label: "成本与模型", chartCount: 7 },
+  { id: "performance-requests", label: "性能与请求", chartCount: 11 },
+  { id: "accounts-assets", label: "账号与资产", chartCount: 10 }
+] as const;
+
+type AnalyticsViewId = (typeof ANALYTICS_VIEWS)[number]["id"];
+
+function resolveAnalyticsViewFromKey(currentView: AnalyticsViewId, key: string): AnalyticsViewId | null {
+  const currentIndex = ANALYTICS_VIEWS.findIndex((view) => view.id === currentView);
+  if (currentIndex < 0) {
+    return null;
+  }
+  if (key === "Home") {
+    return ANALYTICS_VIEWS[0].id;
+  }
+  if (key === "End") {
+    return ANALYTICS_VIEWS[ANALYTICS_VIEWS.length - 1].id;
+  }
+  if (key === "ArrowLeft") {
+    return ANALYTICS_VIEWS[(currentIndex - 1 + ANALYTICS_VIEWS.length) % ANALYTICS_VIEWS.length].id;
+  }
+  if (key === "ArrowRight") {
+    return ANALYTICS_VIEWS[(currentIndex + 1) % ANALYTICS_VIEWS.length].id;
+  }
+  return null;
+}
+
 export function AnalyticsLab(props: AnalyticsLabProps) {
+  const [activeView, setActiveView] = useState<AnalyticsViewId>("overview");
   const {
     overview,
     selectedAccount,
+    loading = false,
     managedKeys,
     usageStats,
     usageTrend,
@@ -77,15 +116,17 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
 
   const palette = readChartPalette();
   const selectedAccountCache = selectedAccount?.cacheView ?? null;
-  const keys = managedKeys?.items ?? [];
+  const keys = managedKeys?.items?.length ? managedKeys.items : coerceManagedKeys(selectedAccountCache?.keys ?? []);
   const scopedRows = usageScopeRows;
-  const effectiveUsageStats = usageStats ?? (scopedRows.length > 0 ? buildUsageStatsFromRows(scopedRows, usageStartDate, usageEndDate) : null);
   const sampleRows = usageRecords?.items ?? scopedRows.slice(0, ANALYTICS_SAMPLE_ROWS);
+  const aggregateReady = Boolean(usageStats || usageTrend || usageModels || usageScopeMeta);
+  const sampleReady = sampleRows.length > 0 || Boolean(usageRecords) || Boolean(usageScopeMeta);
+  const effectiveUsageStats = usageStats ?? (scopedRows.length > 0 ? buildUsageStatsFromRows(scopedRows, usageStartDate, usageEndDate) : null);
   const selectedKey = keys.find((item) => item.id === keyUsageKeyId) ?? null;
   const platformSeries = selectedAccountCache?.stats.byPlatform ?? overview?.platformSeries ?? [];
-  const scopedTrend = scopedRows.length > 0 ? buildScopedTrendPayload(scopedRows) : usageTrend;
-  const scopedModels = scopedRows.length > 0 ? buildScopedModelsPayload(scopedRows) : usageModels;
-  const scopedPlatformSeries = buildScopedPlatformRows(scopedRows);
+  const scopedTrend = usageTrend ?? (scopedRows.length > 0 ? buildScopedTrendPayload(scopedRows) : null);
+  const scopedModels = usageModels ?? (scopedRows.length > 0 ? buildScopedModelsPayload(scopedRows) : null);
+  const scopedPlatformSeries = scopedRows.length > 0 ? buildScopedPlatformRows(scopedRows) : [];
   const endpointUsageRows = buildUsageAggregateRows(scopedRows, (row) => row.endpoint ?? "unknown");
   const modelUsageRows = buildUsageAggregateRows(scopedRows, (row) => row.model || "unknown");
   const keyUsageAggregates = buildUsageAggregateRows(
@@ -112,6 +153,7 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
   const efficiencyRows = buildEfficiencyRows(modelUsageRows);
   const costBreakdownRows = buildCostBreakdownRows(scopedRows);
   const premiumRows = buildPremiumRows(groupUsageAggregates);
+  const keyUsageSummaryRows = buildKeyUsageSummaryRows(keys, scopedRows);
   const keyCostRankingRows = buildUsageRankingRows(keyUsageAggregates);
   const groupCostRankingRows = buildUsageRankingRows(groupUsageAggregates);
   const subscriptionCostRankingRows = buildUsageRankingRows(subscriptionUsageAggregates);
@@ -125,8 +167,12 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
   const keyStatusRows = buildDimensionRows(keys, (key) => key.status || "unknown");
   const identityRows = buildIdentityRows(profileRecord);
   const quotaRows = platformQuotas?.platformQuotas ?? [];
-  const subscriptionRows = buildSubscriptionRows(subscriptionSummary, selectedAccountCache?.subscriptions ?? []);
+  const subscriptionRows = buildSubscriptionRows(subscriptionSummary, selectedAccountCache?.subscriptions ?? [], scopedRows);
   const alertSeverityRows = buildAlertSeverityRows(overview);
+  const platformQuotaFallbackRows = buildPlatformQuotaFallbackRows(
+    scopedRows.length > 0 ? scopedRows : overview?.recentUsage ?? []
+  );
+  const accountHealthRows = buildAccountHealthRows(overview);
 
   const selectedAccountTitle = selectedAccount
     ? `${selectedAccount.label} · ${selectedAccount.site?.name ?? "未命名站点"}`
@@ -134,25 +180,36 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
   const sampleFootnote = usageRecords
     ? `当前样本为第 ${usageRecords.page} / ${usageRecords.pages} 页，共 ${usageRecords.total} 条明细。`
     : usageScopeMeta
-      ? `当前样本使用筛选范围前 ${ANALYTICS_SAMPLE_ROWS} 条，共 ${usageScopeMeta.total} 条明细。`
+      ? `当前样本使用筛选范围前 ${ANALYTICS_SAMPLE_ROWS} 条明细。`
       : "尚未加载 usage 明细。";
   const scopedFootnote = usageScopeMeta
-    ? `当前筛选范围已聚合 ${usageScopeMeta.loadedPages} / ${usageScopeMeta.pages} 页，共 ${usageScopeMeta.total} 条 usage 明细。`
+    ? usageScopeMeta.total > 0
+      ? `行级图表已聚合当前筛选范围 ${usageScopeMeta.loadedPages} / ${usageScopeMeta.pages} 页，共 ${usageScopeMeta.total} 条本地明细。`
+      : "当前筛选范围没有用量明细。"
+    : aggregateReady
+      ? "当前聚合结果来自本地后端统计接口；正在等待完整明细范围。"
     : "当前还没有筛选范围聚合数据。";
   const dateLabel = usageStartDate && usageEndDate ? `${usageStartDate} ~ ${usageEndDate}` : "请选择时间范围";
 
+  const handleViewKeyDown = (event: KeyboardEvent<HTMLButtonElement>, currentView: AnalyticsViewId) => {
+    const nextView = resolveAnalyticsViewFromKey(currentView, event.key);
+    if (!nextView) {
+      return;
+    }
+    event.preventDefault();
+    setActiveView(nextView);
+    event.currentTarget
+      .closest<HTMLElement>("[role=tablist]")
+      ?.querySelector<HTMLButtonElement>(`#analytics-view-tab-${nextView}`)
+      ?.focus();
+  };
+
   if (!overview) {
     return (
-      <section className="section-card analytics-lab-empty-shell">
-        <header className="section-card-header">
-          <div>
-            <h3>图表实验室</h3>
-            <p>等待总览数据就绪后再展示实验页。</p>
-          </div>
-        </header>
+      <section className="section-card analytics-lab-empty-shell" aria-live="polite">
         <AnalyticsEmptyState
           title="当前还没有可分析的数据"
-          detail="先让工作台完成一次 overview 加载，再打开这个分析页。"
+          detail="先刷新首页数据, 再来这里查看更详细的分析。"
         />
       </section>
     );
@@ -160,31 +217,42 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
 
   return (
     <div className="analytics-lab-stack">
-      <section className="section-card analytics-lab-hero">
-        <header className="section-card-header analytics-lab-hero-head">
-          <div>
-            <h3>图表实验室</h3>
-            <p>围绕当前账号和筛选范围展开多维分析, 集中查看成本、请求、缓存、配额与模型分布。</p>
-          </div>
-          <span className="analytics-lab-badge">多维分析 / ECharts</span>
-        </header>
-        <div className="analytics-lab-meta-grid">
-          <div className="analytics-meta-card">
+      <section className="analytics-scope-band" aria-label="当前分析范围">
+        <div className="analytics-scope-grid">
+          <div className="analytics-scope-item">
             <span>当前账号</span>
             <strong>{selectedAccountTitle}</strong>
-            <p>{selectedAccountCache ? `最后刷新 ${formatDateTimeFull(selectedAccountCache.fetchedAt)}` : "账号还没有本地缓存数据"}</p>
+            <p>{selectedAccountCache ? `最后更新 ${formatDateTimeFull(selectedAccountCache.fetchedAt)}` : "这个账号还没有可分析的数据"}</p>
           </div>
-          <div className="analytics-meta-card">
+          <div className="analytics-scope-item">
             <span>样本区间</span>
             <strong>{dateLabel}</strong>
             <p>{scopedFootnote}</p>
           </div>
-          <div className="analytics-meta-card">
-            <span>全局聚合</span>
+          <div className="analytics-scope-item">
+            <span>整体情况</span>
             <strong>{overview.accounts.length} 个账号 / {overview.sites.length} 个站点</strong>
             <p>今日 {overview.totals.todayRequests.toLocaleString()} 请求, 实际成本 {formatUsd(overview.totals.todayActualCost, 4)}</p>
           </div>
         </div>
+      </section>
+
+      <div className="analytics-kpi-grid">
+        <AnalyticsStatCard label="当前总请求" value={effectiveUsageStats?.totalRequests.toLocaleString() ?? "-"} hint="基于当前筛选条件" />
+        <AnalyticsStatCard label="当前实际成本" value={formatUsd(effectiveUsageStats?.totalActualCost, 4)} hint={formatUsdPerMillion(effectiveUsageStats?.totalActualCost, effectiveUsageStats?.totalTokens)} />
+        <AnalyticsStatCard label="当前总 Tokens" value={effectiveUsageStats ? compact(effectiveUsageStats.totalTokens) : "-"} hint={`输入 ${compact(effectiveUsageStats?.totalInputTokens ?? 0)} / 输出 ${compact(effectiveUsageStats?.totalOutputTokens ?? 0)}`} />
+        <AnalyticsStatCard label="缓存命中" value={effectiveUsageStats ? compact((effectiveUsageStats.totalCacheReadTokens ?? 0) + (effectiveUsageStats.totalCacheCreationTokens ?? 0)) : "-"} hint={`读取 ${compact(effectiveUsageStats?.totalCacheReadTokens ?? 0)} / 写入 ${compact(effectiveUsageStats?.totalCacheCreationTokens ?? 0)}`} />
+        <AnalyticsStatCard
+          label="平均耗时"
+          value={formatDurationSeconds(effectiveUsageStats?.averageDurationMs)}
+          hint={`RPM ${formatNumber(effectiveUsageStats?.rpm)} / TPM ${effectiveUsageStats?.tpm === null || effectiveUsageStats?.tpm === undefined ? "-" : compact(effectiveUsageStats.tpm)}`}
+        />
+        <AnalyticsStatCard label="活跃订阅" value={String(subscriptionSummary?.activeCount ?? selectedAccountCache?.subscriptions.length ?? 0)} hint={`已用 ${formatUsd(subscriptionSummary?.totalUsedUsd ?? 0, 2)}`} />
+        <AnalyticsStatCard label="可管理 Key" value={String(keys.length)} hint={`活跃 ${String(keys.filter((item) => item.status === "active").length)}`} />
+        <AnalyticsStatCard label="身份绑定" value={`${identityRows.filter((item) => item.bound).length} / ${identityRows.length}`} hint={profileRecord ? maskEmail(profileRecord.email) : "等待账号资料"} />
+      </div>
+
+      <section className="analytics-filter-band" aria-label="分析筛选">
         <div className="analytics-toolbar">
           <label className="field analytics-filter">
             <span>开始日期</span>
@@ -203,12 +271,12 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
             />
           </label>
           <label className="field analytics-filter">
-            <span>Usage Key 筛选</span>
+            <span>按密钥筛选</span>
             <select
               value={usageApiKeyFilter}
               onChange={(event) => onUsageApiKeyFilterChange(event.target.value)}
             >
-              <option value="">全部 Key</option>
+              <option value="">全部密钥</option>
               {keys.map((item) => (
                 <option key={item.id} value={item.id}>
                   {item.name}
@@ -217,12 +285,12 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
             </select>
           </label>
           <label className="field analytics-filter">
-            <span>单 Key 趋势</span>
+            <span>按密钥查看</span>
             <select
               value={keyUsageKeyId}
               onChange={(event) => onKeyUsageSelect(event.target.value)}
             >
-              <option value="">请选择 Key</option>
+              <option value="">请选择密钥</option>
               {keys.map((item) => (
                 <option key={item.id} value={item.id}>
                   {item.name}
@@ -234,313 +302,386 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
             <button className="primary-button" type="button" onClick={onUsageSearch}>
               刷新筛选结果
             </button>
-            <p>筛选会影响 usage 汇总、全量范围聚合图表和当前页样本明细。散点与明细仍保留当前页样本视角。</p>
+            <p>当前筛选会同步更新四个分析视图中的指标、图表和明细。</p>
           </div>
-        </div>
-        <div className="analytics-kpi-grid">
-          <AnalyticsStatCard label="当前总请求" value={effectiveUsageStats?.totalRequests.toLocaleString() ?? "-"} hint="基于当前筛选条件" />
-          <AnalyticsStatCard label="当前实际成本" value={formatUsd(effectiveUsageStats?.totalActualCost, 4)} hint={formatUsdPerMillion(effectiveUsageStats?.totalActualCost, effectiveUsageStats?.totalTokens)} />
-          <AnalyticsStatCard label="当前总 Tokens" value={effectiveUsageStats ? compact(effectiveUsageStats.totalTokens) : "-"} hint={`输入 ${compact(effectiveUsageStats?.totalInputTokens ?? 0)} / 输出 ${compact(effectiveUsageStats?.totalOutputTokens ?? 0)}`} />
-          <AnalyticsStatCard label="缓存命中" value={effectiveUsageStats ? compact((effectiveUsageStats.totalCacheReadTokens ?? 0) + (effectiveUsageStats.totalCacheCreationTokens ?? 0)) : "-"} hint={`读取 ${compact(effectiveUsageStats?.totalCacheReadTokens ?? 0)} / 写入 ${compact(effectiveUsageStats?.totalCacheCreationTokens ?? 0)}`} />
-          <AnalyticsStatCard
-            label="平均耗时"
-            value={formatDurationSeconds(effectiveUsageStats?.averageDurationMs)}
-            hint={`RPM ${formatNumber(effectiveUsageStats?.rpm)} / TPM ${effectiveUsageStats?.tpm === null || effectiveUsageStats?.tpm === undefined ? "-" : compact(effectiveUsageStats.tpm)}`}
-          />
-          <AnalyticsStatCard label="活跃订阅" value={String(subscriptionSummary?.activeCount ?? selectedAccountCache?.subscriptions.length ?? 0)} hint={`已用 ${formatUsd(subscriptionSummary?.totalUsedUsd ?? 0, 2)}`} />
-          <AnalyticsStatCard label="可管理 Key" value={String(keys.length)} hint={`活跃 ${String(keys.filter((item) => item.status === "active").length)}`} />
-          <AnalyticsStatCard label="身份绑定" value={`${identityRows.filter((item) => item.bound).length} / ${identityRows.length}`} hint={profileRecord ? maskEmail(profileRecord.email) : "等待资料接口"} />
         </div>
       </section>
 
-      <div className="content-grid analytics-lab-grid">
-        <AnalyticsChartCard
-          title="成本 / 请求 / Token 趋势"
-          subtitle="使用 dashboard/trend 的时间序列, 同时观察成本、请求量、Token 规模。"
-          option={buildUsageTrendOption(scopedTrend, palette)}
-          footer={scopedTrend ? <AnalyticsFootnote>开始 {scopedTrend.startDate || "-"} · 结束 {scopedTrend.endDate || "-"}</AnalyticsFootnote> : null}
-        />
-        <AnalyticsChartCard
-          title="模型成本排行"
-          subtitle="使用 dashboard/models, 看哪几个模型最烧钱。"
-          option={buildModelCostOption(scopedModels, palette)}
-        />
-        <AnalyticsChartCard
-          title="模型 Token 构成"
-          subtitle="横向堆叠, 同时对比输入、输出、缓存写入、缓存读取。"
-          option={buildModelTokenOption(scopedModels, palette)}
-        />
-        <AnalyticsChartCard
-          title="平台全景"
-          subtitle="按平台对比实际成本、请求数、Token 数, 一眼看出主力平台。"
-          option={buildPlatformOverviewOption(scopedPlatformSeries.length > 0 ? scopedPlatformSeries : platformSeries, palette)}
-        />
-        <AnalyticsChartCard
-          title="延迟分位"
-          subtitle="基于当前筛选范围, 看首 Token 与总耗时的 p50 / p90 / p99。"
-          option={buildLatencyPercentileOption(scopedRows, palette)}
-          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
-        />
-        <AnalyticsChartCard
-          title="成本拆解"
-          subtitle="按输入、输出、缓存写入、缓存读取拆开成本结构。"
-          option={buildCostBreakdownOption(costBreakdownRows, palette)}
-          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
-        />
-        <AnalyticsChartCard
-          title="模型溢价分析"
-          subtitle="看各模型实际成本相对原始成本的放大倍数。"
-          option={buildEfficiencyScatterOption(efficiencyRows, palette)}
-          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
-        />
-        <AnalyticsChartCard
-          title="请求样本散点"
-          subtitle="使用当前 usage 样本页: X 轴总 Token, Y 轴实际成本, 气泡大小代表耗时。"
-          option={buildRequestScatterOption(sampleRows, palette)}
-          footer={<AnalyticsFootnote>{sampleFootnote}</AnalyticsFootnote>}
-        />
-        <AnalyticsChartCard
-          title="端点分布"
-          subtitle="基于当前筛选范围的全部 usage 明细聚合, 看哪些 endpoint 最常出现。"
-          option={buildDimensionBarOption(endpointRows, palette, "endpoint")}
-          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
-        />
-        <AnalyticsChartCard
-          title="推理强度分布"
-          subtitle="基于当前筛选范围的全部 usage 明细, 看 `reasoning_effort` 的占比。"
-          option={buildDimensionDonutOption(reasoningRows, palette, "推理强度")}
-          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
-        />
-        <AnalyticsChartCard
-          title="请求类型分布"
-          subtitle="基于当前筛选范围的全部 usage 明细, 按 `request_type` 和 stream 标记聚合。"
-          option={buildDimensionDonutOption(requestTypeRows, palette, "请求类型")}
-          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
-        />
-        <AnalyticsChartCard
-          title="请求类型 × 推理强度"
-          subtitle="看 stream / standard 与 reasoning effort 的组合占比。"
-          option={buildDimensionBarOption(comboRows, palette, "组合请求")}
-          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
-        />
-        <AnalyticsChartCard
-          title="时段热力图"
-          subtitle="按星期与小时聚合请求强度, 看什么时候最忙。"
-          option={buildUsageHeatmapOption(heatmapRows, palette)}
-          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
-        />
-        <AnalyticsChartCard
-          title="Key 状态分布"
-          subtitle="当前账号下 Key 的状态占比。"
-          option={buildDimensionDonutOption(keyStatusRows, palette, "Key 状态")}
-        />
-        <AnalyticsChartCard
-          title="Key 配额 vs 已用"
-          subtitle="横向条形图, 优先展示额度最高或已用最多的 Key。"
-          option={buildKeyQuotaOption(keys, palette)}
-        />
-        <AnalyticsChartCard
-          title="Key 限流窗口"
-          subtitle="对比 5h / 1d / 7d 的限额与已用量, 找出最接近上限的 Key。"
-          option={buildKeyWindowOption(keys, palette)}
-        />
-        <AnalyticsChartCard
-          title="单 Key 每日趋势"
-          subtitle={selectedKey ? `${selectedKey.name} · 近 30 天 daily usage` : "请选择一个 Key 以查看最近 30 天趋势"}
-          option={buildKeyDailyTrendOption(keyUsageRows, palette)}
-          footer={
-            selectedKey ? (
-              <AnalyticsFootnote>
-                状态 {selectedKey.status} · 最近使用 {selectedKey.lastUsedAt ? formatDateTimeFull(selectedKey.lastUsedAt) : "暂无"}
-                {keyUsageRows.length === 0 ? " · 当前接口未返回 daily usage 数据" : ""}
-              </AnalyticsFootnote>
-            ) : null
-          }
-        />
-        <AnalyticsChartCard
-          title="订阅额度使用"
-          subtitle="优先使用 subscriptions/summary, 没有时回退到 subscriptions 窗口数据。"
-          option={buildSubscriptionUsageOption(subscriptionRows, palette)}
-        />
-        <AnalyticsChartCard
-          title="缓存效率"
-          subtitle="按模型看缓存读取占全部 Token 的比例与成本。"
-          option={buildCacheEfficiencyOption(cacheEfficiencyRows, palette)}
-          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
-        />
-        <AnalyticsChartCard
-          title="Endpoint 上下游映射"
-          subtitle="看入口 endpoint 与 upstream endpoint 的主要流向。"
-          option={buildEndpointFlowOption(upstreamFlowRows, palette)}
-          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
-        />
-        <AnalyticsChartCard
-          title="平台配额"
-          subtitle="对齐 user/platform-quotas, 展示 quota / used / remaining。"
-          option={buildPlatformQuotaOption(quotaRows, palette)}
-        />
-        <AnalyticsChartCard
-          title="身份绑定概览"
-          subtitle="看邮箱、OIDC、微信、LinuxDo 等身份绑定状态。"
-          option={buildIdentityBindingOption(identityRows, palette)}
-        />
-        <AnalyticsChartCard
-          title="告警严重级别"
-          subtitle="把 overview 的告警按严重程度做聚合, 方便排优先级。"
-          option={buildAlertSeverityOption(alertSeverityRows, palette)}
-        />
-        <AnalyticsChartCard
-          title="站点余额排行"
-          subtitle="按站点聚合余额, 快速定位余额最多和异常最多的站点。"
-          option={buildRankingOption(siteRankings, palette, "余额")}
-        />
-        <AnalyticsChartCard
-          title="账号余额排行"
-          subtitle="把站点下的账号余额、请求数、活跃状态放到一个直观排行里。"
-          option={buildRankingOption(accountRankings, palette, "余额")}
-        />
-        <AnalyticsChartCard
-          title="Key 成本排行"
-          subtitle="按 Key 聚合请求数、Token 和实际成本。"
-          option={buildUsageRankingBarOption(keyCostRankingRows, palette, "Key 成本")}
-          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
-        />
-        <AnalyticsChartCard
-          title="分组成本站位"
-          subtitle="按 group / subscription 聚合看谁最烧钱。"
-          option={buildUsageRankingBarOption(groupCostRankingRows, palette, "分组成本站位")}
-          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
-        />
-        <AnalyticsChartCard
-          title="订阅成本排行"
-          subtitle="按订阅名称聚合当前筛选范围的成本与请求。"
-          option={buildUsageRankingBarOption(subscriptionCostRankingRows, palette, "订阅成本")}
-          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
-        />
-        <AnalyticsChartCard
-          title="模型延迟排行"
-          subtitle="按模型比较平均首 Token 与平均总耗时。"
-          option={buildLatencyComparisonOption(modelLatencyRows, palette, "模型")}
-          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
-        />
-        <AnalyticsChartCard
-          title="Endpoint 延迟排行"
-          subtitle="按 endpoint 看哪些路径最慢。"
-          option={buildLatencyComparisonOption(endpointLatencyRows, palette, "endpoint")}
-          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
-        />
-        <AnalyticsChartCard
-          title="极值请求榜"
-          subtitle="把单次最贵、最长、最大 Token 的请求集中看。"
-          option={buildExtremeRowsOption(extremeRows, palette)}
-          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
-        />
-        <AnalyticsChartCard
-          title="分组溢价排行"
-          subtitle="按分组看实际成本 / 原始成本 的放大倍数。"
-          option={buildPremiumBarOption(premiumRows, palette)}
-          footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
-        />
-      </div>
-
-      <section className="content-grid analytics-detail-grid">
-        <section className="section-card">
-          <header className="section-card-header">
-            <div>
-              <h3>请求样本明细</h3>
-              <p>当前页面样本的高价值字段, 方便和图表互相对照。</p>
-            </div>
-          </header>
-          <div className="table-list">
-            {sampleRows.slice(0, 10).map((row) => (
-              <div key={row.id} className="table-row wide analytics-rich-row">
-                <div className="row-main">
-                  <strong>{row.model}</strong>
-                  <p>{row.apiKeyName ?? "未知 Key"} / {row.endpoint ?? "-"}</p>
-                  <small>{formatDateTimeFull(row.createdAt)} · {formatBillingMode(row.billingMode, row.billingType)}</small>
-                </div>
-                <div className="row-meta analytics-rich-meta">
-                  <span>{formatUsd(row.actualCost, 6)}</span>
-                  <span>{compact(row.totalTokens)} tokens</span>
-                  <span>{formatMilliseconds(row.firstTokenMs)} / {formatDurationSeconds(row.durationMs)}</span>
-                </div>
-              </div>
-            ))}
-            {sampleRows.length === 0 && (
-              <AnalyticsEmptyState title="当前没有 usage 样本" detail="先调整筛选后点击“刷新筛选结果”拉一页 usage 明细。" />
-            )}
+      <section className="analytics-view-section" aria-labelledby="analytics-view-heading">
+        <div className="analytics-view-heading">
+          <div>
+            <h3 id="analytics-view-heading">分析视图</h3>
+            <p>围绕当前筛选范围切换不同的分析重点。</p>
           </div>
-        </section>
+          <span className="analytics-view-current" aria-live="polite">
+            {ANALYTICS_VIEWS.find((view) => view.id === activeView)?.chartCount ?? 0} 张图表
+          </span>
+        </div>
+        <div className="analytics-view-tablist" role="tablist" aria-label="数据分析视图">
+          {ANALYTICS_VIEWS.map((view) => {
+            const selected = view.id === activeView;
+            return (
+              <button
+                key={view.id}
+                id={`analytics-view-tab-${view.id}`}
+                className={`analytics-view-tab ${selected ? "is-active" : ""}`.trim()}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                aria-controls={`analytics-view-panel-${view.id}`}
+                aria-label={`${view.label}, ${view.chartCount} 张图表`}
+                tabIndex={selected ? 0 : -1}
+                onClick={() => setActiveView(view.id)}
+                onKeyDown={(event) => handleViewKeyDown(event, view.id)}
+              >
+                <span>{view.label}</span>
+                <small>{view.chartCount}</small>
+              </button>
+            );
+          })}
+        </div>
 
-        <section className="section-card">
-          <header className="section-card-header">
-            <div>
-              <h3>User-Agent / 身份 / 订阅清单</h3>
-              <p>把一些不适合大图但很有价值的直观信息集中展示。</p>
+        <div
+          id={`analytics-view-panel-${activeView}`}
+          className="analytics-view-panel"
+          role="tabpanel"
+          aria-labelledby={`analytics-view-tab-${activeView}`}
+        >
+          {activeView === "overview" && (
+            <div className="content-grid analytics-lab-grid">
+              <AnalyticsChartCard
+                title="成本 / 请求 / Token 趋势"
+                subtitle="同时查看花费、请求数和用量的变化趋势"
+                option={buildUsageTrendOption(scopedTrend, palette)}
+                footer={scopedTrend ? <AnalyticsFootnote>开始 {scopedTrend.startDate || "-"} · 结束 {scopedTrend.endDate || "-"}</AnalyticsFootnote> : null}
+              />
+              <AnalyticsChartCard
+                title="模型成本排行"
+                subtitle="看看哪些模型花费最高"
+                option={buildModelCostOption(scopedModels, palette)}
+              />
+              <AnalyticsChartCard
+                title="平台全景"
+                subtitle="按平台对比用量和花费, 一眼看出主力平台"
+                option={buildPlatformOverviewOption(scopedPlatformSeries.length > 0 ? scopedPlatformSeries : platformSeries, palette)}
+              />
+              <AnalyticsChartCard
+                title="缓存效率"
+                subtitle="看看缓存帮你节省了多少用量和花费"
+                option={buildCacheEfficiencyOption(cacheEfficiencyRows, palette)}
+                loading={loading && !sampleReady}
+                footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+              />
             </div>
-          </header>
-          <div className="analytics-detail-columns">
-            <div className="stack-list">
-              <div className="section-mini-title">User-Agent Top</div>
-              <div className="table-list">
-                {userAgentRows.slice(0, 8).map((item) => (
-                  <div key={item.name} className="table-row">
-                    <div>
-                      <strong>{item.name}</strong>
-                      <p>{item.count.toLocaleString()} 次</p>
-                    </div>
-                    <div className="table-numbers">
-                      <span>{formatUsd(item.actualCost, 4)}</span>
-                    </div>
-                  </div>
-                ))}
-                {userAgentRows.length === 0 && (
-                  <AnalyticsEmptyState title="当前没有 User-Agent 聚合" detail="当前筛选范围内没有可用的 user_agent 字段。" />
-                )}
+          )}
+
+          {activeView === "cost-models" && (
+            <div className="content-grid analytics-lab-grid">
+              <AnalyticsChartCard
+                title="模型 Token 构成"
+                subtitle="对比输入、输出和缓存带来的用量差异"
+                option={buildModelTokenOption(scopedModels, palette)}
+              />
+              <AnalyticsChartCard
+                title="成本拆解"
+                subtitle="把花费拆开看, 更容易知道钱花在了哪里"
+                option={buildCostBreakdownOption(costBreakdownRows, palette)}
+                loading={loading && !sampleReady}
+                footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+              />
+              <AnalyticsChartCard
+                title="模型溢价分析"
+                subtitle="换成柱线组合, 更直观看不同模型的单次成本和溢价倍率"
+                option={buildEfficiencyScatterOption(efficiencyRows, palette)}
+                loading={loading && !sampleReady}
+                footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+              />
+              <AnalyticsChartCard
+                title="密钥花费排行"
+                subtitle="看看哪些密钥用得最多, 花费最高"
+                option={buildUsageRankingBarOption(keyCostRankingRows, palette, "密钥花费")}
+                footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+              />
+              <AnalyticsChartCard
+                title="分组花费排行"
+                subtitle="看看哪个分组或订阅花费最高"
+                option={buildUsageRankingBarOption(groupCostRankingRows, palette, "分组花费")}
+                footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+              />
+              <AnalyticsChartCard
+                title="订阅成本排行"
+                subtitle="看看哪个订阅花费最高"
+                option={buildUsageRankingBarOption(subscriptionCostRankingRows, palette, "订阅成本")}
+                footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+              />
+              <AnalyticsChartCard
+                title="分组溢价排行"
+                subtitle="看看哪些分组的实际花费更高"
+                option={buildPremiumBarOption(premiumRows, palette)}
+                footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+              />
+            </div>
+          )}
+
+          {activeView === "performance-requests" && (
+            <>
+              <div className="content-grid analytics-lab-grid">
+                <AnalyticsChartCard
+                  title="延迟分位"
+                  subtitle="看看常见请求和较慢请求分别有多快"
+                  option={buildLatencyPercentileOption(scopedRows, palette)}
+                  loading={loading && !sampleReady}
+                  footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+                />
+                <AnalyticsChartCard
+                  title="请求样本散点"
+                  subtitle="把单次请求的大小、花费和耗时放在一起看"
+                  option={buildRequestScatterOption(sampleRows, palette)}
+                  loading={loading && !usageRecords}
+                  footer={<AnalyticsFootnote>{sampleFootnote}</AnalyticsFootnote>}
+                />
+                <AnalyticsChartCard
+                  title="端点分布"
+                  subtitle="看看最常出现的是哪些请求入口"
+                  option={buildDimensionBarOption(endpointRows, palette, "endpoint")}
+                  loading={loading && !sampleReady}
+                  footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+                />
+                <AnalyticsChartCard
+                  title="推理强度分布"
+                  subtitle="看看不同推理强度各占多少"
+                  option={buildDimensionDonutOption(reasoningRows, palette, "推理强度")}
+                  loading={loading && !sampleReady}
+                  footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+                />
+                <AnalyticsChartCard
+                  title="请求类型分布"
+                  subtitle="看看不同请求类型各占多少"
+                  option={buildDimensionDonutOption(requestTypeRows, palette, "请求类型")}
+                  loading={loading && !sampleReady}
+                  footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+                />
+                <AnalyticsChartCard
+                  title="请求类型 × 推理强度"
+                  subtitle="把请求类型和推理强度放在一起比较"
+                  option={buildDimensionBarOption(comboRows, palette, "组合请求")}
+                  loading={loading && !sampleReady}
+                  footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+                />
+                <AnalyticsChartCard
+                  title="时段热力图"
+                  subtitle="看看一周里哪些时段最忙"
+                  option={buildUsageHeatmapOption(heatmapRows, palette)}
+                  loading={loading && !sampleReady}
+                  footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+                />
+                <AnalyticsChartCard
+                  title="请求路径分布"
+                  subtitle="看看请求通常是从哪里进入、流向哪里"
+                  option={buildEndpointFlowOption(upstreamFlowRows, palette)}
+                  loading={loading && !sampleReady}
+                  footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+                />
+                <AnalyticsChartCard
+                  title="模型延迟排行"
+                  subtitle="看看哪些模型响应更快, 哪些更慢"
+                  option={buildLatencyComparisonOption(modelLatencyRows, palette)}
+                  footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+                />
+                <AnalyticsChartCard
+                  title="请求路径耗时排行"
+                  subtitle="看看哪些请求路径最慢"
+                  option={buildLatencyComparisonOption(endpointLatencyRows, palette)}
+                  footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+                />
+                <AnalyticsChartCard
+                  title="极值请求榜"
+                  subtitle="把最贵、最长、最大的一些请求集中看"
+                  option={buildExtremeRowsOption(extremeRows, palette)}
+                  footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
+                />
               </div>
-            </div>
-            <div className="stack-list">
-              <div className="section-mini-title">身份绑定</div>
-              <div className="table-list">
-                {identityRows.map((binding) => (
-                  <div key={binding.provider} className="table-row">
+
+              <section className="content-grid analytics-detail-grid">
+                <section className="section-card analytics-detail-card">
+                  <header className="section-card-header">
                     <div>
-                      <strong>{binding.provider}</strong>
-                      <p>{binding.displayName ?? binding.subjectHint ?? "未绑定"}</p>
+                      <h3>请求样本明细</h3>
+                      <p>从代表性请求中核对模型、入口、成本、Token 和耗时。</p>
                     </div>
-                    <div className="table-numbers">
-                      <span>{binding.bound ? "已绑定" : "未绑定"}</span>
-                      <span>{binding.canBind ? "可绑定" : "不可绑定"}</span>
-                    </div>
+                  </header>
+                  <div className="table-list">
+                    {sampleRows.slice(0, 10).map((row) => (
+                      <div key={row.id} className="table-row wide analytics-rich-row">
+                        <div className="row-main">
+                          <strong>{row.model}</strong>
+                          <p>{row.apiKeyName ?? "未知 Key"} / {row.endpoint ?? "-"}</p>
+                          <small>{formatDateTimeFull(row.createdAt)} · {formatBillingMode(row.billingMode, row.billingType)}</small>
+                        </div>
+                        <div className="row-meta analytics-rich-meta">
+                          <span>{formatUsd(row.actualCost, 6)}</span>
+                          <span>{compact(row.totalTokens)} tokens</span>
+                          <span>{formatMilliseconds(row.firstTokenMs)} / {formatDurationSeconds(row.durationMs)}</span>
+                        </div>
+                      </div>
+                    ))}
+                    {sampleRows.length === 0 && (
+                      <AnalyticsEmptyState title="当前没有样本记录" detail="先调整筛选条件, 再点击“刷新筛选结果”查看记录。" />
+                    )}
                   </div>
-                ))}
-                {identityRows.length === 0 && (
-                  <AnalyticsEmptyState title="当前没有身份绑定数据" detail="先确保 user/profile 已返回 identities 或 identity_bindings。" />
-                )}
-              </div>
-            </div>
-            <div className="stack-list">
-              <div className="section-mini-title">订阅窗口清单</div>
-              <div className="table-list">
-                {subscriptionRows.slice(0, 8).map((item) => (
-                  <div key={item.name} className="table-row">
+                </section>
+
+                <section className="section-card analytics-detail-card">
+                  <header className="section-card-header">
                     <div>
-                      <strong>{item.name}</strong>
-                      <p>{item.status}</p>
+                      <h3>来源信息</h3>
+                      <p>查看当前筛选范围内的主要调用来源。</p>
                     </div>
-                    <div className="table-numbers">
-                      <span>{formatUsd(item.dailyUsed, 2)} / {formatUsd(item.dailyLimit, 2)}</span>
-                      <span>{item.expiresAt ? formatRemainingDaysLabel(item.expiresAt) : "无到期时间"}</span>
-                    </div>
+                  </header>
+                  <div className="table-list">
+                    {userAgentRows.slice(0, 8).map((item) => (
+                      <div key={item.name} className="table-row">
+                        <div>
+                          <strong>{item.name}</strong>
+                          <p>{item.count.toLocaleString()} 次</p>
+                        </div>
+                        <div className="table-numbers">
+                          <span>{formatUsd(item.actualCost, 4)}</span>
+                        </div>
+                      </div>
+                    ))}
+                    {userAgentRows.length === 0 && (
+                      <AnalyticsEmptyState title="当前没有来源信息" detail="当前筛选范围内还没有可展示的来源信息。" />
+                    )}
                   </div>
-                ))}
-                {subscriptionRows.length === 0 && (
-                  <AnalyticsEmptyState title="当前没有订阅数据" detail="站点未返回 summary 或 subscriptions 时这里为空。" />
-                )}
+                </section>
+              </section>
+            </>
+          )}
+
+          {activeView === "accounts-assets" && (
+            <>
+              <div className="content-grid analytics-lab-grid">
+                <AnalyticsChartCard
+                  title="密钥状态分布"
+                  subtitle="看看当前账号下各类密钥各有多少"
+                  option={buildDimensionDonutOption(keyStatusRows, palette, "密钥状态")}
+                />
+                <AnalyticsChartCard
+                  title="密钥额度与已用"
+                  subtitle="有额度时看额度, 没配额度时回退看花费最高的密钥"
+                  option={buildKeyQuotaOption(keyUsageSummaryRows, palette)}
+                />
+                <AnalyticsChartCard
+                  title="密钥限额窗口"
+                  subtitle="如果配置了 5h / 1d / 7d 限额, 这里会看谁最接近上限"
+                  option={buildKeyWindowOption(keys, palette)}
+                  emptyTitle="当前密钥没有配置周期限额"
+                  emptyDetail="这些密钥都没有 5h / 1d / 7d 限额, 所以这里暂时无法计算接近上限的程度。"
+                />
+                <AnalyticsChartCard
+                  title="单个密钥趋势"
+                  subtitle={selectedKey ? `${selectedKey.name} · 最近 30 天变化` : "请选择一个密钥查看最近 30 天变化"}
+                  option={buildKeyDailyTrendOption(keyUsageRows, palette)}
+                  footer={
+                    selectedKey ? (
+                      <AnalyticsFootnote>
+                        状态 {selectedKey.status} · 最近使用 {selectedKey.lastUsedAt ? formatDateTimeFull(selectedKey.lastUsedAt) : "暂无"}
+                        {keyUsageRows.length === 0 ? " · 最近 30 天还没有可展示的记录" : ""}
+                      </AnalyticsFootnote>
+                    ) : null
+                  }
+                />
+                <AnalyticsChartCard
+                  title="订阅额度使用"
+                  subtitle="换成额度进度条, 更直观看每个订阅今天用了多少"
+                  option={buildSubscriptionUsageOption(subscriptionRows, palette)}
+                />
+                <AnalyticsChartCard
+                  title="平台额度"
+                  subtitle="有上游平台额度时看剩余额度, 否则回退成平台效率对比"
+                  option={buildPlatformQuotaOption(quotaRows, platformQuotaFallbackRows, palette)}
+                  emptyTitle={loading ? "平台效率正在聚合中" : "当前图表暂无数据"}
+                  emptyDetail={loading ? "等筛选范围聚合完成后, 这里会优先显示平台额度或平台效率对比。" : "刷新账号或调整筛选后, 这里会显示对应图表。"}
+                />
+                <AnalyticsChartCard
+                  title="身份绑定概览"
+                  subtitle="看看当前账号都绑定了哪些身份方式"
+                  option={buildIdentityBindingOption(identityRows, palette)}
+                />
+                <AnalyticsChartCard
+                  title="告警严重级别"
+                  subtitle="有告警看严重级别, 没告警时回退成账号健康分布"
+                  option={buildAlertSeverityOption(alertSeverityRows, accountHealthRows, palette)}
+                />
+                <AnalyticsChartCard
+                  title="站点余额排行"
+                  subtitle="快速找出余额最多的站点"
+                  option={buildRankingOption(siteRankings, palette, "余额")}
+                />
+                <AnalyticsChartCard
+                  title="账号余额排行"
+                  subtitle="把账号余额排个序, 更快找到重点账号"
+                  option={buildRankingOption(accountRankings, palette, "余额")}
+                />
               </div>
-            </div>
-          </div>
-        </section>
+
+              <section className="content-grid analytics-detail-grid">
+                <section className="section-card analytics-detail-card">
+                  <header className="section-card-header">
+                    <div>
+                      <h3>身份绑定</h3>
+                      <p>集中核对当前账号已连接的身份方式。</p>
+                    </div>
+                  </header>
+                  <div className="table-list">
+                    {identityRows.map((binding) => (
+                      <div key={binding.provider} className="table-row">
+                        <div>
+                          <strong>{binding.provider}</strong>
+                          <p>{binding.displayName ?? binding.subjectHint ?? "未绑定"}</p>
+                        </div>
+                        <div className="table-numbers">
+                          <span>{binding.bound ? "已绑定" : "未绑定"}</span>
+                          <span>{binding.canBind ? "可绑定" : "不可绑定"}</span>
+                        </div>
+                      </div>
+                    ))}
+                    {identityRows.length === 0 && (
+                      <AnalyticsEmptyState title="当前没有身份绑定数据" detail="登录并刷新账号后, 这里会显示身份绑定情况。" />
+                    )}
+                  </div>
+                </section>
+
+                <section className="section-card analytics-detail-card">
+                  <header className="section-card-header">
+                    <div>
+                      <h3>订阅窗口清单</h3>
+                      <p>查看订阅用量、限额与到期状态。</p>
+                    </div>
+                  </header>
+                  <div className="table-list">
+                    {subscriptionRows.slice(0, 8).map((item) => (
+                      <div key={item.name} className="table-row">
+                        <div>
+                          <strong>{item.name}</strong>
+                          <p>{item.status}</p>
+                        </div>
+                        <div className="table-numbers">
+                          <span>{formatUsd(item.dailyUsed, 2)} / {formatUsd(item.dailyLimit, 2)}</span>
+                          <span>{item.expiresAt ? formatRemainingDaysLabel(item.expiresAt) : "无到期时间"}</span>
+                        </div>
+                      </div>
+                    ))}
+                    {subscriptionRows.length === 0 && (
+                      <AnalyticsEmptyState title="当前没有订阅数据" detail="刷新账号后, 这里会显示订阅列表。" />
+                    )}
+                  </div>
+                </section>
+              </section>
+            </>
+          )}
+        </div>
       </section>
     </div>
   );
@@ -573,12 +714,18 @@ function AnalyticsChartCard({
   title,
   subtitle,
   option,
-  footer
+  footer,
+  loading = false,
+  emptyTitle = "当前图表暂无数据",
+  emptyDetail = "刷新账号或调整筛选后, 这里会显示对应图表。"
 }: {
   title: string;
   subtitle: string;
   option: ChartOption | null;
   footer?: ReactNode;
+  loading?: boolean;
+  emptyTitle?: string;
+  emptyDetail?: string;
 }) {
   return (
     <section className="section-card analytics-chart-card">
@@ -593,7 +740,10 @@ function AnalyticsChartCard({
           <BaseEChartCard option={option} />
         </div>
       ) : (
-        <AnalyticsEmptyState title="当前图表暂无数据" detail="对应接口还没有返回有效数据, 可以先刷新账号或调整筛选。" />
+        <AnalyticsEmptyState
+          title={loading ? "当前图表正在聚合中" : emptyTitle}
+          detail={loading ? "筛选范围还在加载更多 usage 明细, 稍等就会更新成完整图表。" : emptyDetail}
+        />
       )}
       {footer}
     </section>
@@ -847,41 +997,82 @@ function buildCostBreakdownOption(rows: Array<{ name: string; value: number }>, 
 }
 
 function buildEfficiencyScatterOption(rows: EfficiencyRow[], palette: ChartPalette): ChartOption | null {
-  if (rows.length === 0) {
+  const sorted = rows
+    .filter((row) => row.actualCost > 0 || row.costPerRequest > 0 || row.premiumRatio > 0)
+    .sort((left, right) => {
+      if (right.costPerRequest !== left.costPerRequest) {
+        return right.costPerRequest - left.costPerRequest;
+      }
+      return right.premiumRatio - left.premiumRatio;
+    })
+    .slice(0, 10);
+  if (sorted.length === 0) {
     return null;
   }
   return {
-    color: [palette.indigo],
+    color: [palette.indigo, palette.warning],
     tooltip: {
-      trigger: "item",
-      formatter: (params: { data?: [number, number, number, string] }) => {
-        const data = params.data;
-        if (!data) return "暂无数据";
+      trigger: "axis",
+      axisPointer: { type: "shadow" },
+      formatter: (params: Array<{ dataIndex: number }>) => {
+        const row = sorted[params[0]?.dataIndex ?? 0];
+        if (!row) {
+          return "暂无数据";
+        }
         return [
-          `<strong>${data[3]}</strong>`,
-          `单位请求成本: ${formatUsd(data[1], 6)}`,
-          `溢价倍率: ${data[0].toFixed(2)}x`,
-          `Tokens: ${compact(data[2])}`
+          `<strong>${row.name}</strong>`,
+          `单次成本: ${formatUsd(row.costPerRequest, 6)}`,
+          `溢价倍率: ${row.premiumRatio.toFixed(2)}x`,
+          `总花费: ${formatUsd(row.actualCost, 4)}`,
+          `总 Tokens: ${compact(row.totalTokens)}`
         ].join("<br/>");
       }
     },
-    grid: { top: 18, left: 56, right: 20, bottom: 28 },
+    legend: {
+      top: 0,
+      textStyle: { color: palette.textSoft }
+    },
+    grid: { top: 46, left: 56, right: 72, bottom: 56 },
     xAxis: {
-      type: "value",
-      name: "溢价倍率",
-      axisLabel: { color: palette.textSoft },
-      splitLine: { lineStyle: { color: palette.chartGrid } }
+      type: "category",
+      data: sorted.map((row) => row.name),
+      axisLabel: {
+        color: palette.textSoft,
+        interval: 0,
+        rotate: sorted.length > 5 ? 24 : 0
+      },
+      axisLine: { lineStyle: { color: palette.border } }
     },
-    yAxis: {
-      type: "value",
-      name: "单位请求成本",
-      axisLabel: { color: palette.textSoft }
-    },
+    yAxis: [
+      {
+        type: "value",
+        name: "单次成本",
+        axisLabel: { color: palette.textSoft },
+        splitLine: { lineStyle: { color: palette.chartGrid } }
+      },
+      {
+        type: "value",
+        name: "溢价倍率",
+        axisLabel: {
+          color: palette.textSoft,
+          formatter: (value: number) => `${value.toFixed(2)}x`
+        },
+        splitLine: { show: false }
+      }
+    ],
     series: [
       {
-        type: "scatter",
-        symbolSize: (data: [number, number, number]) => Math.max(12, Math.min(48, (data[2] || 0) / 40000)),
-        data: rows.map((row) => [row.premiumRatio || 0, row.costPerRequest || 0, row.totalTokens || 0, row.name])
+        name: "单次成本",
+        type: "bar",
+        barMaxWidth: 26,
+        data: sorted.map((row) => Number(row.costPerRequest.toFixed(6)))
+      },
+      {
+        name: "溢价倍率",
+        type: "line",
+        yAxisIndex: 1,
+        smooth: true,
+        data: sorted.map((row) => Number(row.premiumRatio.toFixed(3)))
       }
     ]
   };
@@ -998,7 +1189,7 @@ function buildUsageRankingBarOption(rows: RankingRow[], palette: ChartPalette, l
   return buildRankingOption(rows, palette, label);
 }
 
-function buildLatencyComparisonOption(rows: UsageAggregateRow[], palette: ChartPalette, label: string): ChartOption | null {
+function buildLatencyComparisonOption(rows: UsageAggregateRow[], palette: ChartPalette): ChartOption | null {
   if (rows.length === 0) {
     return null;
   }
@@ -1218,14 +1409,128 @@ function buildDimensionDonutOption(rows: DimensionRow[], palette: ChartPalette, 
   };
 }
 
-function buildKeyQuotaOption(keys: ManagedKeyRecord[], palette: ChartPalette): ChartOption | null {
-  if (keys.length === 0) {
+type KeyUsageSummaryRow = {
+  id: string;
+  name: string;
+  quota: number;
+  quotaUsed: number;
+  rateLimit5h: number;
+  rateLimit1d: number;
+  rateLimit7d: number;
+  usage5h: number;
+  usage1d: number;
+  usage7d: number;
+  actualCost: number;
+  requests: number;
+  totalTokens: number;
+  lastUsedAt?: string | null;
+};
+
+function buildKeyUsageSummaryRows(keys: ManagedKeyRecord[], rows: UsageRow[]) {
+  const bucket = new Map<string, KeyUsageSummaryRow>();
+  for (const key of keys) {
+    bucket.set(key.id, {
+      id: key.id,
+      name: key.name,
+      quota: Number(key.quota ?? 0),
+      quotaUsed: Number(key.quotaUsed ?? 0),
+      rateLimit5h: Number(key.rateLimit5h ?? 0),
+      rateLimit1d: Number(key.rateLimit1d ?? 0),
+      rateLimit7d: Number(key.rateLimit7d ?? 0),
+      usage5h: Number(key.usage5h ?? 0),
+      usage1d: Number(key.usage1d ?? 0),
+      usage7d: Number(key.usage7d ?? 0),
+      actualCost: 0,
+      requests: 0,
+      totalTokens: 0,
+      lastUsedAt: key.lastUsedAt
+    });
+  }
+  for (const row of rows) {
+    const matchedById =
+      row.apiKeyId !== null && row.apiKeyId !== undefined
+        ? bucket.get(String(row.apiKeyId))
+        : null;
+    const matched =
+      matchedById ??
+      Array.from(bucket.values()).find((item) => item.name === (row.apiKeyName ?? ""));
+    if (!matched) {
+      continue;
+    }
+    matched.actualCost += row.actualCost ?? 0;
+    matched.requests += 1;
+    matched.totalTokens += row.totalTokens ?? 0;
+  }
+  return Array.from(bucket.values());
+}
+
+function buildKeyQuotaOption(rows: KeyUsageSummaryRow[], palette: ChartPalette): ChartOption | null {
+  if (rows.length === 0) {
     return null;
   }
-  const sorted = keys
-    .slice()
-    .sort((left, right) => Math.max(right.quota ?? 0, right.quotaUsed ?? 0) - Math.max(left.quota ?? 0, left.quotaUsed ?? 0))
-    .slice(0, 8);
+  const quotaConfigured = rows.some((row) => row.quota > 0 || row.quotaUsed > 0);
+  const sorted = quotaConfigured
+    ? rows
+        .slice()
+        .sort((left, right) => Math.max(right.quota, right.quotaUsed) - Math.max(left.quota, left.quotaUsed))
+        .slice(0, 8)
+    : rows
+        .slice()
+        .sort((left, right) => {
+          if (right.actualCost !== left.actualCost) {
+            return right.actualCost - left.actualCost;
+          }
+          if (right.requests !== left.requests) {
+            return right.requests - left.requests;
+          }
+          const leftTime = left.lastUsedAt ? Date.parse(left.lastUsedAt) : Number.NEGATIVE_INFINITY;
+          const rightTime = right.lastUsedAt ? Date.parse(right.lastUsedAt) : Number.NEGATIVE_INFINITY;
+          return rightTime - leftTime;
+        })
+        .slice(0, 8);
+
+  if (!quotaConfigured) {
+    return {
+      color: [palette.warning],
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        formatter: (params: Array<{ dataIndex: number }>) => {
+          const row = sorted[params[0]?.dataIndex ?? 0];
+          if (!row) {
+            return "暂无数据";
+          }
+          return [
+            `<strong>${row.name}</strong>`,
+            `实际成本: ${formatUsd(row.actualCost, 6)}`,
+            `请求数: ${row.requests.toLocaleString()}`,
+            `总 Tokens: ${compact(row.totalTokens)}`,
+            `最近使用: ${row.lastUsedAt ? formatDateTimeFull(row.lastUsedAt) : "暂无"}`
+          ].join("<br/>");
+        }
+      },
+      grid: {
+        top: 18,
+        left: 120,
+        right: 20,
+        bottom: 24
+      },
+      xAxis: {
+        type: "value",
+        axisLabel: { color: palette.textSoft },
+        splitLine: { lineStyle: { color: palette.chartGrid } }
+      },
+      yAxis: {
+        type: "category",
+        data: sorted.map((item) => item.name),
+        axisLabel: { color: palette.textSoft }
+      },
+      series: [
+        { name: "实际成本", type: "bar", data: sorted.map((item) => Number(item.actualCost.toFixed(6))) }
+      ]
+    };
+  }
+
   return {
     color: [palette.secondary, palette.warning],
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
@@ -1250,24 +1555,54 @@ function buildKeyQuotaOption(keys: ManagedKeyRecord[], palette: ChartPalette): C
       axisLabel: { color: palette.textSoft }
     },
     series: [
-      { name: "额度", type: "bar", data: sorted.map((item) => item.quota ?? 0) },
-      { name: "已用", type: "bar", data: sorted.map((item) => item.quotaUsed ?? 0) }
+      { name: "额度", type: "bar", data: sorted.map((item) => item.quota) },
+      { name: "已用", type: "bar", data: sorted.map((item) => item.quotaUsed) }
     ]
   };
 }
 
 function buildKeyWindowOption(keys: ManagedKeyRecord[], palette: ChartPalette): ChartOption | null {
-  if (keys.length === 0) {
+  const configuredRows = keys
+    .map((item) => {
+      const utilization5h = item.rateLimit5h && item.rateLimit5h > 0 ? ((item.usage5h ?? 0) / item.rateLimit5h) * 100 : 0;
+      const utilization1d = item.rateLimit1d && item.rateLimit1d > 0 ? ((item.usage1d ?? 0) / item.rateLimit1d) * 100 : 0;
+      const utilization7d = item.rateLimit7d && item.rateLimit7d > 0 ? ((item.usage7d ?? 0) / item.rateLimit7d) * 100 : 0;
+      return {
+        ...item,
+        utilization5h,
+        utilization1d,
+        utilization7d,
+        peakUtilization: Math.max(utilization5h, utilization1d, utilization7d)
+      };
+    })
+    .filter((item) => item.peakUtilization > 0);
+
+  if (configuredRows.length === 0) {
     return null;
   }
-  const sorted = keys
+  const sorted = configuredRows
     .slice()
-    .sort((left, right) => Math.max(right.usage7d ?? 0, right.usage1d ?? 0, right.usage5h ?? 0) - Math.max(left.usage7d ?? 0, left.usage1d ?? 0, left.usage5h ?? 0))
+    .sort((left, right) => right.peakUtilization - left.peakUtilization)
     .slice(0, 8);
 
   return {
     color: [palette.accent, palette.secondary, palette.warning, palette.rose, palette.indigo, palette.sky],
-    tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "shadow" },
+      formatter: (params: Array<{ dataIndex: number }>) => {
+        const row = sorted[params[0]?.dataIndex ?? 0];
+        if (!row) {
+          return "暂无数据";
+        }
+        return [
+          `<strong>${row.name}</strong>`,
+          `5h: ${row.usage5h ?? 0} / ${row.rateLimit5h ?? 0} (${row.utilization5h.toFixed(1)}%)`,
+          `1d: ${row.usage1d ?? 0} / ${row.rateLimit1d ?? 0} (${row.utilization1d.toFixed(1)}%)`,
+          `7d: ${row.usage7d ?? 0} / ${row.rateLimit7d ?? 0} (${row.utilization7d.toFixed(1)}%)`
+        ].join("<br/>");
+      }
+    },
     legend: {
       top: 0,
       textStyle: { color: palette.textSoft }
@@ -1280,7 +1615,10 @@ function buildKeyWindowOption(keys: ManagedKeyRecord[], palette: ChartPalette): 
     },
     xAxis: {
       type: "value",
-      axisLabel: { color: palette.textSoft },
+      axisLabel: {
+        color: palette.textSoft,
+        formatter: (value: number) => `${Math.round(value)}%`
+      },
       splitLine: { lineStyle: { color: palette.chartGrid } }
     },
     yAxis: {
@@ -1289,12 +1627,9 @@ function buildKeyWindowOption(keys: ManagedKeyRecord[], palette: ChartPalette): 
       axisLabel: { color: palette.textSoft }
     },
     series: [
-      { name: "5h 已用", type: "bar", stack: "usage", data: sorted.map((item) => item.usage5h ?? 0) },
-      { name: "1d 已用", type: "bar", stack: "usage", data: sorted.map((item) => item.usage1d ?? 0) },
-      { name: "7d 已用", type: "bar", stack: "usage", data: sorted.map((item) => item.usage7d ?? 0) },
-      { name: "5h 限额", type: "line", data: sorted.map((item) => item.rateLimit5h ?? 0) },
-      { name: "1d 限额", type: "line", data: sorted.map((item) => item.rateLimit1d ?? 0) },
-      { name: "7d 限额", type: "line", data: sorted.map((item) => item.rateLimit7d ?? 0) }
+      { name: "5h 占用率", type: "bar", data: sorted.map((item) => Number(item.utilization5h.toFixed(2))) },
+      { name: "1d 占用率", type: "bar", data: sorted.map((item) => Number(item.utilization1d.toFixed(2))) },
+      { name: "7d 占用率", type: "bar", data: sorted.map((item) => Number(item.utilization7d.toFixed(2))) }
     ]
   };
 }
@@ -1345,9 +1680,39 @@ function buildSubscriptionUsageOption(rows: SubscriptionChartRow[], palette: Cha
   if (rows.length === 0) {
     return null;
   }
+  const sorted = rows
+    .slice()
+    .sort((left, right) => {
+      const leftRatio = left.dailyLimit > 0 ? left.dailyUsed / left.dailyLimit : 0;
+      const rightRatio = right.dailyLimit > 0 ? right.dailyUsed / right.dailyLimit : 0;
+      if (rightRatio !== leftRatio) {
+        return rightRatio - leftRatio;
+      }
+      return right.monthlyUsed - left.monthlyUsed;
+    });
   return {
-    color: [palette.accent, palette.secondary, palette.warning, palette.rose],
-    tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+    color: [palette.accent, palette.border],
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "shadow" },
+      formatter: (params: Array<{ dataIndex: number }>) => {
+        const row = sorted[params[0]?.dataIndex ?? 0];
+        if (!row) {
+          return "暂无数据";
+        }
+        const utilization = row.dailyLimit > 0 ? `${((row.dailyUsed / row.dailyLimit) * 100).toFixed(1)}%` : "未配置";
+        return [
+          `<strong>${row.name}</strong>`,
+          `状态: ${row.status}`,
+          `今日已用: ${formatUsd(row.dailyUsed, 2)}`,
+          `今日额度: ${row.dailyLimit > 0 ? formatUsd(row.dailyLimit, 2) : "未配置"}`,
+          `今日使用率: ${utilization}`,
+          `7 日已用: ${formatUsd(row.weeklyUsed, 2)}`,
+          `30 日已用: ${formatUsd(row.monthlyUsed, 2)}`,
+          `到期: ${row.expiresAt ? formatDateTimeFull(row.expiresAt) : "暂无"}`
+        ].join("<br/>");
+      }
+    },
     legend: {
       top: 0,
       textStyle: { color: palette.textSoft }
@@ -1365,24 +1730,79 @@ function buildSubscriptionUsageOption(rows: SubscriptionChartRow[], palette: Cha
     },
     yAxis: {
       type: "category",
-      data: rows.map((item) => item.name),
+      data: sorted.map((item) => item.name),
       axisLabel: { color: palette.textSoft }
     },
     series: [
-      { name: "日已用", type: "bar", data: rows.map((item) => item.dailyUsed) },
-      { name: "日额度", type: "bar", data: rows.map((item) => item.dailyLimit) },
-      { name: "周已用", type: "line", data: rows.map((item) => item.weeklyUsed) },
-      { name: "月已用", type: "line", data: rows.map((item) => item.monthlyUsed) }
+      { name: "今日已用", type: "bar", stack: "daily", data: sorted.map((item) => item.dailyUsed) },
+      { name: "今日剩余", type: "bar", stack: "daily", data: sorted.map((item) => Math.max(item.dailyLimit - item.dailyUsed, 0)) }
     ]
   };
 }
 
 function buildPlatformQuotaOption(
   rows: PlatformQuotaPayload["platformQuotas"],
+  fallbackRows: Array<{ platform: string; requests: number; actualCost: number; totalTokens: number }>,
   palette: ChartPalette
 ): ChartOption | null {
   if (rows.length === 0) {
-    return null;
+    if (fallbackRows.length === 0) {
+      return null;
+    }
+    const sorted = fallbackRows
+      .slice()
+      .sort((left, right) => right.actualCost - left.actualCost)
+      .slice(0, 8);
+    return {
+      color: [palette.secondary, palette.warning],
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        formatter: (params: Array<{ dataIndex: number }>) => {
+          const row = sorted[params[0]?.dataIndex ?? 0];
+          if (!row) {
+            return "暂无数据";
+          }
+          return [
+            `<strong>${row.platform}</strong>`,
+            `实际成本: ${formatUsd(row.actualCost, 4)}`,
+            `请求数: ${row.requests.toLocaleString()}`,
+            `总 Tokens: ${compact(row.totalTokens)}`
+          ].join("<br/>");
+        }
+      },
+      legend: {
+        top: 0,
+        textStyle: { color: palette.textSoft }
+      },
+      grid: {
+        top: 48,
+        left: 80,
+        right: 20,
+        bottom: 24
+      },
+      xAxis: {
+        type: "category",
+        data: sorted.map((item) => item.platform),
+        axisLabel: { color: palette.textSoft }
+      },
+      yAxis: [
+        {
+          type: "value",
+          axisLabel: { color: palette.textSoft },
+          splitLine: { lineStyle: { color: palette.chartGrid } }
+        },
+        {
+          type: "value",
+          axisLabel: { color: palette.textSoft },
+          splitLine: { show: false }
+        }
+      ],
+      series: [
+        { name: "实际成本", type: "bar", data: sorted.map((item) => Number(item.actualCost.toFixed(4))) },
+        { name: "请求数", type: "line", yAxisIndex: 1, smooth: true, data: sorted.map((item) => item.requests) }
+      ]
+    };
   }
   return {
     color: [palette.secondary, palette.warning, palette.accent],
@@ -1456,9 +1876,42 @@ function buildIdentityBindingOption(rows: IdentityRow[], palette: ChartPalette):
   };
 }
 
-function buildAlertSeverityOption(rows: DimensionRow[], palette: ChartPalette): ChartOption | null {
-  if (rows.length === 0) {
+function buildAlertSeverityOption(
+  rows: DimensionRow[],
+  fallbackRows: Array<{ name: string; count: number; tone: string }>,
+  palette: ChartPalette
+): ChartOption | null {
+  if (rows.length === 0 && fallbackRows.length === 0) {
     return null;
+  }
+  if (rows.length === 0) {
+    return {
+      color: [palette.accent, palette.secondary, palette.warning, palette.rose],
+      tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+      grid: {
+        top: 18,
+        left: 64,
+        right: 20,
+        bottom: 24
+      },
+      xAxis: {
+        type: "category",
+        data: fallbackRows.map((item) => item.name),
+        axisLabel: { color: palette.textSoft }
+      },
+      yAxis: {
+        type: "value",
+        axisLabel: { color: palette.textSoft },
+        splitLine: { lineStyle: { color: palette.chartGrid } }
+      },
+      series: [
+        {
+          type: "bar",
+          barMaxWidth: 28,
+          data: fallbackRows.map((item) => item.count)
+        }
+      ]
+    };
   }
   return {
     color: [palette.rose],
@@ -1539,58 +1992,6 @@ function buildRankingOption(
         data: topRows.map((item) => item.balance)
       }
     ]
-  };
-}
-
-interface ChartPalette {
-  accent: string;
-  secondary: string;
-  tertiary: string;
-  warning: string;
-  rose: string;
-  indigo: string;
-  sky: string;
-  textStrong: string;
-  textSoft: string;
-  border: string;
-  grid: string;
-  chartBg: string;
-  chartGrid: string;
-}
-
-function readChartPalette(): ChartPalette {
-  if (typeof window === "undefined") {
-    return {
-      accent: "#68c4ba",
-      secondary: "#5e8cff",
-      tertiary: "#53cdb5",
-      warning: "#e3a62c",
-      rose: "#d6455f",
-      indigo: "#8d78ff",
-      sky: "#4fc8f0",
-      textStrong: "#101826",
-      textSoft: "#6a778d",
-      border: "rgba(16, 24, 38, 0.12)",
-      grid: "rgba(148, 163, 184, 0.18)",
-      chartBg: "transparent",
-      chartGrid: "rgba(148, 163, 184, 0.18)"
-    };
-  }
-  const style = getComputedStyle(document.documentElement);
-  return {
-    accent: style.getPropertyValue("--accent").trim() || "#68c4ba",
-    secondary: style.getPropertyValue("--chart-2").trim() || "#5e8cff",
-    tertiary: style.getPropertyValue("--chart-6").trim() || "#53cdb5",
-    warning: style.getPropertyValue("--chart-3").trim() || "#e3a62c",
-    rose: style.getPropertyValue("--danger").trim() || "#d6455f",
-    indigo: style.getPropertyValue("--chart-5").trim() || "#8d78ff",
-    sky: style.getPropertyValue("--chart-4").trim() || "#4fc8f0",
-    textStrong: style.getPropertyValue("--text-strong").trim() || "#101826",
-    textSoft: style.getPropertyValue("--text-subtle").trim() || "#6a778d",
-    border: style.getPropertyValue("--border").trim() || "rgba(16, 24, 38, 0.12)",
-    grid: style.getPropertyValue("--chart-grid").trim() || "rgba(148, 163, 184, 0.18)",
-    chartBg: style.getPropertyValue("--chart-bg").trim() || "transparent",
-    chartGrid: style.getPropertyValue("--chart-grid").trim() || "rgba(148, 163, 184, 0.18)"
   };
 }
 
@@ -2096,6 +2497,42 @@ function buildAlertSeverityRows(overview: OverviewPayload | null) {
   return buildDimensionRows(overview?.alerts ?? [], (item) => item.severity);
 }
 
+function buildPlatformQuotaFallbackRows(rows: UsageRow[]) {
+  return buildUsageAggregateRows(rows, (row) => row.platform ?? "unknown").map((row) => ({
+    platform: row.name,
+    requests: row.requests,
+    actualCost: row.actualCost,
+    totalTokens: row.totalTokens
+  }));
+}
+
+function buildAccountHealthRows(overview: OverviewPayload | null) {
+  if (!overview) {
+    return [];
+  }
+  const counts = new Map<string, number>([
+    ["正常", 0],
+    ["需关注", 0],
+    ["离线", 0]
+  ]);
+
+  for (const account of overview.accounts) {
+    const alerts = account.cacheView?.alerts ?? [];
+    const online = account.cacheView?.online ?? false;
+    let bucket = "正常";
+    if (!online) {
+      bucket = "离线";
+    } else if (alerts.length > 0 || account.lastError) {
+      bucket = "需关注";
+    }
+    counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+  }
+
+  return Array.from(counts.entries())
+    .map(([name, count]) => ({ name, count, tone: name }))
+    .filter((item) => item.count > 0);
+}
+
 function buildIdentityRows(profileRecord: UserProfileRecord | null): IdentityRow[] {
   if (!profileRecord) {
     return [];
@@ -2114,8 +2551,16 @@ function buildIdentityRows(profileRecord: UserProfileRecord | null): IdentityRow
 
 function buildSubscriptionRows(
   summary: SubscriptionSummaryPayload | null,
-  fallbackSubscriptions: SubscriptionRecord[]
+  fallbackSubscriptions: SubscriptionRecord[],
+  usageRows: UsageRow[]
 ): SubscriptionChartRow[] {
+  const aggregateMap = new Map(
+    buildUsageAggregateRows(
+      usageRows,
+      (row) => row.subscriptionName ?? row.groupName ?? "未归属订阅"
+    ).map((item) => [item.name, item])
+  );
+
   if (summary?.subscriptions.length) {
     return summary.subscriptions.map((item) => ({
       name: item.groupName,
@@ -2131,11 +2576,18 @@ function buildSubscriptionRows(
   return fallbackSubscriptions.map((item) => ({
     name: item.groupName ?? item.name,
     status: item.status,
-    dailyUsed: item.daily?.current ?? 0,
+    dailyUsed: item.daily?.current ?? aggregateMap.get(item.groupName ?? item.name)?.actualCost ?? 0,
     dailyLimit: item.daily?.limit ?? 0,
-    weeklyUsed: item.weekly?.current ?? 0,
-    monthlyUsed: item.monthly?.current ?? 0,
+    weeklyUsed: item.weekly?.current ?? aggregateMap.get(item.groupName ?? item.name)?.actualCost ?? 0,
+    monthlyUsed: item.monthly?.current ?? aggregateMap.get(item.groupName ?? item.name)?.actualCost ?? 0,
     expiresAt: item.expiresAt
+  }));
+}
+
+function coerceManagedKeys(keys: KeyRecord[]): ManagedKeyRecord[] {
+  return keys.map((item) => ({
+    ...item,
+    apiKeyId: item.id ? Number(item.id) : null
   }));
 }
 
