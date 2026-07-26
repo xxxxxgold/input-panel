@@ -1,8 +1,16 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="titan-noir">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      try {
+        var lastTheme = localStorage.getItem("input-panel.last-theme");
+        if (lastTheme && /^[a-z][a-z-]*$/.test(lastTheme)) {
+          document.documentElement.className = lastTheme;
+        }
+      } catch (e) {}
+    </script>
     <title>Input悬浮图标</title>
     <style>
       html,

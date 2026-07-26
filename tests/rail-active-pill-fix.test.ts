@@ -1,19 +1,25 @@
-import { readFileSync } from "node:fs";
-
 import { describe, expect, it } from "vitest";
 
-const mainEntry = readFileSync(new URL("../src/main.tsx", import.meta.url), "utf8");
-const overrideStyles = readFileSync(new URL("../src/rail-active-pill-fix.css", import.meta.url), "utf8");
+import { readBundledStyles } from "./helpers/styles";
+
+// 这些规则原先在 rail-active-pill-fix.css 补丁文件里靠加载顺序覆盖生效，
+// 现已归位 02-layout.css；断言改为面向打包后的完整样式。
+const styles = readBundledStyles();
 
 describe("rail active pill fix", () => {
-  it("loads the rail override after the main stylesheet", () => {
-    expect(mainEntry).toContain('import "./styles.css";');
-    expect(mainEntry).toContain('import "./rail-active-pill-fix.css";');
+  it("keeps expanded rail items left-aligned so the active pill stays before the icon", () => {
+    expect(styles).toContain(".rail.expanded .rail-item");
+    expect(styles).toContain("justify-content: flex-start;");
+    expect(styles).toContain("padding: 0 12px 0 20px;");
   });
 
-  it("keeps expanded rail items left-aligned so the active pill stays before the icon", () => {
-    expect(overrideStyles).toContain(".rail.expanded .rail-item");
-    expect(overrideStyles).toContain("justify-content: flex-start;");
-    expect(overrideStyles).toContain("padding: 0 12px 0 20px;");
+  it("places the rail toggle as a right-edge drawer handle", () => {
+    expect(styles).toContain(".rail-content");
+    expect(styles).toContain("overflow-y: auto;");
+    expect(styles).toContain(".rail-toggle-handle");
+    expect(styles).toContain("top: 50%;");
+    expect(styles).toContain("right: -16px;");
+    expect(styles).toContain("transform: translateY(-50%);");
+    expect(styles).toContain(".rail-toggle-handle.open svg");
   });
 });
