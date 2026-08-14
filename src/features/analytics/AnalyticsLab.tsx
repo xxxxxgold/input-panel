@@ -16,30 +16,23 @@ import type {
   PlatformQuotaPayload,
   SubscriptionRecord,
   SubscriptionSummaryPayload,
+  UsageAnalyticsAggregatePoint,
+  UsageAnalyticsLatencyPercentiles,
+  UsageAnalyticsPayload,
   UsageRow,
-  UsageStatsRecord,
   UsageTrendPayload,
   UserIdentityBinding,
   UserProfileRecord,
   DashboardModelsPayload
 } from "../../types";
+import { TitleHint } from "../../shared/ui/TitleHint";
 
 interface AnalyticsLabProps {
   overview: OverviewPayload | null;
   selectedAccount: AccountRuntime | null;
   loading?: boolean;
   managedKeys: PaginatedResult<ManagedKeyRecord> | null;
-  usageStats: UsageStatsRecord | null;
-  usageTrend: UsageTrendPayload | null;
-  usageModels: DashboardModelsPayload | null;
-  usageRecords: PaginatedResult<UsageRow> | null;
-  usageScopeRows: UsageRow[];
-  usageScopeMeta: {
-    total: number;
-    pages: number;
-    loadedPages: number;
-    pageSize: number;
-  } | null;
+  usageAnalytics: UsageAnalyticsPayload | null;
   subscriptionSummary: SubscriptionSummaryPayload | null;
   profileRecord: UserProfileRecord | null;
   platformQuotas: PlatformQuotaPayload | null;
@@ -54,8 +47,6 @@ interface AnalyticsLabProps {
   onUsageSearch: () => void;
   onKeyUsageSelect: (keyId: string) => void;
 }
-
-const ANALYTICS_SAMPLE_ROWS = 20;
 
 const ANALYTICS_VIEWS = [
   { id: "overview", label: "核心概览", chartCount: 4 },
@@ -93,12 +84,7 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
     selectedAccount,
     loading = false,
     managedKeys,
-    usageStats,
-    usageTrend,
-    usageModels,
-    usageRecords,
-    usageScopeRows,
-    usageScopeMeta,
+    usageAnalytics,
     subscriptionSummary,
     profileRecord,
     platformQuotas,
@@ -117,78 +103,72 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
   const palette = readChartPalette();
   const selectedAccountCache = selectedAccount?.cacheView ?? null;
   const keys = managedKeys?.items?.length ? managedKeys.items : coerceManagedKeys(selectedAccountCache?.keys ?? []);
-  const scopedRows = usageScopeRows;
-  const sampleRows = usageRecords?.items ?? scopedRows.slice(0, ANALYTICS_SAMPLE_ROWS);
-  const aggregateReady = Boolean(usageStats || usageTrend || usageModels || usageScopeMeta);
-  const sampleReady = sampleRows.length > 0 || Boolean(usageRecords) || Boolean(usageScopeMeta);
-  const effectiveUsageStats = usageStats ?? (scopedRows.length > 0 ? buildUsageStatsFromRows(scopedRows, usageStartDate, usageEndDate) : null);
+  const sampleRows = usageAnalytics?.sampleRows ?? [];
+  const aggregateReady = Boolean(usageAnalytics);
+  const sampleReady = Boolean(usageAnalytics);
+  const effectiveUsageStats = usageAnalytics?.totals ?? null;
   const selectedKey = keys.find((item) => item.id === keyUsageKeyId) ?? null;
   const platformSeries = selectedAccountCache?.stats.byPlatform ?? overview?.platformSeries ?? [];
-  const scopedTrend = usageTrend ?? (scopedRows.length > 0 ? buildScopedTrendPayload(scopedRows) : null);
-  const scopedModels = usageModels ?? (scopedRows.length > 0 ? buildScopedModelsPayload(scopedRows) : null);
-  const scopedPlatformSeries = scopedRows.length > 0 ? buildScopedPlatformRows(scopedRows) : [];
-  const endpointUsageRows = buildUsageAggregateRows(scopedRows, (row) => row.endpoint ?? "unknown");
-  const modelUsageRows = buildUsageAggregateRows(scopedRows, (row) => row.model || "unknown");
-  const keyUsageAggregates = buildUsageAggregateRows(
-    scopedRows,
-    (row) => row.apiKeyName ?? (row.apiKeyId ? `#${row.apiKeyId}` : "未知 Key")
-  );
-  const groupUsageAggregates = buildUsageAggregateRows(
-    scopedRows,
-    (row) => row.groupName ?? row.subscriptionName ?? "未分组"
-  );
-  const subscriptionUsageAggregates = buildUsageAggregateRows(
-    scopedRows,
-    (row) => row.subscriptionName ?? row.groupName ?? "未归属订阅"
-  );
-  const comboRows = buildDimensionRows(
-    scopedRows,
-    (row) => `${row.stream ? "stream" : row.requestType ?? "standard"} × ${row.reasoningEffort ?? "unknown"}`
-  );
-  const heatmapRows = buildUsageTimeHeatmapRows(scopedRows);
-  const upstreamFlowRows = buildEndpointFlowRows(scopedRows);
+  const scopedTrend = usageAnalytics ? buildAnalyticsTrendPayload(usageAnalytics) : null;
+  const scopedModels = usageAnalytics ? buildAnalyticsModelsPayload(usageAnalytics) : null;
+  const scopedPlatformSeries = (usageAnalytics?.platforms ?? []).map((row) => ({
+    platform: row.label,
+    totalActualCost: row.actualCost,
+    totalRequests: row.requests,
+    totalTokens: row.totalTokens
+  }));
+  const endpointUsageRows = mapAnalyticsAggregateRows(usageAnalytics?.endpoints ?? []);
+  const modelUsageRows = mapAnalyticsAggregateRows(usageAnalytics?.models ?? []);
+  const keyUsageAggregates = mapAnalyticsAggregateRows(usageAnalytics?.apiKeys ?? []);
+  const groupUsageAggregates = mapAnalyticsAggregateRows(usageAnalytics?.groups ?? []);
+  const subscriptionUsageAggregates = mapAnalyticsAggregateRows(usageAnalytics?.subscriptions ?? []);
+  const comboRows = mapAnalyticsDimensionRows(usageAnalytics?.reasoningRequestCombinations ?? []);
+  const heatmapRows = usageAnalytics?.hourlyHeatmap ?? [];
+  const upstreamFlowRows = usageAnalytics?.endpointFlows ?? [];
   const modelLatencyRows = buildLatencyRows(modelUsageRows);
   const endpointLatencyRows = buildLatencyRows(endpointUsageRows);
   const cacheEfficiencyRows = buildCacheEfficiencyRows(modelUsageRows);
   const efficiencyRows = buildEfficiencyRows(modelUsageRows);
-  const costBreakdownRows = buildCostBreakdownRows(scopedRows);
+  const costBreakdownRows = (usageAnalytics?.costBreakdown ?? []).map((row) => ({ name: row.label, value: row.value }));
   const premiumRows = buildPremiumRows(groupUsageAggregates);
-  const keyUsageSummaryRows = buildKeyUsageSummaryRows(keys, scopedRows);
+  const keyUsageSummaryRows = buildKeyUsageSummaryRows(keys, keyUsageAggregates);
   const keyCostRankingRows = buildUsageRankingRows(keyUsageAggregates);
   const groupCostRankingRows = buildUsageRankingRows(groupUsageAggregates);
   const subscriptionCostRankingRows = buildUsageRankingRows(subscriptionUsageAggregates);
-  const extremeRows = buildExtremeRequestRows(scopedRows);
+  const extremeRows = buildExtremeRequestRows(usageAnalytics?.extremes ?? []);
   const siteRankings = buildSiteRankings(overview);
   const accountRankings = buildAccountRankings(overview);
-  const endpointRows = buildDimensionRows(scopedRows, (row) => row.endpoint ?? "unknown");
-  const reasoningRows = buildDimensionRows(scopedRows, (row) => row.reasoningEffort ?? "unknown");
-  const requestTypeRows = buildDimensionRows(scopedRows, (row) => row.requestType ?? (row.stream ? "stream" : "standard"));
-  const userAgentRows = buildDimensionRows(scopedRows, (row) => simplifyUserAgent(row.userAgent));
+  const endpointRows = mapAnalyticsDimensionRows(usageAnalytics?.endpoints ?? []);
+  const reasoningRows = mapAnalyticsDimensionRows(usageAnalytics?.reasoningEfforts ?? []);
+  const requestTypeRows = mapAnalyticsDimensionRows(usageAnalytics?.requestTypes ?? []);
+  const userAgentRows = mapAnalyticsDimensionRows(usageAnalytics?.userAgents ?? []);
   const keyStatusRows = buildDimensionRows(keys, (key) => key.status || "unknown");
   const identityRows = buildIdentityRows(profileRecord);
   const quotaRows = platformQuotas?.platformQuotas ?? [];
-  const subscriptionRows = buildSubscriptionRows(subscriptionSummary, selectedAccountCache?.subscriptions ?? [], scopedRows);
+  const subscriptionRows = buildSubscriptionRows(
+    subscriptionSummary,
+    selectedAccountCache?.subscriptions ?? [],
+    subscriptionUsageAggregates
+  );
   const alertSeverityRows = buildAlertSeverityRows(overview);
   const platformQuotaFallbackRows = buildPlatformQuotaFallbackRows(
-    scopedRows.length > 0 ? scopedRows : overview?.recentUsage ?? []
+    mapAnalyticsAggregateRows(usageAnalytics?.platforms ?? [])
   );
   const accountHealthRows = buildAccountHealthRows(overview);
 
   const selectedAccountTitle = selectedAccount
     ? `${selectedAccount.label} · ${selectedAccount.site?.name ?? "未命名站点"}`
     : "请先选择账号";
-  const sampleFootnote = usageRecords
-    ? `当前样本为第 ${usageRecords.page} / ${usageRecords.pages} 页，共 ${usageRecords.total} 条明细。`
-    : usageScopeMeta
-      ? `当前样本使用筛选范围前 ${ANALYTICS_SAMPLE_ROWS} 条明细。`
-      : "尚未加载 usage 明细。";
-  const scopedFootnote = usageScopeMeta
-    ? usageScopeMeta.total > 0
-      ? `行级图表已聚合当前筛选范围 ${usageScopeMeta.loadedPages} / ${usageScopeMeta.pages} 页，共 ${usageScopeMeta.total} 条本地明细。`
+  const sampleFootnote = usageAnalytics
+    ? `当前展示最新 ${sampleRows.length} 条样本，筛选范围共 ${usageAnalytics.matchedRows.toLocaleString()} 条明细。`
+    : "尚未加载 usage 样本。";
+  const scopedFootnote = usageAnalytics
+    ? usageAnalytics.matchedRows > 0
+      ? `当前筛选范围共 ${usageAnalytics.matchedRows.toLocaleString()} 条本地明细。`
       : "当前筛选范围没有用量明细。"
     : aggregateReady
-      ? "当前聚合结果来自本地后端统计接口；正在等待完整明细范围。"
-    : "当前还没有筛选范围聚合数据。";
+      ? "当前聚合结果已加载。"
+      : "当前还没有筛选范围聚合数据。";
   const dateLabel = usageStartDate && usageEndDate ? `${usageStartDate} ~ ${usageEndDate}` : "请选择时间范围";
 
   const handleViewKeyDown = (event: KeyboardEvent<HTMLButtonElement>, currentView: AnalyticsViewId) => {
@@ -285,7 +265,7 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
             </select>
           </label>
           <label className="field analytics-filter">
-            <span>按密钥查看</span>
+            <span>按密钥筛选</span>
             <select
               value={keyUsageKeyId}
               onChange={(event) => onKeyUsageSelect(event.target.value)}
@@ -309,9 +289,9 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
 
       <section className="analytics-view-section" aria-labelledby="analytics-view-heading">
         <div className="analytics-view-heading">
-          <div>
+          <div className="title-with-hint">
             <h3 id="analytics-view-heading">分析视图</h3>
-            <p>围绕当前筛选范围切换不同的分析重点。</p>
+            <TitleHint content="围绕当前筛选范围切换不同的分析重点。" label="查看分析视图说明" />
           </div>
           <span className="analytics-view-current" aria-live="polite">
             {ANALYTICS_VIEWS.find((view) => view.id === activeView)?.chartCount ?? 0} 张图表
@@ -429,7 +409,7 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
                 <AnalyticsChartCard
                   title="延迟分位"
                   subtitle="看看常见请求和较慢请求分别有多快"
-                  option={buildLatencyPercentileOption(scopedRows, palette)}
+                  option={buildLatencyPercentileOption(usageAnalytics?.latencyPercentiles ?? null, palette)}
                   loading={loading && !sampleReady}
                   footer={<AnalyticsFootnote>{scopedFootnote}</AnalyticsFootnote>}
                 />
@@ -437,7 +417,7 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
                   title="请求样本散点"
                   subtitle="把单次请求的大小、花费和耗时放在一起看"
                   option={buildRequestScatterOption(sampleRows, palette)}
-                  loading={loading && !usageRecords}
+                  loading={loading && !usageAnalytics}
                   footer={<AnalyticsFootnote>{sampleFootnote}</AnalyticsFootnote>}
                 />
                 <AnalyticsChartCard
@@ -505,9 +485,9 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
               <section className="content-grid analytics-detail-grid">
                 <section className="section-card analytics-detail-card">
                   <header className="section-card-header">
-                    <div>
+                    <div className="title-with-hint">
                       <h3>请求样本明细</h3>
-                      <p>从代表性请求中核对模型、入口、成本、Token 和耗时。</p>
+                      <TitleHint content="从代表性请求中核对模型、入口、成本、Token 和耗时。" label="查看请求样本明细说明" />
                     </div>
                   </header>
                   <div className="table-list">
@@ -533,9 +513,9 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
 
                 <section className="section-card analytics-detail-card">
                   <header className="section-card-header">
-                    <div>
+                    <div className="title-with-hint">
                       <h3>来源信息</h3>
-                      <p>查看当前筛选范围内的主要调用来源。</p>
+                      <TitleHint content="查看当前筛选范围内的主要调用来源。" label="查看来源信息说明" />
                     </div>
                   </header>
                   <div className="table-list">
@@ -629,9 +609,9 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
               <section className="content-grid analytics-detail-grid">
                 <section className="section-card analytics-detail-card">
                   <header className="section-card-header">
-                    <div>
+                    <div className="title-with-hint">
                       <h3>身份绑定</h3>
-                      <p>集中核对当前账号已连接的身份方式。</p>
+                      <TitleHint content="集中核对当前账号已连接的身份方式。" label="查看身份绑定说明" />
                     </div>
                   </header>
                   <div className="table-list">
@@ -655,9 +635,9 @@ export function AnalyticsLab(props: AnalyticsLabProps) {
 
                 <section className="section-card analytics-detail-card">
                   <header className="section-card-header">
-                    <div>
+                    <div className="title-with-hint">
                       <h3>订阅窗口清单</h3>
-                      <p>查看订阅用量、限额与到期状态。</p>
+                      <TitleHint content="查看订阅用量、限额与到期状态。" label="查看订阅窗口清单说明" />
                     </div>
                   </header>
                   <div className="table-list">
@@ -730,9 +710,9 @@ function AnalyticsChartCard({
   return (
     <section className="section-card analytics-chart-card">
       <header className="section-card-header">
-        <div>
+        <div className="title-with-hint">
           <h3>{title}</h3>
-          <p>{subtitle}</p>
+          <TitleHint content={subtitle} label={`查看${title}说明`} />
         </div>
       </header>
       {option ? (
@@ -939,9 +919,12 @@ function buildPlatformOverviewOption(
   };
 }
 
-function buildLatencyPercentileOption(rows: UsageRow[], palette: ChartPalette): ChartOption | null {
-  const firstToken = buildLatencyPercentiles(rows, (row) => row.firstTokenMs);
-  const duration = buildLatencyPercentiles(rows, (row) => row.durationMs);
+function buildLatencyPercentileOption(
+  percentiles: UsageAnalyticsLatencyPercentiles | null,
+  palette: ChartPalette
+): ChartOption | null {
+  const firstToken = percentiles?.firstToken ?? null;
+  const duration = percentiles?.duration ?? null;
   if (!firstToken && !duration) {
     return null;
   }
@@ -1426,7 +1409,7 @@ type KeyUsageSummaryRow = {
   lastUsedAt?: string | null;
 };
 
-function buildKeyUsageSummaryRows(keys: ManagedKeyRecord[], rows: UsageRow[]) {
+function buildKeyUsageSummaryRows(keys: ManagedKeyRecord[], rows: UsageAggregateRow[]) {
   const bucket = new Map<string, KeyUsageSummaryRow>();
   for (const key of keys) {
     bucket.set(key.id, {
@@ -1447,19 +1430,16 @@ function buildKeyUsageSummaryRows(keys: ManagedKeyRecord[], rows: UsageRow[]) {
     });
   }
   for (const row of rows) {
-    const matchedById =
-      row.apiKeyId !== null && row.apiKeyId !== undefined
-        ? bucket.get(String(row.apiKeyId))
-        : null;
+    const matchedById = bucket.get(row.key);
     const matched =
       matchedById ??
-      Array.from(bucket.values()).find((item) => item.name === (row.apiKeyName ?? ""));
+      Array.from(bucket.values()).find((item) => item.name === row.name);
     if (!matched) {
       continue;
     }
-    matched.actualCost += row.actualCost ?? 0;
-    matched.requests += 1;
-    matched.totalTokens += row.totalTokens ?? 0;
+    matched.actualCost += row.actualCost;
+    matched.requests += row.requests;
+    matched.totalTokens += row.totalTokens;
   }
   return Array.from(bucket.values());
 }
@@ -2024,6 +2004,7 @@ interface RankingRow {
 }
 
 interface UsageAggregateRow {
+  key: string;
   name: string;
   requests: number;
   actualCost: number;
@@ -2070,13 +2051,6 @@ interface PremiumRow {
   totalCost: number;
 }
 
-interface LatencyPercentileRow {
-  name: string;
-  p50: number;
-  p90: number;
-  p99: number;
-}
-
 interface ExtremeRequestRow {
   name: string;
   model: string;
@@ -2084,6 +2058,59 @@ interface ExtremeRequestRow {
   totalTokens: number;
   durationMs: number;
   firstTokenMs: number;
+}
+
+function mapAnalyticsAggregateRows(rows: UsageAnalyticsAggregatePoint[]): UsageAggregateRow[] {
+  return rows.map((row) => ({
+    key: row.key,
+    name: row.label,
+    requests: row.requests,
+    actualCost: row.actualCost,
+    totalCost: row.totalCost,
+    totalTokens: row.totalTokens,
+    inputTokens: row.inputTokens,
+    outputTokens: row.outputTokens,
+    cacheCreationTokens: row.cacheCreationTokens,
+    cacheReadTokens: row.cacheReadTokens,
+    averageFirstTokenMs: row.averageFirstTokenMs,
+    averageDurationMs: row.averageDurationMs,
+    rateMultiplierAverage: row.averageRateMultiplier
+  }));
+}
+
+function mapAnalyticsDimensionRows(rows: UsageAnalyticsAggregatePoint[]): DimensionRow[] {
+  return rows.map((row) => ({
+    name: row.label,
+    count: row.requests,
+    actualCost: row.actualCost
+  }));
+}
+
+function buildAnalyticsTrendPayload(payload: UsageAnalyticsPayload): UsageTrendPayload {
+  return {
+    startDate: payload.startDate,
+    endDate: payload.endDate,
+    granularity: "day",
+    trend: payload.trend
+  };
+}
+
+function buildAnalyticsModelsPayload(payload: UsageAnalyticsPayload): DashboardModelsPayload {
+  return {
+    startDate: payload.startDate,
+    endDate: payload.endDate,
+    models: payload.models.map((row) => ({
+      model: row.label,
+      requests: row.requests,
+      inputTokens: row.inputTokens,
+      outputTokens: row.outputTokens,
+      cacheCreationTokens: row.cacheCreationTokens,
+      cacheReadTokens: row.cacheReadTokens,
+      totalTokens: row.totalTokens,
+      cost: row.totalCost,
+      actualCost: row.actualCost
+    }))
+  };
 }
 
 function buildDimensionRows<T>(rows: T[], getName: (row: T) => string) {
@@ -2103,114 +2130,6 @@ function buildDimensionRows<T>(rows: T[], getName: (row: T) => string) {
     }
     return right.actualCost - left.actualCost;
   });
-}
-
-function buildUsageAggregateRows(rows: UsageRow[], getName: (row: UsageRow) => string) {
-  const bucket = new Map<
-    string,
-    UsageAggregateRow & {
-      firstTokenCount: number;
-      durationCount: number;
-      multiplierCount: number;
-      multiplierTotal: number;
-    }
-  >();
-
-  for (const row of rows) {
-    const name = getName(row) || "unknown";
-    const current =
-      bucket.get(name) ??
-      {
-        name,
-        requests: 0,
-        actualCost: 0,
-        totalCost: 0,
-        totalTokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheCreationTokens: 0,
-        cacheReadTokens: 0,
-        averageFirstTokenMs: 0,
-        averageDurationMs: 0,
-        rateMultiplierAverage: 0,
-        firstTokenCount: 0,
-        durationCount: 0,
-        multiplierCount: 0,
-        multiplierTotal: 0
-      };
-
-    current.requests += 1;
-    current.actualCost += row.actualCost ?? 0;
-    current.totalCost += row.totalCost ?? 0;
-    current.totalTokens += row.totalTokens ?? 0;
-    current.inputTokens += row.inputTokens ?? 0;
-    current.outputTokens += row.outputTokens ?? 0;
-    current.cacheCreationTokens += row.cacheCreationTokens ?? 0;
-    current.cacheReadTokens += row.cacheReadTokens ?? 0;
-
-    if ((row.firstTokenMs ?? 0) > 0) {
-      current.averageFirstTokenMs += row.firstTokenMs ?? 0;
-      current.firstTokenCount += 1;
-    }
-    if ((row.durationMs ?? 0) > 0) {
-      current.averageDurationMs += row.durationMs ?? 0;
-      current.durationCount += 1;
-    }
-    if ((row.rateMultiplier ?? 0) > 0) {
-      current.multiplierTotal += row.rateMultiplier ?? 0;
-      current.multiplierCount += 1;
-    }
-    bucket.set(name, current);
-  }
-
-  return Array.from(bucket.values())
-    .map((item) => ({
-      name: item.name,
-      requests: item.requests,
-      actualCost: item.actualCost,
-      totalCost: item.totalCost,
-      totalTokens: item.totalTokens,
-      inputTokens: item.inputTokens,
-      outputTokens: item.outputTokens,
-      cacheCreationTokens: item.cacheCreationTokens,
-      cacheReadTokens: item.cacheReadTokens,
-      averageFirstTokenMs: item.firstTokenCount > 0 ? item.averageFirstTokenMs / item.firstTokenCount : 0,
-      averageDurationMs: item.durationCount > 0 ? item.averageDurationMs / item.durationCount : 0,
-      rateMultiplierAverage: item.multiplierCount > 0 ? item.multiplierTotal / item.multiplierCount : 0
-    }))
-    .sort((left, right) => right.actualCost - left.actualCost);
-}
-
-function buildUsageTimeHeatmapRows(rows: UsageRow[]): UsageHeatmapRow[] {
-  const bucket = new Map<string, UsageHeatmapRow>();
-  for (const row of rows) {
-    const date = new Date(row.createdAt);
-    if (Number.isNaN(date.getTime())) {
-      continue;
-    }
-    const weekday = (date.getDay() + 6) % 7;
-    const hour = date.getHours();
-    const key = `${weekday}-${hour}`;
-    const current = bucket.get(key) ?? { weekday, hour, requests: 0, actualCost: 0 };
-    current.requests += 1;
-    current.actualCost += row.actualCost ?? 0;
-    bucket.set(key, current);
-  }
-  return Array.from(bucket.values());
-}
-
-function buildEndpointFlowRows(rows: UsageRow[]): EndpointFlowRow[] {
-  const bucket = new Map<string, EndpointFlowRow>();
-  for (const row of rows) {
-    const source = row.endpoint ?? "unknown";
-    const target = row.upstreamEndpoint ?? row.model ?? "unknown";
-    const key = `${source} -> ${target}`;
-    const current = bucket.get(key) ?? { source, target, requests: 0, actualCost: 0 };
-    current.requests += 1;
-    current.actualCost += row.actualCost ?? 0;
-    bucket.set(key, current);
-  }
-  return Array.from(bucket.values()).sort((left, right) => right.requests - left.requests).slice(0, 12);
 }
 
 function buildEfficiencyRows(rows: UsageAggregateRow[]): EfficiencyRow[] {
@@ -2240,27 +2159,6 @@ function buildCacheEfficiencyRows(rows: UsageAggregateRow[]) {
     }))
     .sort((left, right) => right.cacheReadTokens - left.cacheReadTokens)
     .slice(0, 12);
-}
-
-function buildCostBreakdownRows(rows: UsageRow[]) {
-  return [
-    {
-      name: "输入成本",
-      value: rows.reduce((sum, row) => sum + (row.inputCost ?? 0), 0)
-    },
-    {
-      name: "输出成本",
-      value: rows.reduce((sum, row) => sum + (row.outputCost ?? 0), 0)
-    },
-    {
-      name: "缓存写入成本",
-      value: rows.reduce((sum, row) => sum + (row.cacheCreationCost ?? 0), 0)
-    },
-    {
-      name: "缓存读取成本",
-      value: rows.reduce((sum, row) => sum + (row.cacheReadCost ?? 0), 0)
-    }
-  ].filter((row) => row.value > 0);
 }
 
 function buildPremiumRows(rows: UsageAggregateRow[]): PremiumRow[] {
@@ -2305,128 +2203,6 @@ function buildExtremeRequestRows(rows: UsageRow[]): ExtremeRequestRow[] {
     .slice(0, 12);
 }
 
-function buildLatencyPercentiles(rows: UsageRow[], pickValue: (row: UsageRow) => number | null | undefined): LatencyPercentileRow | null {
-  const values = rows
-    .map((row) => Number(pickValue(row) ?? 0))
-    .filter((value) => value > 0)
-    .sort((left, right) => left - right);
-  if (values.length === 0) {
-    return null;
-  }
-  return {
-    name: "延迟",
-    p50: percentile(values, 0.5),
-    p90: percentile(values, 0.9),
-    p99: percentile(values, 0.99)
-  };
-}
-
-function buildScopedTrendPayload(rows: UsageRow[]): UsageTrendPayload | null {
-  if (rows.length === 0) {
-    return null;
-  }
-  const bucket = new Map<string, DailyUsagePoint>();
-  for (const row of rows) {
-    const dateKey = row.createdAt.slice(0, 10);
-    const current =
-      bucket.get(dateKey) ??
-      {
-        date: dateKey,
-        requests: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-        totalTokens: 0,
-        actualCost: 0,
-        totalCost: 0
-      };
-    current.requests += 1;
-    current.inputTokens += row.inputTokens ?? 0;
-    current.outputTokens += row.outputTokens ?? 0;
-    current.cacheReadTokens = (current.cacheReadTokens ?? 0) + (row.cacheReadTokens ?? 0);
-    current.cacheWriteTokens = (current.cacheWriteTokens ?? 0) + (row.cacheCreationTokens ?? 0);
-    current.totalTokens = (current.totalTokens ?? 0) + (row.totalTokens ?? 0);
-    current.actualCost = (current.actualCost ?? 0) + (row.actualCost ?? 0);
-    current.totalCost = (current.totalCost ?? 0) + (row.totalCost ?? 0);
-    bucket.set(dateKey, current);
-  }
-  const trend = Array.from(bucket.values()).sort((left, right) => left.date.localeCompare(right.date));
-  return {
-    startDate: trend[0]?.date ?? "",
-    endDate: trend[trend.length - 1]?.date ?? "",
-    granularity: "day",
-    trend
-  };
-}
-
-function buildScopedModelsPayload(rows: UsageRow[]): DashboardModelsPayload | null {
-  if (rows.length === 0) {
-    return null;
-  }
-  const aggregates = buildUsageAggregateRows(rows, (row) => row.model || "unknown");
-  const trend = buildScopedTrendPayload(rows);
-  return {
-    startDate: trend?.startDate ?? "",
-    endDate: trend?.endDate ?? "",
-    models: aggregates.map((row) => ({
-      model: row.name,
-      requests: row.requests,
-      inputTokens: row.inputTokens,
-      outputTokens: row.outputTokens,
-      cacheCreationTokens: row.cacheCreationTokens,
-      cacheReadTokens: row.cacheReadTokens,
-      totalTokens: row.totalTokens,
-      cost: row.totalCost,
-      actualCost: row.actualCost
-    }))
-  };
-}
-
-function buildUsageStatsFromRows(
-  rows: UsageRow[],
-  startDate: string,
-  endDate: string
-): UsageStatsRecord {
-  const totalRequests = rows.length;
-  const totalInputTokens = rows.reduce((sum, row) => sum + (row.inputTokens ?? 0), 0);
-  const totalOutputTokens = rows.reduce((sum, row) => sum + (row.outputTokens ?? 0), 0);
-  const totalCacheCreationTokens = rows.reduce((sum, row) => sum + (row.cacheCreationTokens ?? 0), 0);
-  const totalCacheReadTokens = rows.reduce((sum, row) => sum + (row.cacheReadTokens ?? 0), 0);
-  const totalTokens = rows.reduce((sum, row) => sum + (row.totalTokens ?? 0), 0);
-  const totalCost = rows.reduce((sum, row) => sum + (row.totalCost ?? 0), 0);
-  const totalActualCost = rows.reduce((sum, row) => sum + (row.actualCost ?? 0), 0);
-  const durations = rows.map((row) => row.durationMs ?? 0).filter((value) => value > 0);
-  const averageDurationMs = durations.length > 0
-    ? durations.reduce((sum, value) => sum + value, 0) / durations.length
-    : 0;
-  const windowMinutes = inferUsageWindowMinutes(startDate, endDate);
-
-  return {
-    totalRequests,
-    totalInputTokens,
-    totalOutputTokens,
-    totalCacheTokens: totalCacheCreationTokens + totalCacheReadTokens,
-    totalCacheCreationTokens,
-    totalCacheReadTokens,
-    totalTokens,
-    totalCost,
-    totalActualCost,
-    averageDurationMs,
-    rpm: totalRequests / windowMinutes,
-    tpm: totalTokens / windowMinutes
-  };
-}
-
-function buildScopedPlatformRows(rows: UsageRow[]) {
-  return buildUsageAggregateRows(rows, (row) => row.platform ?? "unknown").map((row) => ({
-    platform: row.name,
-    totalActualCost: row.actualCost,
-    totalRequests: row.requests,
-    totalTokens: row.totalTokens
-  }));
-}
-
 function buildUsageRankingRows(rows: UsageAggregateRow[]) {
   return rows.slice(0, 12).map((row) => ({
     name: row.name,
@@ -2435,24 +2211,6 @@ function buildUsageRankingRows(rows: UsageAggregateRow[]) {
     activeCount: Math.round(row.totalTokens),
     detail: `${compact(row.totalTokens)} tokens · ${formatUsdPerMillion(row.actualCost, row.totalTokens)}`
   }));
-}
-
-function percentile(values: number[], ratio: number) {
-  if (values.length === 0) {
-    return 0;
-  }
-  const index = Math.min(values.length - 1, Math.max(0, Math.round((values.length - 1) * ratio)));
-  return values[index] ?? 0;
-}
-
-function inferUsageWindowMinutes(startDate: string, endDate: string, now: Date = new Date()) {
-  const today = now.toISOString().slice(0, 10);
-  const start = new Date(`${startDate}T00:00:00`);
-  const end = endDate >= today ? now : new Date(`${endDate}T23:59:59`);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end.getTime() < start.getTime()) {
-    return 1;
-  }
-  return Math.max((end.getTime() - start.getTime()) / 60000, 1);
 }
 
 function buildSiteRankings(overview: OverviewPayload | null): RankingRow[] {
@@ -2497,8 +2255,8 @@ function buildAlertSeverityRows(overview: OverviewPayload | null) {
   return buildDimensionRows(overview?.alerts ?? [], (item) => item.severity);
 }
 
-function buildPlatformQuotaFallbackRows(rows: UsageRow[]) {
-  return buildUsageAggregateRows(rows, (row) => row.platform ?? "unknown").map((row) => ({
+function buildPlatformQuotaFallbackRows(rows: UsageAggregateRow[]) {
+  return rows.map((row) => ({
     platform: row.name,
     requests: row.requests,
     actualCost: row.actualCost,
@@ -2552,13 +2310,10 @@ function buildIdentityRows(profileRecord: UserProfileRecord | null): IdentityRow
 function buildSubscriptionRows(
   summary: SubscriptionSummaryPayload | null,
   fallbackSubscriptions: SubscriptionRecord[],
-  usageRows: UsageRow[]
+  usageRows: UsageAggregateRow[]
 ): SubscriptionChartRow[] {
   const aggregateMap = new Map(
-    buildUsageAggregateRows(
-      usageRows,
-      (row) => row.subscriptionName ?? row.groupName ?? "未归属订阅"
-    ).map((item) => [item.name, item])
+    usageRows.map((item) => [item.name, item])
   );
 
   if (summary?.subscriptions.length) {
@@ -2589,23 +2344,6 @@ function coerceManagedKeys(keys: KeyRecord[]): ManagedKeyRecord[] {
     ...item,
     apiKeyId: item.id ? Number(item.id) : null
   }));
-}
-
-function simplifyUserAgent(value?: string | null) {
-  if (!value) {
-    return "unknown";
-  }
-  const normalized = value.trim();
-  if (!normalized) {
-    return "unknown";
-  }
-  if (normalized.includes("Codex Desktop")) {
-    return "Codex Desktop";
-  }
-  if (normalized.includes("Mozilla")) {
-    return "Browser";
-  }
-  return normalized.length > 48 ? `${normalized.slice(0, 45)}...` : normalized;
 }
 
 function formatUsd(value?: number | null, digits = 6) {

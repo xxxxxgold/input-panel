@@ -1,14 +1,21 @@
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::Days;
 
-use crate::contracts::{AccountInput, AccountRecord, AccountRuntime, AccountCacheView, AccountCacheStats};
-use crate::infrastructure::sqlite::repositories;
+use crate::contracts::{
+    AccountCacheStats, AccountCacheView, AccountInput, AccountRecord, AccountRuntime, KeyRecord,
+    SubscriptionRecord, TrendPoint, UsageRow, UserProfileRecord,
+};
 use crate::domain::alerts::build_alerts;
+use crate::infrastructure::datetime::{now_storage_timestamp, shanghai_today};
+use crate::infrastructure::sqlite::repositories;
 
-use super::AppContext;
+use super::{
+    data_center_service, resource_coordinator::LiveResourceKind,
+    upstream_service::UpstreamRequestPolicy, AppContext,
+};
 
 pub fn create_account(ctx: &AppContext, payload: AccountInput) -> Result<AccountRuntime> {
-    let now = Utc::now().to_rfc3339();
+    let now = now_storage_timestamp();
     let account = AccountRecord {
         id: uuid::Uuid::new_v4().to_string(),
         site_id: payload.site_id,
@@ -30,8 +37,7 @@ pub fn update_account(
     email: Option<String>,
     balance_warning: Option<f64>,
 ) -> Result<AccountRuntime> {
-    let mut account = repositories::find_account(&ctx.db, account_id)?
-        .context("账号不存在。")?;
+    let mut account = repositories::find_account(&ctx.db, account_id)?.context("账号不存在。")?;
     if let Some(label) = label {
         account.label = label.trim().to_string();
     }
@@ -41,7 +47,7 @@ pub fn update_account(
     if let Some(balance_warning) = balance_warning {
         account.balance_warning = normalize_balance_warning(balance_warning);
     }
-    account.updated_at = Utc::now().to_rfc3339();
+    account.updated_at = now_storage_timestamp();
     repositories::update_account(&ctx.db, &account)?;
     wrap_runtime(ctx, account, None, None)
 }
@@ -51,11 +57,13 @@ pub fn remove_account(ctx: &AppContext, account_id: &str) -> Result<bool> {
     Ok(true)
 }
 
-pub fn load_account_site(ctx: &AppContext, account_id: &str) -> Result<(AccountRecord, crate::contracts::SiteRecord)> {
-    let account = repositories::find_account(&ctx.db, account_id)?
-        .context("账号不存在。")?;
-    let site = repositories::find_site(&ctx.db, &account.site_id)?
-        .context("账号所属站点不存在。")?;
+pub fn load_account_site(
+    ctx: &AppContext,
+    account_id: &str,
+) -> Result<(AccountRecord, crate::contracts::SiteRecord)> {
+    let account = repositories::find_account(&ctx.db, account_id)?.context("账号不存在。")?;
+    let site =
+        repositories::find_site(&ctx.db, &account.site_id)?.context("账号所属站点不存在。")?;
     Ok((account, site))
 }
 
@@ -65,22 +73,16 @@ pub fn wrap_runtime(
     cache_view: Option<AccountCacheView>,
     last_error: Option<String>,
 ) -> Result<AccountRuntime> {
-    let state = repositories::read_data_center_state(&ctx.db)?;
-    let site = state.sites.iter().find(|item| item.id == account.site_id).cloned();
-    let resolved_cache_view = build_runtime_cache_view(&state, &account, site.as_ref()).or(cache_view);
-    let has_cache_view = resolved_cache_view.is_some();
-    let resolved_error = state
-        .sync_statuses
-        .get(&account.id)
-        .and_then(|rows| rows.iter().find(|item| item.last_error.is_some()))
-        .and_then(|item| item.last_error.clone())
-        .or(last_error);
+    let site = repositories::find_site(&ctx.db, &account.site_id)?;
+    let has_session = repositories::load_session(&ctx.db, &account.id)?.is_some();
+    let has_cache_view = cache_view.is_some();
+    let resolved_error = last_error;
 
     Ok(AccountRuntime {
         account,
         site,
-        cache_view: resolved_cache_view,
-        session_state: if has_cache_view {
+        cache_view,
+        session_state: if has_cache_view || has_session {
             "ready".into()
         } else if resolved_error.is_some() {
             "expired".into()
@@ -89,6 +91,137 @@ pub fn wrap_runtime(
         },
         last_error: resolved_error,
     })
+}
+
+pub async fn load_live_runtime(ctx: &AppContext, account: AccountRecord) -> Result<AccountRuntime> {
+    let site = repositories::find_site(&ctx.db, &account.site_id)?;
+    let has_session = repositories::load_session(&ctx.db, &account.id)?.is_some();
+    let Some(site_ref) = site.as_ref() else {
+        return Ok(AccountRuntime {
+            account,
+            site,
+            cache_view: None,
+            session_state: "missing".into(),
+            last_error: Some("账号所属站点不存在。".into()),
+        });
+    };
+    if !has_session {
+        return Ok(AccountRuntime {
+            account,
+            site,
+            cache_view: None,
+            session_state: "missing".into(),
+            last_error: None,
+        });
+    }
+
+    let now = now_storage_timestamp();
+    let usage_ctx = ctx.clone();
+    let usage_account_id = account.id.clone();
+    let usage_snapshot_task = tokio::task::spawn_blocking(move || {
+        load_usage_cache_snapshot(&usage_ctx, &usage_account_id)
+    });
+    let (usage_snapshot_result, profile_result, keys_result, subscriptions_result) = tokio::join!(
+        usage_snapshot_task,
+        ctx.live_resources
+            .get_or_fetch(&account.id, LiveResourceKind::Profile, false, || async {
+                data_center_service::fetch_profile(
+                    ctx,
+                    &account.id,
+                    UpstreamRequestPolicy::ReadOnly,
+                )
+                .await
+            },),
+        ctx.live_resources
+            .get_or_fetch(&account.id, LiveResourceKind::Keys, false, || async {
+                data_center_service::fetch_keys(ctx, &account.id, UpstreamRequestPolicy::ReadOnly)
+                    .await
+            },),
+        ctx.live_resources.get_or_fetch(
+            &account.id,
+            LiveResourceKind::Subscriptions,
+            false,
+            || async {
+                data_center_service::fetch_subscriptions(
+                    ctx,
+                    &account.id,
+                    UpstreamRequestPolicy::ReadOnly,
+                )
+                .await
+            },
+        ),
+    );
+    let (stats, recent_usage, trend) = usage_snapshot_result
+        .map_err(anyhow::Error::from)?
+        .context("读取本地 usage 缓存失败。")?;
+
+    let mut errors = Vec::new();
+    let profile = match profile_result {
+        Ok(profile) => profile,
+        Err(error) => {
+            errors.push(error.to_string());
+            fallback_profile(&account)
+        }
+    };
+    let keys = match keys_result {
+        Ok(keys) => keys,
+        Err(error) => {
+            errors.push(error.to_string());
+            Vec::new()
+        }
+    };
+    let subscriptions = match subscriptions_result {
+        Ok(subscriptions) => subscriptions,
+        Err(error) => {
+            errors.push(error.to_string());
+            Vec::new()
+        }
+    };
+    let last_error = errors.first().cloned();
+    let key_rows = keys.iter().map(|item| item.key.clone()).collect::<Vec<_>>();
+    let cache_view = Some(build_runtime_cache_view(
+        &account,
+        site_ref,
+        &profile,
+        key_rows,
+        subscriptions,
+        stats,
+        recent_usage,
+        trend,
+        now,
+    ));
+
+    Ok(AccountRuntime {
+        account,
+        site,
+        cache_view,
+        session_state: if last_error.is_none() {
+            "ready".into()
+        } else {
+            "expired".into()
+        },
+        last_error,
+    })
+}
+
+fn load_usage_cache_snapshot(
+    ctx: &AppContext,
+    account_id: &str,
+) -> Result<(AccountCacheStats, Vec<UsageRow>, Vec<TrendPoint>)> {
+    let mut stats = repositories::summarize_usage_row_cache(&ctx.db, account_id)?;
+    stats.by_platform = repositories::list_usage_platform_points(&ctx.db, account_id)?;
+    stats.by_model = repositories::list_usage_model_points(&ctx.db, account_id)?;
+    let today = shanghai_today();
+    let trend_start = (today - Days::new(6)).to_string();
+    let trend_end = today.to_string();
+    let recent_usage = repositories::list_recent_usage_rows(&ctx.db, account_id, 20)?;
+    let trend = repositories::list_usage_trend_points(
+        &ctx.db,
+        account_id,
+        Some(&trend_start),
+        Some(&trend_end),
+    )?;
+    Ok((stats, recent_usage, trend))
 }
 
 pub fn normalize_balance_warning(value: f64) -> f64 {
@@ -100,60 +233,33 @@ pub fn normalize_balance_warning(value: f64) -> f64 {
 }
 
 pub(crate) fn build_runtime_cache_view(
-    state: &crate::contracts::DataCenterState,
     account: &AccountRecord,
-    site: Option<&crate::contracts::SiteRecord>,
-) -> Option<AccountCacheView> {
-    let profile = state.profiles.get(&account.id)?;
-    let usage_rows = state
-        .usage_rows
-        .get(&account.id)
-        .cloned()
-        .unwrap_or_default();
-    let key_rows = state
-        .keys
-        .get(&account.id)
-        .cloned()
-        .unwrap_or_default();
-    let subscription_rows = state
-        .subscriptions
-        .get(&account.id)
-        .cloned()
-        .unwrap_or_default();
-    let sync_statuses = state
-        .sync_statuses
-        .get(&account.id)
-        .cloned()
-        .unwrap_or_default();
-    let fetched_at = sync_statuses
+    site: &crate::contracts::SiteRecord,
+    profile: &UserProfileRecord,
+    key_rows: Vec<KeyRecord>,
+    subscriptions: Vec<SubscriptionRecord>,
+    mut stats: AccountCacheStats,
+    recent_usage: Vec<UsageRow>,
+    trend: Vec<TrendPoint>,
+    fetched_at: String,
+) -> AccountCacheView {
+    let balance = profile.balance;
+    let alerts = build_alerts(account, site, balance, &key_rows, &fetched_at);
+    stats.total_api_keys = key_rows.len() as i64;
+    stats.active_api_keys = key_rows
         .iter()
-        .filter_map(|item| item.last_success_at.clone())
-        .max()
-        .unwrap_or_else(|| profile.updated_at.clone());
-    let keys = key_rows.iter().map(|item| item.row.key.clone()).collect::<Vec<_>>();
-    let subscriptions = subscription_rows
-        .iter()
-        .map(|item| item.row.clone())
-        .collect::<Vec<_>>();
-    let balance = profile.payload.balance;
-    let site_ref = site.cloned()?;
-    let alerts = build_alerts(account, &site_ref, balance, &keys, &fetched_at);
-    let recent_usage = usage_rows
-        .iter()
-        .take(20)
-        .map(|item| item.row.clone())
-        .collect::<Vec<_>>();
-    let trend = build_recent_trend(&usage_rows);
+        .filter(|item| item.status == "active")
+        .count() as i64;
 
-    Some(AccountCacheView {
+    AccountCacheView {
         fetched_at,
         online: true,
-        site_name: site_ref.name,
+        site_name: site.name.clone(),
         balance,
-        stats: build_cache_view_stats(&keys, &subscriptions, &usage_rows),
+        stats,
         recent_usage,
         trend,
-        keys,
+        keys: key_rows,
         subscriptions: subscriptions.clone(),
         active_subscription: subscriptions
             .iter()
@@ -161,104 +267,30 @@ pub(crate) fn build_runtime_cache_view(
             .cloned()
             .or_else(|| subscriptions.first().cloned()),
         alerts,
-    })
-}
-
-fn build_cache_view_stats(
-    keys: &[crate::contracts::KeyRecord],
-    _subscriptions: &[crate::contracts::SubscriptionRecord],
-    usage_rows: &[crate::contracts::AccountUsageRowCacheRecord],
-) -> AccountCacheStats {
-    let today = chrono::Local::now().date_naive().to_string();
-    let today_rows = usage_rows
-        .iter()
-        .filter(|item| item.occurred_at.starts_with(&today))
-        .collect::<Vec<_>>();
-    let platform_series = build_platform_series(usage_rows);
-    AccountCacheStats {
-        total_api_keys: keys.len() as i64,
-        active_api_keys: keys.iter().filter(|item| item.status == "active").count() as i64,
-        today_requests: today_rows.len() as i64,
-        total_requests: usage_rows.len() as i64,
-        today_actual_cost: today_rows.iter().map(|item| item.row.actual_cost).sum(),
-        total_actual_cost: usage_rows.iter().map(|item| item.row.actual_cost).sum(),
-        today_cost: today_rows.iter().map(|item| item.row.total_cost).sum(),
-        total_cost: usage_rows.iter().map(|item| item.row.total_cost).sum(),
-        today_tokens: today_rows.iter().map(|item| item.row.total_tokens).sum(),
-        total_tokens: usage_rows.iter().map(|item| item.row.total_tokens).sum(),
-        today_input_tokens: today_rows.iter().map(|item| item.row.input_tokens).sum(),
-        today_output_tokens: today_rows.iter().map(|item| item.row.output_tokens).sum(),
-        average_duration_ms: average_duration_ms(usage_rows),
-        by_platform: platform_series,
     }
 }
 
-fn build_platform_series(
-    usage_rows: &[crate::contracts::AccountUsageRowCacheRecord],
-) -> Vec<crate::contracts::PlatformPoint> {
-    let today = chrono::Local::now().date_naive().to_string();
-    let mut map = std::collections::BTreeMap::<String, crate::contracts::PlatformPoint>::new();
-    for item in usage_rows {
-        let platform = item.row.platform.clone().unwrap_or_else(|| "unknown".into());
-        let entry = map.entry(platform.clone()).or_insert(crate::contracts::PlatformPoint {
-            platform,
-            total_actual_cost: 0.0,
-            today_actual_cost: 0.0,
-            total_requests: 0,
-            total_tokens: 0,
-        });
-        entry.total_actual_cost += item.row.actual_cost;
-        entry.total_requests += 1;
-        entry.total_tokens += item.row.total_tokens;
-        if item.occurred_at.starts_with(&today) {
-            entry.today_actual_cost += item.row.actual_cost;
-        }
+fn fallback_profile(account: &AccountRecord) -> UserProfileRecord {
+    UserProfileRecord {
+        id: 0,
+        email: account.email.clone(),
+        username: None,
+        avatar_url: None,
+        role: "user".into(),
+        balance: 0.0,
+        concurrency: 0,
+        status: "unknown".into(),
+        last_active_at: None,
+        created_at: Some(account.created_at.clone()),
+        updated_at: Some(account.updated_at.clone()),
+        total_recharged: None,
+        rpm_limit: None,
+        balance_notify_enabled: Some(false),
+        balance_notify_threshold_type: None,
+        balance_notify_threshold: None,
+        balance_notify_extra_emails: Some(Vec::new()),
+        identities: std::collections::HashMap::new(),
+        auth_bindings: std::collections::HashMap::new(),
+        identity_bindings: std::collections::HashMap::new(),
     }
-    map.into_values().collect()
 }
-
-fn average_duration_ms(usage_rows: &[crate::contracts::AccountUsageRowCacheRecord]) -> f64 {
-    let durations = usage_rows
-        .iter()
-        .filter_map(|item| item.row.duration_ms.map(|value| value as f64))
-        .collect::<Vec<_>>();
-    if durations.is_empty() {
-        return 0.0;
-    }
-    durations.iter().sum::<f64>() / durations.len() as f64
-}
-
-fn build_recent_trend(
-    usage_rows: &[crate::contracts::AccountUsageRowCacheRecord],
-) -> Vec<crate::contracts::TrendPoint> {
-    let mut grouped = std::collections::BTreeMap::<String, crate::contracts::TrendPoint>::new();
-    for item in usage_rows {
-        let bucket = item
-            .occurred_at
-            .split('T')
-            .next()
-            .unwrap_or(&item.occurred_at)
-            .to_string();
-        let entry = grouped.entry(bucket.clone()).or_insert(crate::contracts::TrendPoint {
-            bucket,
-            actual_cost: 0.0,
-            total_cost: 0.0,
-            requests: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-            cache_creation_tokens: 0,
-            cache_read_tokens: 0,
-            total_tokens: 0,
-        });
-        entry.actual_cost += item.row.actual_cost;
-        entry.total_cost += item.row.total_cost;
-        entry.requests += 1;
-        entry.input_tokens += item.row.input_tokens;
-        entry.output_tokens += item.row.output_tokens;
-        entry.cache_creation_tokens += item.row.cache_creation_tokens.unwrap_or(0);
-        entry.cache_read_tokens += item.row.cache_read_tokens.unwrap_or(0);
-        entry.total_tokens += item.row.total_tokens;
-    }
-    grouped.into_values().collect()
-}
-

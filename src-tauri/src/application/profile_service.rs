@@ -2,42 +2,29 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use crate::contracts::{
-    PlatformQuotaPayload,
-    ProfileUpdateInput, SubscriptionSummaryPayload, UserProfileRecord,
+    EmailIdentityBindInput, PlatformQuotaPayload, ProfileUpdateInput, SubscriptionRecord,
+    SubscriptionSummaryPayload, UserProfileRecord,
 };
-use crate::infrastructure::sqlite::repositories;
-use crate::infrastructure::sub2api::normalizers::{
-    normalize_profile,
-    profile_update_payload,
+use crate::infrastructure::sub2api::normalizers::{normalize_profile, profile_update_payload};
+
+use super::{
+    auth_service, data_center_service,
+    resource_coordinator::LiveResourceKind,
+    upstream_service::{self, UpstreamRequestPolicy},
+    AppContext,
 };
 
-use super::{upstream_service, AppContext};
-
-pub async fn get_profile_record(ctx: &AppContext, account_id: &str) -> Result<UserProfileRecord> {
-    Ok(repositories::get_profile_cache(&ctx.db, account_id)?
-        .map(|record| record.payload)
-        .unwrap_or(UserProfileRecord {
-            id: 0,
-            email: String::new(),
-            username: None,
-            avatar_url: None,
-            role: "user".into(),
-            balance: 0.0,
-            concurrency: 0,
-            status: "unknown".into(),
-            last_active_at: None,
-            created_at: None,
-            updated_at: None,
-            total_recharged: None,
-            rpm_limit: None,
-            balance_notify_enabled: Some(false),
-            balance_notify_threshold_type: None,
-            balance_notify_threshold: None,
-            balance_notify_extra_emails: Some(Vec::new()),
-            identities: std::collections::HashMap::new(),
-            auth_bindings: std::collections::HashMap::new(),
-            identity_bindings: std::collections::HashMap::new(),
-        }))
+pub async fn get_profile_record(
+    ctx: &AppContext,
+    account_id: &str,
+    force: bool,
+) -> Result<UserProfileRecord> {
+    ctx.live_resources
+        .get_or_fetch(account_id, LiveResourceKind::Profile, force, || async {
+            data_center_service::fetch_profile(ctx, account_id, UpstreamRequestPolicy::ReadOnly)
+                .await
+        })
+        .await
 }
 
 pub async fn update_profile_record(
@@ -51,18 +38,11 @@ pub async fn update_profile_record(
         "/api/v1/user",
         "PUT",
         Some(profile_update_payload(&payload)),
+        UpstreamRequestPolicy::RecoverableSyncOrWrite,
     )
     .await?;
-    let profile = normalize_profile(&raw);
-    let now = chrono::Utc::now().to_rfc3339();
-    repositories::save_profile_cache(&ctx.db, account_id, &profile, &now)?;
-    super::data_center_service::sync_core_scope(
-        ctx,
-        account_id,
-        crate::contracts::DataSyncTrigger::PostWrite,
-    )
-    .await?;
-    Ok(profile)
+    invalidate_profile(ctx, account_id).await;
+    Ok(normalize_profile(&raw))
 }
 
 pub async fn change_profile_password(
@@ -80,8 +60,10 @@ pub async fn change_profile_password(
             "old_password": old_password,
             "new_password": new_password,
         })),
+        UpstreamRequestPolicy::RecoverableSyncOrWrite,
     )
     .await?;
+    invalidate_profile(ctx, account_id).await;
     Ok(true)
 }
 
@@ -89,24 +71,76 @@ pub async fn get_platform_quotas(
     ctx: &AppContext,
     account_id: &str,
 ) -> Result<PlatformQuotaPayload> {
-    Ok(repositories::get_platform_quota_cache(&ctx.db, account_id)?
-        .map(|record| record.payload)
-        .unwrap_or(PlatformQuotaPayload {
-            platform_quotas: Vec::new(),
-        }))
+    ctx.live_resources
+        .get_or_fetch(
+            account_id,
+            LiveResourceKind::PlatformQuotas,
+            false,
+            || async {
+                data_center_service::fetch_platform_quotas(
+                    ctx,
+                    account_id,
+                    UpstreamRequestPolicy::ReadOnly,
+                )
+                .await
+            },
+        )
+        .await
+}
+
+pub async fn get_subscriptions(
+    ctx: &AppContext,
+    account_id: &str,
+    force: bool,
+) -> Result<Vec<SubscriptionRecord>> {
+    ctx.live_resources
+        .get_or_fetch(
+            account_id,
+            LiveResourceKind::Subscriptions,
+            force,
+            || async {
+                data_center_service::fetch_subscriptions(
+                    ctx,
+                    account_id,
+                    UpstreamRequestPolicy::ReadOnly,
+                )
+                .await
+            },
+        )
+        .await
 }
 
 pub async fn get_subscription_summary(
     ctx: &AppContext,
     account_id: &str,
 ) -> Result<SubscriptionSummaryPayload> {
-    Ok(repositories::get_subscription_summary_cache(&ctx.db, account_id)?
-        .map(|record| record.payload)
-        .unwrap_or(SubscriptionSummaryPayload {
-            active_count: 0,
-            total_used_usd: 0.0,
-            subscriptions: Vec::new(),
-        }))
+    ctx.live_resources
+        .get_or_fetch(
+            account_id,
+            LiveResourceKind::SubscriptionSummary,
+            false,
+            || async {
+                match data_center_service::fetch_subscription_summary(
+                    ctx,
+                    account_id,
+                    UpstreamRequestPolicy::ReadOnly,
+                )
+                .await
+                {
+                    Ok(summary) => Ok(summary),
+                    Err(error) if auth_service::is_auth_expired_error(&error) => Err(error),
+                    Err(_) => {
+                        let subscriptions = get_subscriptions(ctx, account_id, false)
+                            .await
+                            .unwrap_or_default();
+                        Ok(data_center_service::derive_subscription_summary(
+                            &subscriptions,
+                        ))
+                    }
+                }
+            },
+        )
+        .await
 }
 
 pub async fn send_notify_email_code(
@@ -130,29 +164,29 @@ pub async fn verify_notify_email(
     email: &str,
     code: &str,
 ) -> Result<bool> {
-    simple_bool_request(
+    let result = simple_bool_request(
         ctx,
         account_id,
         "/api/v1/user/notify-email/verify",
         "POST",
         Some(json!({ "email": email, "code": code })),
     )
-    .await
+    .await?;
+    invalidate_profile(ctx, account_id).await;
+    Ok(result)
 }
 
-pub async fn remove_notify_email(
-    ctx: &AppContext,
-    account_id: &str,
-    email: &str,
-) -> Result<bool> {
-    simple_bool_request(
+pub async fn remove_notify_email(ctx: &AppContext, account_id: &str, email: &str) -> Result<bool> {
+    let result = simple_bool_request(
         ctx,
         account_id,
         "/api/v1/user/notify-email",
         "DELETE",
         Some(json!({ "email": email })),
     )
-    .await
+    .await?;
+    invalidate_profile(ctx, account_id).await;
+    Ok(result)
 }
 
 pub async fn toggle_notify_email(
@@ -167,18 +201,11 @@ pub async fn toggle_notify_email(
         "/api/v1/user/notify-email/toggle",
         "PUT",
         Some(json!({ "email": email, "disabled": disabled })),
+        UpstreamRequestPolicy::RecoverableSyncOrWrite,
     )
     .await?;
-    let profile = normalize_profile(&raw);
-    let now = chrono::Utc::now().to_rfc3339();
-    repositories::save_profile_cache(&ctx.db, account_id, &profile, &now)?;
-    super::data_center_service::sync_core_scope(
-        ctx,
-        account_id,
-        crate::contracts::DataSyncTrigger::PostWrite,
-    )
-    .await?;
-    Ok(profile)
+    invalidate_profile(ctx, account_id).await;
+    Ok(normalize_profile(&raw))
 }
 
 pub async fn send_email_binding_code(
@@ -199,17 +226,23 @@ pub async fn send_email_binding_code(
 pub async fn bind_email_identity(
     ctx: &AppContext,
     account_id: &str,
-    email: &str,
-    code: &str,
-) -> Result<bool> {
-    simple_bool_request(
+    payload: EmailIdentityBindInput,
+) -> Result<UserProfileRecord> {
+    let raw = upstream_service::account_upstream_request(
         ctx,
         account_id,
         "/api/v1/user/account-bindings/email",
         "POST",
-        Some(json!({ "email": email, "code": code })),
+        Some(json!({
+            "email": payload.email,
+            "verify_code": payload.verify_code,
+            "password": payload.password,
+        })),
+        UpstreamRequestPolicy::RecoverableSyncOrWrite,
     )
-    .await
+    .await?;
+    invalidate_profile(ctx, account_id).await;
+    Ok(normalize_profile(&raw))
 }
 
 pub async fn unbind_auth_identity(
@@ -217,14 +250,22 @@ pub async fn unbind_auth_identity(
     account_id: &str,
     provider: &str,
 ) -> Result<bool> {
-    simple_bool_request(
+    let result = simple_bool_request(
         ctx,
         account_id,
         &format!("/api/v1/user/account-bindings/{provider}"),
         "DELETE",
         None,
     )
-    .await
+    .await?;
+    invalidate_profile(ctx, account_id).await;
+    Ok(result)
+}
+
+async fn invalidate_profile(ctx: &AppContext, account_id: &str) {
+    ctx.live_resources
+        .invalidate(account_id, LiveResourceKind::Profile)
+        .await;
 }
 
 async fn simple_bool_request(
@@ -234,6 +275,14 @@ async fn simple_bool_request(
     method: &str,
     payload: Option<Value>,
 ) -> Result<bool> {
-    upstream_service::account_upstream_request(ctx, account_id, path, method, payload).await?;
+    upstream_service::account_upstream_request(
+        ctx,
+        account_id,
+        path,
+        method,
+        payload,
+        UpstreamRequestPolicy::RecoverableSyncOrWrite,
+    )
+    .await?;
     Ok(true)
 }

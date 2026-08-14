@@ -20,6 +20,9 @@ pub mod contracts;
 pub mod domain;
 pub mod infrastructure;
 
+#[cfg(test)]
+mod test_support;
+
 const MAIN_WINDOW_LABEL: &str = "main";
 const FLOATING_WINDOW_LABEL: &str = "floating";
 const FLOATING_PANEL_WINDOW_LABEL: &str = "floating-panel";
@@ -88,9 +91,10 @@ const FLOATING_ORB_ALPHA_REGION_RUNS: &[(i32, i32, i32)] = &[
     (58, 15, 60),
     (59, 14, 60),
 ];
-const FLOATING_PANEL_WIDTH: f64 = 360.0;
-const FLOATING_PANEL_HEIGHT: f64 = 264.0;
-const FLOATING_NOTIFICATION_WIDTH: i32 = 218;
+const FLOATING_PANEL_WIDTH: f64 = 392.0;
+const FLOATING_PANEL_HEIGHT: f64 = 456.0;
+const FLOATING_PANEL_SYNC_REPLAY_DELAY_MS: u64 = 220;
+const FLOATING_NOTIFICATION_WIDTH: i32 = 232;
 const FLOATING_NOTIFICATION_DETAIL_WIDTH: i32 = 344;
 const FLOATING_NOTIFICATION_DETAIL_HEIGHT: i32 = 520;
 const FLOATING_NOTIFICATION_GAP: i32 = 8;
@@ -171,6 +175,7 @@ pub struct FloatingUsageNotificationDetails {
     pub api_key_label: String,
     pub model: String,
     pub reasoning_effort: Option<String>,
+    pub service_tier: Option<String>,
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub cache_creation_tokens: i64,
@@ -206,11 +211,21 @@ pub struct FloatingNotificationPayload {
     pub usage: Option<FloatingUsageNotificationDetails>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FloatingNotificationDock {
+    Left,
+    #[default]
+    Right,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FloatingNotificationSnapshot {
     pub revision: u64,
     pub items: Vec<FloatingNotificationPayload>,
+    #[serde(default)]
+    pub dock: FloatingNotificationDock,
 }
 
 #[derive(Default)]
@@ -224,6 +239,7 @@ impl FloatingNotificationMailbox {
         FloatingNotificationSnapshot {
             revision: self.revision,
             items: self.items.clone(),
+            dock: FloatingNotificationDock::default(),
         }
     }
 
@@ -231,6 +247,14 @@ impl FloatingNotificationMailbox {
         &mut self,
         payload: FloatingNotificationPayload,
     ) -> FloatingNotificationSnapshot {
+        self.enqueue_with_inserted(payload).0
+    }
+
+    /// 返回本次是否真正接纳新消息，供应用侧副作用避免被 snapshot 重放触发。
+    fn enqueue_with_inserted(
+        &mut self,
+        payload: FloatingNotificationPayload,
+    ) -> (FloatingNotificationSnapshot, bool) {
         let dedupe_key = payload.dedupe_key.trim();
         if !dedupe_key.is_empty()
             && self
@@ -238,12 +262,12 @@ impl FloatingNotificationMailbox {
                 .iter()
                 .any(|item| item.dedupe_key.trim() == dedupe_key)
         {
-            return self.snapshot();
+            return (self.snapshot(), false);
         }
 
         self.items.push(payload);
         self.revision = self.revision.wrapping_add(1);
-        self.snapshot()
+        (self.snapshot(), true)
     }
 
     fn dismiss(&mut self, notification_id: &str) -> FloatingNotificationSnapshot {
@@ -292,19 +316,42 @@ const FLOATING_TASKBAR_STYLE_SUBCLASS_PANEL_ID: usize = 0xF10A7102;
 #[cfg(target_os = "windows")]
 const FLOATING_TASKBAR_STYLE_SUBCLASS_NOTIFICATION_ID: usize = 0xF10A7103;
 #[cfg(target_os = "windows")]
+const MAIN_WINDOW_CHROME_SUBCLASS_ID: usize = 0xF10A7104;
+#[cfg(target_os = "windows")]
 const WM_SHOWWINDOW: u32 = 0x0018;
 
 static FLOATING_NATIVE_STATE: OnceLock<Arc<Mutex<FloatingNativeState>>> = OnceLock::new();
+/// 构建辅助 WebView 时串行化 label 查找与创建，避免并发路径重复注册同一窗口。
+static FLOATING_AUXILIARY_WINDOW_BUILD_LOCK: Mutex<()> = Mutex::new(());
+static FLOATING_AUXILIARY_VISIBILITY_STATE: OnceLock<Mutex<FloatingAuxiliaryVisibilityState>> =
+    OnceLock::new();
 /// 主窗口是否已因前端首帧就绪（或超时兜底）而显示过；show 逻辑必须幂等，
 /// dev 模式 HMR 重放 frontend_ready 时不能重复触发聚焦。
 static MAIN_WINDOW_REVEALED: AtomicBool = AtomicBool::new(false);
+/// 主窗口持久化状态仅在本进程第一次实际显示时恢复。它独立于
+/// `MAIN_WINDOW_REVEALED`，因为悬浮启动收到 frontend_ready 时主窗口仍保持隐藏。
+static MAIN_WINDOW_INITIAL_STATE_RESTORED: AtomicBool = AtomicBool::new(false);
 const MAIN_WINDOW_REVEAL_FALLBACK_MS: u64 = 3_000;
+const MAIN_WINDOW_NATIVE_VISIBILITY_POLL_MS: u64 = 16;
 static FLOATING_NOTIFICATION_MAILBOX: OnceLock<Arc<Mutex<FloatingNotificationMailbox>>> =
     OnceLock::new();
 static FLOATING_NOTIFICATION_SYNC_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static FLOATING_NOTIFICATION_MUTATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static FLOATING_NOTIFICATION_DETAIL_OPEN: AtomicBool = AtomicBool::new(false);
 static FLOATING_NOTIFICATION_PREFS_SYNC_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Default)]
+struct FloatingAuxiliaryVisibilitySlot {
+    generation: u64,
+    requested_visible: bool,
+}
+
+#[derive(Default)]
+struct FloatingAuxiliaryVisibilityState {
+    floating: FloatingAuxiliaryVisibilitySlot,
+    floating_panel: FloatingAuxiliaryVisibilitySlot,
+    floating_notification: FloatingAuxiliaryVisibilitySlot,
+}
 #[cfg(target_os = "windows")]
 static FLOATING_TASKBAR_STYLE_RECHECK_STATE: OnceLock<
     Arc<Mutex<FloatingTaskbarStyleRecheckState>>,
@@ -426,6 +473,8 @@ struct FloatingNativeState {
     hide_since: Option<Instant>,
     suppress_hover_until: Option<Instant>,
     hover_reentry_required: bool,
+    /// 后台已投递、等待主线程处理的原生轮询 tick，避免事件队列累积。
+    poll_tick_pending: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -520,6 +569,11 @@ fn resolve_floating_native_poll_ms_with_pointer_near_orb(
     }
 }
 
+#[cfg(target_os = "windows")]
+fn should_schedule_floating_native_poll_tick(pending: bool) -> bool {
+    !pending
+}
+
 fn should_sample_floating_native_geometry(
     pointer_near_orb: bool,
     left_down: bool,
@@ -553,6 +607,10 @@ fn should_apply_floating_native_position(
 
 fn should_transition_floating_native_panel_visibility(current: bool, desired: bool) -> bool {
     current != desired
+}
+
+fn should_replay_floating_panel_sync(panel_visible: bool) -> bool {
+    panel_visible
 }
 
 fn take_floating_native_drag_pause_release(drag_surfaces_suppressed: &mut bool) -> bool {
@@ -641,8 +699,83 @@ pub(crate) fn mark_main_window_revealed() {
     MAIN_WINDOW_REVEALED.store(true, Ordering::SeqCst);
 }
 
-pub(crate) fn reveal_main_window_on_frontend_ready(app: &AppHandle) {
-    reveal_main_window(app, "前端首帧就绪");
+pub(crate) async fn reveal_main_window_on_frontend_ready(app: &AppHandle) -> Result<(), String> {
+    // frontend_ready 从 WebView IPC 进入时不保证已在 Windows UI 线程；必须让
+    // configure -> show -> configure 与 Tao 的 ShowWindow 样式回写串行执行，且只有
+    // 完成后才回复 IPC，避免前端在原生窗口真正可见前撤掉静态 Loading。
+    let wait_for_native_visibility = should_wait_for_main_window_native_visibility(app);
+    let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+    let app_for_main_thread = app.clone();
+    app.run_on_main_thread(move || {
+        reveal_main_window(&app_for_main_thread, "前端首帧就绪");
+        let _ = completion_tx.send(());
+    })
+    .map_err(|error| {
+        let message = format!("无法在主线程显示主窗口: {error}");
+        log::warn!("[window] {message}");
+        message
+    })?;
+    completion_rx.await.map_err(|_| {
+        let message = "主窗口首帧显示任务在完成前被取消".to_string();
+        log::warn!("[window] {message}");
+        message
+    })?;
+    if wait_for_native_visibility {
+        wait_for_main_window_native_visibility(app).await;
+    }
+    Ok(())
+}
+
+/// 悬浮启动不会显示主窗口，不能让 frontend_ready 因等待不可见的主窗口而延迟。
+fn should_wait_for_main_window_native_visibility(app: &AppHandle) -> bool {
+    app.try_state::<application::AppContext>()
+        .and_then(|ctx| application::desktop_ui_service::get_desktop_ui_prefs(&ctx).ok())
+        .map(|prefs| prefs.launch_mode != crate::contracts::AppLaunchMode::Floating)
+        .unwrap_or(true)
+}
+
+/// Windows 的 `show()` 返回后仍可能要等一个消息循环才真正提交到桌面，尤其是恢复最大化时。
+fn main_window_native_visible(app: &AppHandle) -> bool {
+    let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return false;
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        let Ok(hwnd) = main.hwnd() else {
+            return false;
+        };
+        return native_window_visible(hwnd.0 as usize).unwrap_or(false);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        main.is_visible().unwrap_or(false)
+    }
+}
+
+/// 让 IPC completion 对应主窗口的原生可见状态，避免最大化恢复期间提前撤走静态 Loading。
+async fn wait_for_main_window_native_visibility(app: &AppHandle) {
+    let deadline = Instant::now() + Duration::from_millis(MAIN_WINDOW_REVEAL_FALLBACK_MS);
+    loop {
+        let (visible_tx, visible_rx) = tokio::sync::oneshot::channel();
+        let app_for_main_thread = app.clone();
+        if let Err(error) = app.run_on_main_thread(move || {
+            let _ = visible_tx.send(main_window_native_visible(&app_for_main_thread));
+        }) {
+            log::warn!("[window] 无法确认主窗口原生可见状态: {error}");
+            return;
+        }
+
+        if matches!(visible_rx.await, Ok(true)) {
+            return;
+        }
+        if Instant::now() >= deadline {
+            log::warn!("[window] 主窗口显示后未在限定时间内确认原生可见状态");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(MAIN_WINDOW_NATIVE_VISIBILITY_POLL_MS)).await;
+    }
 }
 
 fn mark_floating_native_panel_hidden() {
@@ -792,6 +925,17 @@ struct FloatingNotificationHitRegion {
     width: i32,
     height: i32,
     corner_radius: i32,
+}
+
+/** Win32 圆角 Region 的物理像素边界。 */
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FloatingNotificationNativeRoundRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    radius_x: i32,
+    radius_y: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -987,6 +1131,61 @@ fn is_floating_auxiliary_window_label(label: &str) -> bool {
     )
 }
 
+fn floating_auxiliary_visibility_state() -> &'static Mutex<FloatingAuxiliaryVisibilityState> {
+    FLOATING_AUXILIARY_VISIBILITY_STATE
+        .get_or_init(|| Mutex::new(FloatingAuxiliaryVisibilityState::default()))
+}
+
+fn floating_auxiliary_visibility_slot_mut<'a>(
+    state: &'a mut FloatingAuxiliaryVisibilityState,
+    label: &str,
+) -> Option<&'a mut FloatingAuxiliaryVisibilitySlot> {
+    match label {
+        FLOATING_WINDOW_LABEL => Some(&mut state.floating),
+        FLOATING_PANEL_WINDOW_LABEL => Some(&mut state.floating_panel),
+        FLOATING_NOTIFICATION_WINDOW_LABEL => Some(&mut state.floating_notification),
+        _ => None,
+    }
+}
+
+/// 记录最新显隐意图，使已经排队但过期的主线程 show 任务无法复活辅助窗口。
+fn record_floating_auxiliary_visibility_intent(
+    label: &str,
+    requested_visible: bool,
+) -> Option<u64> {
+    let mut state = floating_auxiliary_visibility_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let slot = floating_auxiliary_visibility_slot_mut(&mut state, label)?;
+    slot.generation = slot.generation.wrapping_add(1);
+    slot.requested_visible = requested_visible;
+    Some(slot.generation)
+}
+
+fn read_floating_auxiliary_visibility_intent(label: &str) -> Option<(u64, bool)> {
+    let state = floating_auxiliary_visibility_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let slot = match label {
+        FLOATING_WINDOW_LABEL => &state.floating,
+        FLOATING_PANEL_WINDOW_LABEL => &state.floating_panel,
+        FLOATING_NOTIFICATION_WINDOW_LABEL => &state.floating_notification,
+        _ => return None,
+    };
+    Some((slot.generation, slot.requested_visible))
+}
+
+fn should_apply_floating_auxiliary_show(
+    label: &str,
+    current_generation: u64,
+    captured_generation: u64,
+    requested_visible: bool,
+) -> bool {
+    is_floating_auxiliary_window_label(label)
+        && current_generation == captured_generation
+        && requested_visible
+}
+
 #[cfg(target_os = "windows")]
 fn floating_taskbar_style_subclass_id(label: &str) -> Option<usize> {
     match label {
@@ -1020,6 +1219,15 @@ fn should_apply_floating_taskbar_style_from_show_message(
         && is_floating_taskbar_style_subclass_id(subclass_id)
 }
 
+#[cfg(target_os = "windows")]
+fn should_apply_main_window_chrome_from_show_message(
+    msg: u32,
+    wparam: usize,
+    is_top_level: bool,
+) -> bool {
+    msg == WM_SHOWWINDOW && wparam != 0 && is_top_level
+}
+
 fn should_recheck_floating_taskbar_style(
     label: &str,
     current_generation: u64,
@@ -1032,7 +1240,8 @@ fn should_recheck_floating_taskbar_style(
 }
 
 #[cfg(target_os = "windows")]
-fn configure_native_main_window(window: &WebviewWindow) {
+/// 清除 WebView2 在显示阶段可能重新写入的主窗口系统 caption 样式。
+unsafe fn apply_native_main_window_chrome_to_hwnd(hwnd: *mut std::ffi::c_void) {
     use std::ffi::c_void;
 
     const GWL_STYLE: i32 = -16;
@@ -1076,41 +1285,51 @@ fn configure_native_main_window(window: &WebviewWindow) {
         ) -> i32;
     }
 
+    if hwnd.is_null() {
+        return;
+    }
+
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let next_style = style
+            & !(WS_CAPTION
+                | WS_BORDER
+                | WS_DLGFRAME
+                | WS_SYSMENU
+                | WS_MINIMIZEBOX
+                | WS_MAXIMIZEBOX);
+        let next_ex_style = ex_style
+            & !(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE | WS_EX_WINDOWEDGE);
+        let _ = SetWindowLongPtrW(hwnd, GWL_STYLE, next_style);
+        let _ = SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next_ex_style);
+        let _ = SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+        let corner_pref = DWMWCP_ROUND;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &corner_pref as *const u32 as *const c_void,
+            std::mem::size_of::<u32>() as u32,
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn configure_native_main_window(window: &WebviewWindow) {
     let _ = window.set_decorations(false);
     let _ = window.set_shadow(true);
 
     if let Ok(hwnd) = window.hwnd() {
         unsafe {
-            let raw = hwnd.0 as *mut c_void;
-            let style = GetWindowLongPtrW(raw, GWL_STYLE);
-            let ex_style = GetWindowLongPtrW(raw, GWL_EXSTYLE);
-            let next_style = style
-                & !(WS_CAPTION
-                    | WS_BORDER
-                    | WS_DLGFRAME
-                    | WS_SYSMENU
-                    | WS_MINIMIZEBOX
-                    | WS_MAXIMIZEBOX);
-            let next_ex_style = ex_style
-                & !(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE | WS_EX_WINDOWEDGE);
-            let _ = SetWindowLongPtrW(raw, GWL_STYLE, next_style);
-            let _ = SetWindowLongPtrW(raw, GWL_EXSTYLE, next_ex_style);
-            let _ = SetWindowPos(
-                raw,
-                std::ptr::null_mut(),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-            );
-            let corner_pref = DWMWCP_ROUND;
-            let _ = DwmSetWindowAttribute(
-                raw,
-                DWMWA_WINDOW_CORNER_PREFERENCE,
-                &corner_pref as *const u32 as *const c_void,
-                std::mem::size_of::<u32>() as u32,
-            );
+            apply_native_main_window_chrome_to_hwnd(hwnd.0 as *mut std::ffi::c_void);
         }
     }
 }
@@ -1368,6 +1587,7 @@ pub(crate) fn show_floating_window(window: &WebviewWindow, focus: bool) {
     let app = window.app_handle().clone();
     let app_for_main_thread = app.clone();
     let window_label = window.label().to_owned();
+    let visibility_generation = record_floating_auxiliary_visibility_intent(&window_label, true);
     #[cfg(target_os = "windows")]
     let floating_label: Option<&'static str> = match window_label.as_str() {
         FLOATING_WINDOW_LABEL => Some(FLOATING_WINDOW_LABEL),
@@ -1379,6 +1599,21 @@ pub(crate) fn show_floating_window(window: &WebviewWindow, focus: bool) {
     // Tauri 会把 async worker 的窗口命令排入事件循环, 因此必须在主线程完成完整显示序列,
     // 才能保证 Win32 修复真实发生在 show/unminimize 之后.
     let _ = app.run_on_main_thread(move || {
+        if let Some(captured_generation) = visibility_generation {
+            let Some((current_generation, requested_visible)) =
+                read_floating_auxiliary_visibility_intent(&window_label)
+            else {
+                return;
+            };
+            if !should_apply_floating_auxiliary_show(
+                &window_label,
+                current_generation,
+                captured_generation,
+                requested_visible,
+            ) {
+                return;
+            }
+        }
         let Some(window) = app_for_main_thread.get_webview_window(&window_label) else {
             return;
         };
@@ -1417,10 +1652,27 @@ fn emit_floating_notification_lifecycle_pause(app: &AppHandle, reason: &'static 
     );
 }
 
+/// 同步原生悬浮面板显隐状态到悬浮球和面板 WebView，避免两者状态分叉。
+fn emit_floating_native_panel_visibility(app: &AppHandle, visible: bool) {
+    let payload = FloatingNativePanelVisibilityPayload { visible };
+    let _ = app.emit_to(
+        FLOATING_WINDOW_LABEL,
+        "floating-native-panel-visibility",
+        payload.clone(),
+    );
+    let _ = app.emit_to(
+        FLOATING_PANEL_WINDOW_LABEL,
+        "floating-native-panel-visibility",
+        payload,
+    );
+}
+
 pub(crate) fn hide_floating_auxiliary_window(app: &AppHandle, label: &str) {
     if !is_floating_auxiliary_window_label(label) {
         return;
     }
+    // 先使已入队的 show 失效，再隐藏窗口，避免旧任务在 hide 之后重新显示空壳窗口。
+    let _ = record_floating_auxiliary_visibility_intent(label, false);
     #[cfg(target_os = "windows")]
     invalidate_floating_taskbar_style_recheck(label);
     if let Some(window) = app.get_webview_window(label) {
@@ -1447,6 +1699,11 @@ fn is_window_visible(app: &AppHandle, label: &str) -> bool {
     app.get_webview_window(label)
         .and_then(|window| window.is_visible().ok())
         .unwrap_or(false)
+}
+
+/// 返回面板窗口的真实原生可见状态，供独立 WebView 在事件漏收后回读。
+pub(crate) fn is_floating_panel_visible(app: &AppHandle) -> bool {
+    is_window_visible(app, FLOATING_PANEL_WINDOW_LABEL)
 }
 
 fn clamp_i32(value: i32, min: i32, max: i32) -> i32 {
@@ -1493,6 +1750,18 @@ fn resolve_floating_dock_for_size(
         "left"
     } else {
         "right"
+    }
+}
+
+fn resolve_floating_notification_dock_for_size(
+    work_area_x: i32,
+    work_area_width: i32,
+    orb_x: i32,
+    orb_width: i32,
+) -> FloatingNotificationDock {
+    match resolve_floating_dock_for_size(work_area_x, work_area_width, orb_x, orb_width) {
+        "left" => FloatingNotificationDock::Left,
+        _ => FloatingNotificationDock::Right,
     }
 }
 
@@ -1640,21 +1909,7 @@ fn resolve_floating_notification_visible_items(
     items: &[FloatingNotificationPayload],
     layout: FloatingNotificationLayout,
 ) -> Vec<&FloatingNotificationPayload> {
-    let mut visible = Vec::new();
-    let mut usage_visible = false;
-    for item in items {
-        if visible.len() >= layout.max_visible {
-            break;
-        }
-        if item.channel == FloatingNotificationChannel::Usage {
-            if usage_visible {
-                continue;
-            }
-            usage_visible = true;
-        }
-        visible.push(item);
-    }
-    visible
+    items.iter().take(layout.max_visible).collect()
 }
 
 fn resolve_floating_notification_height_for_items(
@@ -1688,6 +1943,17 @@ fn resolve_floating_notification_window_height(
 
     let available_height = (work_area_height - FLOATING_SAFE_MARGIN * 2).max(layout.min_height());
     FLOATING_NOTIFICATION_DETAIL_HEIGHT.min(available_height)
+}
+
+fn resolve_floating_notification_physical_size(
+    logical_width: i32,
+    logical_height: i32,
+    scale_factor: f64,
+) -> (i32, i32) {
+    (
+        logical_to_physical(logical_width, scale_factor),
+        logical_to_physical(logical_height, scale_factor),
+    )
 }
 
 fn compute_floating_notification_position_for_geometry(
@@ -1820,6 +2086,165 @@ fn resolve_floating_notification_hit_regions_for_items(
         .collect()
 }
 
+/** 动效期间合并卡片间隙，避免 SetWindowRgn 裁断正在补位的卡片。 */
+fn resolve_floating_notification_regions_for_motion(
+    item_heights: &[i32],
+    detail_open: bool,
+    width: i32,
+    height: i32,
+    layout: FloatingNotificationLayout,
+    motion_active: bool,
+) -> Vec<FloatingNotificationHitRegion> {
+    let regions = resolve_floating_notification_hit_regions_for_items(
+        item_heights,
+        detail_open,
+        width,
+        height,
+        layout,
+    );
+    if detail_open || !motion_active || regions.len() < 2 {
+        return regions;
+    }
+
+    let top = regions.iter().map(|region| region.y).min().unwrap_or(0);
+    let bottom = regions
+        .iter()
+        .map(|region| region.y + region.height)
+        .max()
+        .unwrap_or(height);
+    let first = regions[0];
+    vec![FloatingNotificationHitRegion {
+        x: first.x,
+        y: top,
+        width: first.width,
+        height: (bottom - top).max(1),
+        corner_radius: first.corner_radius,
+    }]
+}
+
+/** 将逻辑卡片区域转换为 Win32 Region 边界，并保留最右列与最下行边框像素。 */
+fn resolve_floating_notification_native_round_rect(
+    region: FloatingNotificationHitRegion,
+    logical_width: i32,
+    logical_height: i32,
+    client_width: i32,
+    client_height: i32,
+) -> FloatingNotificationNativeRoundRect {
+    let client_width = client_width.max(1);
+    let client_height = client_height.max(1);
+    let scale_x = client_width as f64 / logical_width.max(1) as f64;
+    let scale_y = client_height as f64 / logical_height.max(1) as f64;
+    let scaled_right = ((region.x + region.width) as f64 * scale_x).round() as i32;
+    let scaled_bottom = ((region.y + region.height) as f64 * scale_y).round() as i32;
+
+    FloatingNotificationNativeRoundRect {
+        left: (region.x as f64 * scale_x).round() as i32,
+        top: (region.y as f64 * scale_y).round() as i32,
+        right: scaled_right.saturating_add(1).min(client_width),
+        bottom: scaled_bottom.saturating_add(1).min(client_height),
+        radius_x: ((region.corner_radius * 2) as f64 * scale_x)
+            .round()
+            .max(1.0) as i32,
+        radius_y: ((region.corner_radius * 2) as f64 * scale_y)
+            .round()
+            .max(1.0) as i32,
+    }
+}
+
+/** 将通知窗口的位置和尺寸放在同一个 Win32 提交中，避免透明窗口暴露中间几何帧。 */
+#[cfg(target_os = "windows")]
+fn try_set_floating_notification_window_bounds(
+    window: &WebviewWindow,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> bool {
+    use std::ffi::c_void;
+
+    const SWP_NOZORDER: u32 = 0x0004;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+
+    unsafe extern "system" {
+        fn GetWindowRect(hwnd: *mut c_void, rect: *mut NativeRect) -> i32;
+        fn SetWindowPos(
+            hwnd: *mut c_void,
+            hwnd_insert_after: *mut c_void,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            flags: u32,
+        ) -> i32;
+    }
+
+    let Ok(hwnd) = window.hwnd() else {
+        return false;
+    };
+    let width = width.max(1);
+    let height = height.max(1);
+
+    unsafe {
+        let raw = hwnd.0 as *mut c_void;
+        let mut current = NativeRect {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        if GetWindowRect(raw, &mut current) == 0 {
+            return false;
+        }
+        if current.left == x
+            && current.top == y
+            && current.right - current.left == width
+            && current.bottom - current.top == height
+        {
+            return true;
+        }
+
+        SetWindowPos(
+            raw,
+            std::ptr::null_mut(),
+            x,
+            y,
+            width,
+            height,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        ) != 0
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn try_set_floating_notification_window_bounds(
+    _window: &WebviewWindow,
+    _x: i32,
+    _y: i32,
+    _width: i32,
+    _height: i32,
+) -> bool {
+    false
+}
+
+fn set_floating_notification_window_bounds(
+    window: &WebviewWindow,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) {
+    if try_set_floating_notification_window_bounds(window, x, y, width, height) {
+        return;
+    }
+
+    let width = width.max(1) as u32;
+    let height = height.max(1) as u32;
+    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
+        width, height,
+    )));
+    let _ = window.set_position(PhysicalPosition::new(x, y));
+}
+
 #[cfg(target_os = "windows")]
 fn configure_floating_notification_hit_region(
     window: &WebviewWindow,
@@ -1828,6 +2253,7 @@ fn configure_floating_notification_hit_region(
     logical_width: i32,
     logical_height: i32,
     layout: FloatingNotificationLayout,
+    motion_active: bool,
 ) {
     use std::ffi::c_void;
 
@@ -1871,27 +2297,34 @@ fn configure_floating_notification_hit_region(
 
         let client_width = (client_rect.right - client_rect.left).max(1);
         let client_height = (client_rect.bottom - client_rect.top).max(1);
-        let scale_x = client_width as f64 / logical_width.max(1) as f64;
-        let scale_y = client_height as f64 / logical_height.max(1) as f64;
-        let regions = resolve_floating_notification_hit_regions_for_items(
+        let regions = resolve_floating_notification_regions_for_motion(
             item_heights,
             detail_open,
             logical_width,
             logical_height,
             layout,
+            motion_active,
         );
         let Some(first) = regions.first() else {
             return;
         };
 
         let to_native_region = |region: FloatingNotificationHitRegion| {
-            let left = (region.x as f64 * scale_x).round() as i32;
-            let top = (region.y as f64 * scale_y).round() as i32;
-            let right = ((region.x + region.width) as f64 * scale_x).round() as i32;
-            let bottom = ((region.y + region.height) as f64 * scale_y).round() as i32;
-            let radius_x = ((region.corner_radius * 2) as f64 * scale_x).round() as i32;
-            let radius_y = ((region.corner_radius * 2) as f64 * scale_y).round() as i32;
-            CreateRoundRectRgn(left, top, right, bottom, radius_x.max(1), radius_y.max(1))
+            let bounds = resolve_floating_notification_native_round_rect(
+                region,
+                logical_width,
+                logical_height,
+                client_width,
+                client_height,
+            );
+            CreateRoundRectRgn(
+                bounds.left,
+                bounds.top,
+                bounds.right,
+                bounds.bottom,
+                bounds.radius_x,
+                bounds.radius_y,
+            )
         };
 
         let combined = to_native_region(*first);
@@ -1908,7 +2341,7 @@ fn configure_floating_notification_hit_region(
             let _ = DeleteObject(next);
         }
 
-        if SetWindowRgn(raw, combined, 1) == 0 {
+        if SetWindowRgn(raw, combined, 0) == 0 {
             let _ = DeleteObject(combined);
         }
     }
@@ -1922,21 +2355,20 @@ fn configure_floating_notification_hit_region(
     _logical_width: i32,
     _logical_height: i32,
     _layout: FloatingNotificationLayout,
+    _motion_active: bool,
 ) {
 }
 
-fn open_main_window_from_native(app: &AppHandle) {
+pub(crate) fn open_main_window_from_native(app: &AppHandle, navigation: &str) {
     let ctx = app.state::<application::AppContext>();
     if let Ok(prefs) = application::desktop_ui_service::set_launch_mode(
         &ctx,
         crate::contracts::AppLaunchMode::Main,
     ) {
         mark_main_window_revealed();
+        show_main_window_with_controlled_state_restore(app, "原生通知打开主窗口");
         if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-            let _ = window.show();
-            let _ = window.unminimize();
-            let _ = window.set_focus();
-            let _ = window.emit("open-nav", "overview");
+            let _ = window.emit("open-nav", navigation);
         }
         if prefs.open_floating_in_main_mode {
             if let Some(window) = app.get_webview_window(FLOATING_WINDOW_LABEL) {
@@ -1953,328 +2385,354 @@ fn open_main_window_from_native(app: &AppHandle) {
 }
 
 #[cfg(target_os = "windows")]
-fn start_floating_native_poller(shared: Arc<Mutex<FloatingNativeState>>) {
-    tauri::async_runtime::spawn(async move {
-        loop {
-            let (app, panel_visible, dragging, pointer_near_orb) = {
-                let Ok(state) = shared.lock() else {
-                    tokio::time::sleep(Duration::from_millis(FLOATING_NATIVE_HIDDEN_POLL_MS)).await;
-                    continue;
-                };
-                (
-                    state.app.clone(),
-                    state.panel_visible,
-                    state.pointer_down || state.drag_started,
-                    state.pointer_near_orb,
-                )
-            };
-            let orb_visible = is_window_visible(&app, FLOATING_WINDOW_LABEL);
-            tokio::time::sleep(Duration::from_millis(
-                resolve_floating_native_poll_ms_with_pointer_near_orb(
-                    orb_visible,
-                    panel_visible,
-                    dragging,
-                    pointer_near_orb,
-                ),
-            ))
-            .await;
+fn poll_floating_native_tick(shared: Arc<Mutex<FloatingNativeState>>) {
+    let (
+        app,
+        orb_hwnd,
+        panel_hwnd,
+        cached_panel_visible,
+        cached_pointer_near_orb,
+        last_geometry_cursor,
+        last_orb_hit,
+        last_orb_drag_hit,
+        last_panel_hit,
+        last_geometry_sample_at,
+    ) = {
+        let Ok(mut state) = shared.lock() else {
+            return;
+        };
+        state.poll_tick_pending = false;
+        (
+            state.app.clone(),
+            state.orb_hwnd,
+            state.panel_hwnd,
+            state.panel_visible,
+            state.pointer_near_orb,
+            state.last_geometry_cursor,
+            state.last_orb_hit,
+            state.last_orb_drag_hit,
+            state.last_panel_hit,
+            state.last_geometry_sample_at,
+        )
+    };
+    let orb_visible = native_window_visible(orb_hwnd).unwrap_or(false);
 
-            let (
-                app,
-                orb_hwnd,
-                panel_hwnd,
-                cached_panel_visible,
-                cached_pointer_near_orb,
-                last_geometry_cursor,
-                last_orb_hit,
-                last_orb_drag_hit,
-                last_panel_hit,
-                last_geometry_sample_at,
-            ) = {
-                let Ok(state) = shared.lock() else {
-                    continue;
-                };
-                (
-                    state.app.clone(),
-                    state.orb_hwnd,
-                    state.panel_hwnd,
-                    state.panel_visible,
-                    state.pointer_near_orb,
-                    state.last_geometry_cursor,
-                    state.last_orb_hit,
-                    state.last_orb_drag_hit,
-                    state.last_panel_hit,
-                    state.last_geometry_sample_at,
-                )
-            };
+    if orb_hwnd == 0 {
+        return;
+    }
 
-            if orb_hwnd == 0 {
-                continue;
-            }
+    // Tauri 的窗口状态可能在外部 hide/show 后短暂滞后。轮询器以 HWND
+    // 的真实可见性校正缓存，避免非固定菜单失去自动收起和点击切换能力。
+    let panel_visible = resolve_floating_native_panel_visible(
+        cached_panel_visible,
+        native_window_visible(panel_hwnd),
+    );
+    let panel_visibility_drifted = panel_visible != cached_panel_visible;
+    if panel_visibility_drifted {
+        if let Ok(mut state) = shared.lock() {
+            state.panel_visible = panel_visible;
+            state.hide_since = None;
+            state.hover_since = None;
+            state.last_geometry_sample_at = None;
+        }
 
-            // Tauri 的窗口状态可能在外部 hide/show 后短暂滞后。轮询器以 HWND
-            // 的真实可见性校正缓存，避免非固定菜单失去自动收起和点击切换能力。
-            let panel_visible = resolve_floating_native_panel_visible(
-                cached_panel_visible,
-                native_window_visible(panel_hwnd),
-            );
-            let panel_visibility_drifted = panel_visible != cached_panel_visible;
-            if panel_visibility_drifted {
-                if let Ok(mut state) = shared.lock() {
-                    state.panel_visible = panel_visible;
+        emit_floating_native_panel_visibility(&app, panel_visible);
+        let _ = app.emit_to(
+            FLOATING_NOTIFICATION_WINDOW_LABEL,
+            "floating-notification-panel-visibility",
+            FloatingNativePanelVisibilityPayload {
+                visible: panel_visible,
+            },
+        );
+        if panel_visible {
+            hide_floating_notification_window(&app);
+        } else if orb_visible {
+            let _ = sync_floating_notification_window(&app);
+        }
+    }
+
+    if !orb_visible && !panel_visible {
+        if let Ok(mut state) = shared.lock() {
+            state.pointer_near_orb = false;
+        }
+        return;
+    }
+
+    let mut cursor = NativePoint { x: 0, y: 0 };
+    unsafe {
+        let _ = GetCursorPos(&mut cursor);
+    }
+    let keep_panel_visible = read_cached_keep_panel_visible(&shared);
+    let left_down = unsafe { (GetAsyncKeyState(0x01) as u16 & 0x8000) != 0 };
+    let cursor_position = (cursor.x, cursor.y);
+    let should_sample_geometry = should_sample_floating_native_geometry(
+        cached_pointer_near_orb,
+        left_down,
+        last_geometry_cursor,
+        cursor_position,
+        last_geometry_sample_at.map(|sampled_at| sampled_at.elapsed()),
+    );
+    let (orb_hit, orb_drag_hit, panel_hit) = if should_sample_geometry {
+        // Reuse one native geometry snapshot per window for all hit checks in this tick.
+        let orb_rect = get_window_rect(orb_hwnd);
+        let panel_rect = get_window_rect(panel_hwnd);
+        let (orb_hit, orb_drag_hit) = orb_rect
+            .as_ref()
+            .map(|rect| resolve_floating_orb_hit_zones(&app, rect, cursor.x, cursor.y))
+            .unwrap_or((false, false));
+        let panel_hit = panel_rect
+            .as_ref()
+            .map(|rect| point_inside_native_rect(rect, cursor.x, cursor.y))
+            .unwrap_or(false);
+        (orb_hit, orb_drag_hit, panel_hit)
+    } else {
+        (last_orb_hit, last_orb_drag_hit, last_panel_hit)
+    };
+
+    let should_begin_pointer_session = shared
+        .lock()
+        .map(|state| left_down && !state.last_left_down && !state.pointer_down && orb_drag_hit)
+        .unwrap_or(false);
+    if should_begin_pointer_session {
+        begin_floating_native_pointer_session(&shared, &cursor);
+    }
+
+    let mut hide_panel = false;
+    let mut show_panel = false;
+    let mut toggle_panel = false;
+    let mut snap_orb = false;
+    let mut move_to: Option<(i32, i32)> = None;
+    let mut reposition_notification = false;
+    let mut lifecycle_drag_started = false;
+    let mut lifecycle_drag_finished = false;
+    let mut restore_drag_surfaces: Option<FloatingDragSurfaceSnapshot> = None;
+
+    {
+        let Ok(mut state) = shared.lock() else {
+            return;
+        };
+
+        state.pointer_near_orb = orb_hit;
+        if should_sample_geometry {
+            state.last_geometry_cursor = Some(cursor_position);
+            state.last_orb_hit = orb_hit;
+            state.last_orb_drag_hit = orb_drag_hit;
+            state.last_panel_hit = panel_hit;
+            state.last_geometry_sample_at = Some(Instant::now());
+        }
+
+        if keep_panel_visible {
+            state.hide_since = None;
+        } else if orb_hit || panel_hit {
+            state.hide_since = None;
+        } else if state.panel_visible && !state.pointer_down {
+            match state.hide_since {
+                Some(since) if since.elapsed() >= Duration::from_millis(260) => {
+                    hide_panel = true;
                     state.hide_since = None;
-                    state.hover_since = None;
-                    state.last_geometry_sample_at = None;
                 }
-
-                let _ = app.emit_to(
-                    FLOATING_WINDOW_LABEL,
-                    "floating-native-panel-visibility",
-                    FloatingNativePanelVisibilityPayload {
-                        visible: panel_visible,
-                    },
-                );
-                let _ = app.emit_to(
-                    FLOATING_NOTIFICATION_WINDOW_LABEL,
-                    "floating-notification-panel-visibility",
-                    FloatingNativePanelVisibilityPayload {
-                        visible: panel_visible,
-                    },
-                );
-                if panel_visible {
-                    hide_floating_notification_window(&app);
-                } else if orb_visible {
-                    let _ = sync_floating_notification_window(&app);
+                Some(_) => {}
+                None => {
+                    state.hide_since = Some(Instant::now());
                 }
             }
+        }
 
-            if !orb_visible && !panel_visible {
-                if let Ok(mut state) = shared.lock() {
-                    state.pointer_near_orb = false;
-                }
-                continue;
-            }
+        let hover_suppressed = state
+            .suppress_hover_until
+            .map(|until| until > Instant::now())
+            .unwrap_or(false);
 
-            let mut cursor = NativePoint { x: 0, y: 0 };
-            unsafe {
-                let _ = GetCursorPos(&mut cursor);
+        if keep_panel_visible {
+            state.hover_reentry_required = false;
+            state.hover_since = None;
+            if should_auto_show_floating_panel_for_keep_visible(
+                keep_panel_visible,
+                state.pointer_down,
+                state.drag_started,
+                state.panel_visible,
+                hover_suppressed,
+            ) {
+                show_panel = true;
             }
-            let keep_panel_visible = read_cached_keep_panel_visible(&shared);
-            let left_down = unsafe { (GetAsyncKeyState(0x01) as u16 & 0x8000) != 0 };
-            let cursor_position = (cursor.x, cursor.y);
-            let should_sample_geometry = should_sample_floating_native_geometry(
-                cached_pointer_near_orb,
-                left_down,
-                last_geometry_cursor,
-                cursor_position,
-                last_geometry_sample_at.map(|sampled_at| sampled_at.elapsed()),
-            );
-            let (orb_hit, orb_drag_hit, panel_hit) = if should_sample_geometry {
-                // Reuse one native geometry snapshot per window for all hit checks in this tick.
-                let orb_rect = get_window_rect(orb_hwnd);
-                let panel_rect = get_window_rect(panel_hwnd);
-                let (orb_hit, orb_drag_hit) = orb_rect
-                    .as_ref()
-                    .map(|rect| resolve_floating_orb_hit_zones(&app, rect, cursor.x, cursor.y))
-                    .unwrap_or((false, false));
-                let panel_hit = panel_rect
-                    .as_ref()
-                    .map(|rect| point_inside_native_rect(rect, cursor.x, cursor.y))
-                    .unwrap_or(false);
-                (orb_hit, orb_drag_hit, panel_hit)
+        } else if orb_hit && !state.pointer_down {
+            if hover_suppressed || state.hover_reentry_required {
+                state.hover_since = None;
             } else {
-                (last_orb_hit, last_orb_drag_hit, last_panel_hit)
-            };
-
-            let should_begin_pointer_session = shared
-                .lock()
-                .map(|state| {
-                    left_down && !state.last_left_down && !state.pointer_down && orb_drag_hit
-                })
-                .unwrap_or(false);
-            if should_begin_pointer_session {
-                begin_floating_native_pointer_session(&shared, &cursor);
-            }
-
-            let mut hide_panel = false;
-            let mut show_panel = false;
-            let mut toggle_panel = false;
-            let mut snap_orb = false;
-            let mut move_to: Option<(i32, i32)> = None;
-            let mut reposition_notification = false;
-            let mut lifecycle_drag_started = false;
-            let mut lifecycle_drag_finished = false;
-            let mut restore_drag_surfaces: Option<FloatingDragSurfaceSnapshot> = None;
-
-            {
-                let Ok(mut state) = shared.lock() else {
-                    continue;
-                };
-
-                state.pointer_near_orb = orb_hit;
-                if should_sample_geometry {
-                    state.last_geometry_cursor = Some(cursor_position);
-                    state.last_orb_hit = orb_hit;
-                    state.last_orb_drag_hit = orb_drag_hit;
-                    state.last_panel_hit = panel_hit;
-                    state.last_geometry_sample_at = Some(Instant::now());
-                }
-
-                if keep_panel_visible {
-                    state.hide_since = None;
-                } else if orb_hit || panel_hit {
-                    state.hide_since = None;
-                } else if state.panel_visible && !state.pointer_down {
-                    match state.hide_since {
-                        Some(since) if since.elapsed() >= Duration::from_millis(260) => {
-                            hide_panel = true;
-                            state.hide_since = None;
-                        }
-                        Some(_) => {}
-                        None => {
-                            state.hide_since = Some(Instant::now());
-                        }
-                    }
-                }
-
-                let hover_suppressed = state
-                    .suppress_hover_until
-                    .map(|until| until > Instant::now())
-                    .unwrap_or(false);
-
-                if keep_panel_visible {
-                    state.hover_reentry_required = false;
-                    state.hover_since = None;
-                    if should_auto_show_floating_panel_for_keep_visible(
-                        keep_panel_visible,
-                        state.pointer_down,
-                        state.drag_started,
-                        state.panel_visible,
-                        hover_suppressed,
-                    ) {
+                match state.hover_since {
+                    Some(since)
+                        if !state.panel_visible
+                            && since.elapsed() >= Duration::from_millis(240) =>
+                    {
                         show_panel = true;
                     }
-                } else if orb_hit && !state.pointer_down {
-                    if hover_suppressed || state.hover_reentry_required {
-                        state.hover_since = None;
-                    } else {
-                        match state.hover_since {
-                            Some(since)
-                                if !state.panel_visible
-                                    && since.elapsed() >= Duration::from_millis(240) =>
-                            {
-                                show_panel = true;
-                            }
-                            Some(_) => {}
-                            None => {
-                                state.hover_since = Some(Instant::now());
-                            }
-                        }
+                    Some(_) => {}
+                    None => {
+                        state.hover_since = Some(Instant::now());
                     }
-                } else if !panel_hit {
-                    state.hover_reentry_required = false;
-                    state.hover_since = None;
                 }
+            }
+        } else if !panel_hit {
+            state.hover_reentry_required = false;
+            state.hover_since = None;
+        }
 
-                if left_down && state.pointer_down {
-                    let delta_x = cursor.x - state.down_x;
-                    let delta_y = cursor.y - state.down_y;
-                    if !state.drag_started
-                        && floating_drag_threshold_exceeded(delta_x, delta_y, state.drag_threshold)
-                    {
-                        state.drag_started = true;
-                        state.drag_surfaces_suppressed = true;
-                        lifecycle_drag_started = true;
-                    }
-                    if state.drag_started {
-                        state.drag_current_x = state.orb_origin_x + delta_x;
-                        state.drag_current_y = state.orb_origin_y + delta_y;
-                        let next_position = (state.drag_current_x, state.drag_current_y);
-                        if should_apply_floating_native_position(
-                            state.last_applied_orb_position,
-                            next_position,
-                            false,
-                        ) {
-                            state.last_applied_orb_position = Some(next_position);
-                            move_to = Some(next_position);
-                        }
-                    }
-                } else if !left_down && state.pointer_down {
-                    let dragged = state.drag_started;
-                    state.pointer_down = false;
-                    state.drag_started = false;
-                    if dragged {
-                        lifecycle_drag_finished = true;
-                        restore_drag_surfaces = state.drag_surface_restore;
-                        state.suppress_hover_until =
-                            Some(Instant::now() + Duration::from_millis(400));
-                        snap_orb = true;
-                    } else if !keep_panel_visible {
-                        state.suppress_hover_until =
-                            Some(Instant::now() + Duration::from_millis(260));
-                        state.hover_reentry_required = state.panel_visible;
-                        toggle_panel = true;
-                    }
+        if left_down && state.pointer_down {
+            let delta_x = cursor.x - state.down_x;
+            let delta_y = cursor.y - state.down_y;
+            if !state.drag_started
+                && floating_drag_threshold_exceeded(delta_x, delta_y, state.drag_threshold)
+            {
+                state.drag_started = true;
+                state.drag_surfaces_suppressed = true;
+                lifecycle_drag_started = true;
+            }
+            if state.drag_started {
+                state.drag_current_x = state.orb_origin_x + delta_x;
+                state.drag_current_y = state.orb_origin_y + delta_y;
+                let next_position = (state.drag_current_x, state.drag_current_y);
+                if should_apply_floating_native_position(
+                    state.last_applied_orb_position,
+                    next_position,
+                    false,
+                ) {
+                    state.last_applied_orb_position = Some(next_position);
+                    move_to = Some(next_position);
                 }
+            }
+        } else if !left_down && state.pointer_down {
+            let dragged = state.drag_started;
+            state.pointer_down = false;
+            state.drag_started = false;
+            if dragged {
+                lifecycle_drag_finished = true;
+                restore_drag_surfaces = state.drag_surface_restore;
+                state.suppress_hover_until = Some(Instant::now() + Duration::from_millis(400));
+                snap_orb = true;
+            } else if !keep_panel_visible {
+                state.suppress_hover_until = Some(Instant::now() + Duration::from_millis(260));
+                state.hover_reentry_required = state.panel_visible;
+                toggle_panel = true;
+            }
+        }
 
-                state.last_left_down = left_down;
-            }
+        state.last_left_down = left_down;
+    }
 
-            if lifecycle_drag_started {
-                let snapshot = capture_floating_drag_surface_snapshot(
-                    panel_visible,
-                    is_window_visible(&app, FLOATING_NOTIFICATION_WINDOW_LABEL),
-                    FLOATING_NOTIFICATION_DETAIL_OPEN.load(Ordering::Relaxed),
-                );
-                if let Ok(mut state) = shared.lock() {
-                    if state.drag_started && state.drag_surfaces_suppressed {
-                        state.drag_surface_restore = Some(snapshot);
-                    }
-                }
-                emit_floating_notification_lifecycle_pause(&app, "floating-panel-drag", true);
-                hide_floating_panel_for_native_drag(&shared);
-                hide_floating_notification_window(&app);
+    if lifecycle_drag_started {
+        let snapshot = capture_floating_drag_surface_snapshot(
+            panel_visible,
+            is_window_visible(&app, FLOATING_NOTIFICATION_WINDOW_LABEL),
+            FLOATING_NOTIFICATION_DETAIL_OPEN.load(Ordering::Relaxed),
+        );
+        if let Ok(mut state) = shared.lock() {
+            if state.drag_started && state.drag_surfaces_suppressed {
+                state.drag_surface_restore = Some(snapshot);
             }
-            if hide_panel {
-                hide_floating_panel_native(&shared);
-            }
-            if let Some((x, y)) = move_to {
-                let orb_hwnd = {
-                    let Ok(state) = shared.lock() else {
-                        continue;
-                    };
-                    state.orb_hwnd
-                };
-                if orb_hwnd != 0 {
-                    move_window_by_hwnd(orb_hwnd, x, y);
-                }
-            }
-            if snap_orb {
-                snap_orb_to_edge_native(&shared);
-            }
-            if toggle_panel {
-                toggle_floating_panel_native(&shared);
-                reposition_notification = true;
-            } else if show_panel {
-                show_floating_panel_native(&shared);
-                reposition_notification = true;
-            }
-            if reposition_notification {
-                reposition_floating_notification_window(&app);
-            }
-            if lifecycle_drag_finished {
-                if let Some(snapshot) = restore_drag_surfaces {
-                    restore_floating_drag_surfaces(&shared, snapshot);
-                }
-                let release_native_drag_pause = if let Ok(mut state) = shared.lock() {
-                    state.drag_surface_restore = None;
-                    take_floating_native_drag_pause_release(&mut state.drag_surfaces_suppressed)
-                } else {
-                    false
-                };
-                if release_native_drag_pause {
-                    emit_floating_notification_lifecycle_pause(&app, "floating-panel-drag", false);
-                }
+        }
+        emit_floating_notification_lifecycle_pause(&app, "floating-panel-drag", true);
+        hide_floating_panel_for_native_drag(&shared);
+        hide_floating_notification_window(&app);
+    }
+    if hide_panel {
+        hide_floating_panel_native(&shared);
+    }
+    if let Some((x, y)) = move_to {
+        let orb_hwnd = {
+            let Ok(state) = shared.lock() else {
+                return;
+            };
+            state.orb_hwnd
+        };
+        if orb_hwnd != 0 {
+            move_window_by_hwnd(orb_hwnd, x, y);
+        }
+    }
+    if snap_orb {
+        snap_orb_to_edge_native(&shared);
+    }
+    if toggle_panel {
+        toggle_floating_panel_native(&shared);
+        reposition_notification = true;
+    } else if show_panel {
+        show_floating_panel_native(&shared);
+        reposition_notification = true;
+    }
+    if reposition_notification {
+        reposition_floating_notification_window(&app);
+    }
+    if lifecycle_drag_finished {
+        if let Some(snapshot) = restore_drag_surfaces {
+            restore_floating_drag_surfaces(&shared, snapshot);
+        }
+        let release_native_drag_pause = if let Ok(mut state) = shared.lock() {
+            state.drag_surface_restore = None;
+            take_floating_native_drag_pause_release(&mut state.drag_surfaces_suppressed)
+        } else {
+            false
+        };
+        if release_native_drag_pause {
+            emit_floating_notification_lifecycle_pause(&app, "floating-panel-drag", false);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn schedule_floating_native_poll_tick(shared: &Arc<Mutex<FloatingNativeState>>) -> bool {
+    let tick_shared = Arc::clone(shared);
+    let dispatch_result = {
+        let Ok(mut state) = shared.lock() else {
+            return true;
+        };
+        if !should_schedule_floating_native_poll_tick(state.poll_tick_pending) {
+            return true;
+        }
+        state.poll_tick_pending = true;
+        // Wry 只允许后台线程经 event-loop proxy 投递任务，不能在这里 clone AppHandle。
+        state
+            .app
+            .run_on_main_thread(move || poll_floating_native_tick(tick_shared))
+    };
+
+    if let Err(error) = dispatch_result {
+        if let Ok(mut state) = shared.lock() {
+            state.poll_tick_pending = false;
+        }
+        log::warn!("floating native poller stopped because main-thread dispatch failed: {error}");
+        return false;
+    }
+    true
+}
+
+#[cfg(target_os = "windows")]
+fn start_floating_native_poller(shared: Arc<Mutex<FloatingNativeState>>) {
+    log::info!("floating native poller uses main-thread Tauri dispatch");
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let Some((orb_hwnd, panel_visible, dragging, pointer_near_orb)) =
+                shared.lock().ok().map(|state| {
+                    (
+                        state.orb_hwnd,
+                        state.panel_visible,
+                        state.pointer_down || state.drag_started,
+                        state.pointer_near_orb,
+                    )
+                })
+            else {
+                tokio::time::sleep(Duration::from_millis(FLOATING_NATIVE_HIDDEN_POLL_MS)).await;
+                continue;
+            };
+            let orb_visible = native_window_visible(orb_hwnd).unwrap_or(false);
+            let poll_delay_ms = resolve_floating_native_poll_ms_with_pointer_near_orb(
+                orb_visible,
+                panel_visible,
+                dragging,
+                pointer_near_orb,
+            );
+            tokio::time::sleep(Duration::from_millis(poll_delay_ms)).await;
+
+            if !schedule_floating_native_poll_tick(&shared) {
+                return;
             }
         }
     });
@@ -2291,6 +2749,39 @@ fn show_floating_panel_native(shared: &Arc<Mutex<FloatingNativeState>>) {
 #[cfg(target_os = "windows")]
 fn show_floating_panel_after_native_drag(shared: &Arc<Mutex<FloatingNativeState>>) {
     show_floating_panel_native_with_drag_restore(shared, true);
+}
+
+#[cfg(target_os = "windows")]
+fn schedule_floating_panel_sync_replay(
+    app: AppHandle,
+    shared: Arc<Mutex<FloatingNativeState>>,
+    dock: &'static str,
+    x: i32,
+    y: i32,
+) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(FLOATING_PANEL_SYNC_REPLAY_DELAY_MS)).await;
+        let active_panel = {
+            let Ok(state) = shared.lock() else {
+                return;
+            };
+            if !should_replay_floating_panel_sync(state.panel_visible) {
+                return;
+            }
+            state.active_panel
+        };
+        let _ = app.emit_to(
+            FLOATING_PANEL_WINDOW_LABEL,
+            "floating-panel-sync",
+            FloatingPanelSyncPayload {
+                dock,
+                x,
+                y,
+                menu_visible: true,
+                active_panel,
+            },
+        );
+    });
 }
 
 #[cfg(target_os = "windows")]
@@ -2393,15 +2884,13 @@ fn show_floating_panel_native_with_drag_restore(
             },
         },
     );
-    let _ = app.emit_to(
-        FLOATING_WINDOW_LABEL,
-        "floating-native-panel-visibility",
-        FloatingNativePanelVisibilityPayload { visible: true },
-    );
+    emit_floating_native_panel_visibility(&app, true);
 
     if let Ok(mut state) = shared.lock() {
         state.panel_visible = true;
     }
+    // WebView 可能在首次事件后才完成监听注册；仅在窗口仍可见时重放最新状态。
+    schedule_floating_panel_sync_replay(app, Arc::clone(shared), dock, panel_x, panel_y);
 }
 
 #[cfg(target_os = "windows")]
@@ -2417,11 +2906,7 @@ fn hide_floating_panel_native(shared: &Arc<Mutex<FloatingNativeState>>) {
     };
     hide_floating_auxiliary_window(&app, FLOATING_PANEL_WINDOW_LABEL);
     let _ = app.emit_to(FLOATING_PANEL_WINDOW_LABEL, "floating-panel-hide", true);
-    let _ = app.emit_to(
-        FLOATING_WINDOW_LABEL,
-        "floating-native-panel-visibility",
-        FloatingNativePanelVisibilityPayload { visible: false },
-    );
+    emit_floating_native_panel_visibility(&app, false);
     if let Ok(mut state) = shared.lock() {
         state.panel_visible = false;
     }
@@ -2448,11 +2933,7 @@ fn hide_floating_panel_for_native_drag(shared: &Arc<Mutex<FloatingNativeState>>)
 
     hide_floating_auxiliary_window(&app, FLOATING_PANEL_WINDOW_LABEL);
     let _ = app.emit_to(FLOATING_PANEL_WINDOW_LABEL, "floating-panel-hide", true);
-    let _ = app.emit_to(
-        FLOATING_WINDOW_LABEL,
-        "floating-native-panel-visibility",
-        FloatingNativePanelVisibilityPayload { visible: false },
-    );
+    emit_floating_native_panel_visibility(&app, false);
     emit_floating_notification_lifecycle_pause(&app, "floating-panel", false);
     let _ = app.emit_to(
         FLOATING_NOTIFICATION_WINDOW_LABEL,
@@ -2567,11 +3048,7 @@ pub(crate) fn set_floating_native_panel_visible(app: &AppHandle, visible: bool) 
         }
     }
     emit_floating_notification_lifecycle_pause(app, "floating-panel", visible);
-    let _ = app.emit_to(
-        FLOATING_WINDOW_LABEL,
-        "floating-native-panel-visibility",
-        FloatingNativePanelVisibilityPayload { visible },
-    );
+    emit_floating_native_panel_visibility(app, visible);
 }
 
 #[cfg(target_os = "windows")]
@@ -2735,6 +3212,50 @@ unsafe extern "system" fn floating_taskbar_style_subclass_proc(
         apply_native_floating_window_style_to_hwnd(hwnd);
     }
     result
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn main_window_chrome_subclass_proc(
+    hwnd: *mut std::ffi::c_void,
+    msg: u32,
+    wparam: usize,
+    lparam: isize,
+    _subclass_id: usize,
+    _ref_data: usize,
+) -> isize {
+    const GA_ROOT: u32 = 2;
+
+    let should_apply = should_apply_main_window_chrome_from_show_message(
+        msg,
+        wparam,
+        GetAncestor(hwnd, GA_ROOT) == hwnd,
+    );
+    let result = DefSubclassProc(hwnd, msg, wparam, lparam);
+    if should_apply {
+        // WebView2 的 show 默认处理完成后、返回 compositor 前立即清除 caption。
+        apply_native_main_window_chrome_to_hwnd(hwnd);
+    }
+    result
+}
+
+#[cfg(target_os = "windows")]
+fn install_main_window_chrome_subclass(window: &WebviewWindow) {
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let raw = hwnd.0 as *mut std::ffi::c_void;
+    if raw.is_null() {
+        return;
+    }
+
+    unsafe {
+        let _ = SetWindowSubclass(
+            raw,
+            Some(main_window_chrome_subclass_proc),
+            MAIN_WINDOW_CHROME_SUBCLASS_ID,
+            0,
+        );
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -2999,6 +3520,7 @@ fn install_floating_native_state(app: &AppHandle) {
                 hide_since: None,
                 suppress_hover_until: None,
                 hover_reentry_required: false,
+                poll_tick_pending: false,
             }))
         })
         .clone();
@@ -3016,6 +3538,9 @@ fn install_floating_native_state(app: &AppHandle) {
 fn install_floating_native_state(_app: &AppHandle) {}
 
 fn ensure_floating_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+    let _build_guard = FLOATING_AUXILIARY_WINDOW_BUILD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(window) = app.get_webview_window(FLOATING_WINDOW_LABEL) {
         configure_native_floating_window(
             &window,
@@ -3050,6 +3575,9 @@ fn ensure_floating_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
 }
 
 fn ensure_floating_panel_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+    let _build_guard = FLOATING_AUXILIARY_WINDOW_BUILD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(window) = app.get_webview_window(FLOATING_PANEL_WINDOW_LABEL) {
         configure_native_floating_window(
             &window,
@@ -3086,6 +3614,9 @@ fn ensure_floating_panel_window(app: &AppHandle) -> tauri::Result<WebviewWindow>
 }
 
 fn ensure_floating_notification_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+    let _build_guard = FLOATING_AUXILIARY_WINDOW_BUILD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(window) = app.get_webview_window(FLOATING_NOTIFICATION_WINDOW_LABEL) {
         return Ok(window);
     }
@@ -3126,9 +3657,39 @@ fn ensure_floating_notification_window(app: &AppHandle) -> tauri::Result<Webview
         FLOATING_NOTIFICATION_WIDTH,
         layout.min_height(),
         layout,
+        false,
     );
     hide_floating_auxiliary_window(app, FLOATING_NOTIFICATION_WINDOW_LABEL);
     Ok(window)
+}
+
+fn resolve_floating_notification_dock(app: &AppHandle) -> FloatingNotificationDock {
+    let Some(orb) = app.get_webview_window(FLOATING_WINDOW_LABEL) else {
+        return FloatingNotificationDock::default();
+    };
+    let monitor = orb
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| app.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return FloatingNotificationDock::default();
+    };
+
+    let work_area = monitor.work_area();
+    let scale = normalize_scale_factor(monitor.scale_factor());
+    let work_area_x = work_area.position.x;
+    let work_area_width = work_area.size.width as i32;
+    let orb_width = orb
+        .outer_size()
+        .map(|size| size.width as i32)
+        .unwrap_or(logical_to_physical(FLOATING_ORB_SIZE as i32, scale));
+    let orb_x = orb
+        .outer_position()
+        .map(|position| position.x)
+        .unwrap_or(work_area_x + work_area_width - orb_width);
+
+    resolve_floating_notification_dock_for_size(work_area_x, work_area_width, orb_x, orb_width)
 }
 
 fn resolve_floating_notification_position(
@@ -3289,7 +3850,7 @@ fn sync_floating_notification_window_with_prefs_for_drag_restore(
     let _sync_guard = floating_notification_sync_lock()
         .lock()
         .map_err(|_| "floating notification sync unavailable".to_string())?;
-    let snapshot = get_floating_notification_snapshot()?;
+    let snapshot = get_floating_notification_snapshot_for_app(app)?;
     let layout = FloatingNotificationLayout::from_prefs(prefs);
 
     if !should_sync_floating_notification_window(
@@ -3337,11 +3898,15 @@ fn sync_floating_notification_window_with_prefs_for_drag_restore(
         resolve_floating_notification_height_for_items(&item_heights, layout)
     };
     let window = ensure_floating_notification_window(app).map_err(|error| error.to_string())?;
-    let _ = window.set_size(tauri::Size::Logical(LogicalSize::new(
-        notification_width as f64,
-        notification_height as f64,
-    )));
-    configure_native_floating_window(&window, notification_width, notification_height);
+    let window_was_visible = window.is_visible().unwrap_or(false);
+    let scale_factor = resolve_floating_window_scale_factor(app);
+    let (physical_width, physical_height) = resolve_floating_notification_physical_size(
+        notification_width,
+        notification_height,
+        scale_factor,
+    );
+    let (x, y) = resolve_floating_notification_position(app, physical_width, physical_height);
+    set_floating_notification_window_bounds(&window, x, y, physical_width, physical_height);
     configure_floating_notification_hit_region(
         &window,
         &item_heights,
@@ -3349,15 +3914,11 @@ fn sync_floating_notification_window_with_prefs_for_drag_restore(
         notification_width,
         notification_height,
         layout,
+        !detail_open,
     );
-    let fallback_scale = resolve_floating_window_scale_factor(app);
-    let size = window.outer_size().unwrap_or(tauri::PhysicalSize::new(
-        logical_to_physical(notification_width, fallback_scale) as u32,
-        logical_to_physical(notification_height, fallback_scale) as u32,
-    ));
-    let (x, y) = resolve_floating_notification_position(app, size.width as i32, size.height as i32);
-    let _ = window.set_position(PhysicalPosition::new(x, y));
-    show_floating_notification_window(&window);
+    if !window_was_visible {
+        show_floating_notification_window(&window);
+    }
     emit_floating_notification_lifecycle_pause(app, "notification-window-hidden", false);
     emit_floating_notification_snapshot(app, &snapshot);
     Ok(snapshot)
@@ -3380,6 +3941,40 @@ fn sync_floating_notification_window_after_native_drag(
     let prefs = application::desktop_ui_service::get_desktop_ui_prefs(&ctx)
         .map_err(|error| error.to_string())?;
     sync_floating_notification_window_with_prefs_for_drag_restore(app, &prefs, true)
+}
+
+/** React 动效稳定后恢复离散卡片 region，保留卡片间隙的原生点击穿透。 */
+pub(crate) fn settle_floating_notification_motion(app: &AppHandle) -> Result<bool, String> {
+    let _sync_guard = floating_notification_sync_lock()
+        .lock()
+        .map_err(|_| "floating notification sync unavailable".to_string())?;
+    let snapshot = get_floating_notification_snapshot_for_app(app)?;
+    if snapshot.items.is_empty()
+        || FLOATING_NOTIFICATION_DETAIL_OPEN.load(Ordering::Relaxed)
+        || !is_window_visible(app, FLOATING_NOTIFICATION_WINDOW_LABEL)
+    {
+        return Ok(false);
+    }
+
+    let ctx = app.state::<application::AppContext>();
+    let prefs = application::desktop_ui_service::get_desktop_ui_prefs(&ctx)
+        .map_err(|error| error.to_string())?;
+    let layout = FloatingNotificationLayout::from_prefs(&prefs);
+    let item_heights = resolve_floating_notification_item_heights(&snapshot.items, layout);
+    let notification_height = resolve_floating_notification_height_for_items(&item_heights, layout);
+    let Some(window) = app.get_webview_window(FLOATING_NOTIFICATION_WINDOW_LABEL) else {
+        return Ok(false);
+    };
+    configure_floating_notification_hit_region(
+        &window,
+        &item_heights,
+        false,
+        FLOATING_NOTIFICATION_WIDTH,
+        notification_height,
+        layout,
+        false,
+    );
+    Ok(true)
 }
 
 fn floating_notification_mailbox() -> &'static Arc<Mutex<FloatingNotificationMailbox>> {
@@ -3446,11 +4041,19 @@ pub(crate) fn get_floating_notification_snapshot() -> Result<FloatingNotificatio
     Ok(mailbox.snapshot())
 }
 
+pub(crate) fn get_floating_notification_snapshot_for_app(
+    app: &AppHandle,
+) -> Result<FloatingNotificationSnapshot, String> {
+    let mut snapshot = get_floating_notification_snapshot()?;
+    snapshot.dock = resolve_floating_notification_dock(app);
+    Ok(snapshot)
+}
+
 pub(crate) fn enqueue_floating_notification(
     app: &AppHandle,
     payload: FloatingNotificationPayload,
 ) -> Result<FloatingNotificationSnapshot, String> {
-    {
+    let inserted = {
         let _mutation_guard = floating_notification_mutation_lock()
             .lock()
             .map_err(|_| "floating notification mutation unavailable".to_string())?;
@@ -3475,7 +4078,13 @@ pub(crate) fn enqueue_floating_notification(
         let mut mailbox = floating_notification_mailbox()
             .lock()
             .map_err(|_| "floating notification mailbox unavailable".to_string())?;
-        mailbox.enqueue(payload);
+        mailbox.enqueue_with_inserted(payload).1
+    };
+    if inserted {
+        if let Err(error) = application::desktop_ui_service::schedule_floating_notification_sound(app)
+        {
+            log::warn!("[notification-sound] 新悬浮消息提示音调度失败: {error}");
+        }
     }
     sync_floating_notification_window(app)
 }
@@ -3536,6 +4145,43 @@ fn hide_floating_group(app: &AppHandle) {
     mark_floating_native_panel_hidden();
 }
 
+/// 保留主窗口几何记忆，但不让 window-state 在启动阶段自行显示窗口。
+fn restore_main_window_geometry_before_reveal(main: &WebviewWindow) {
+    if let Err(error) = main.restore_state(StateFlags::POSITION | StateFlags::SIZE) {
+        log::warn!("[window] 恢复主窗口位置和尺寸失败: {error}");
+    }
+}
+
+/// `VISIBLE` 会直接触发 `show()`，因此显示状态只能在受控 reveal 后恢复。
+fn restore_main_window_display_state_after_reveal(main: &WebviewWindow) {
+    if let Err(error) = main.restore_state(StateFlags::MAXIMIZED | StateFlags::FULLSCREEN) {
+        log::warn!("[window] 恢复主窗口最大化或全屏状态失败: {error}");
+    }
+}
+
+/// 主窗口首次实际显示统一走受控恢复，避免浮窗、托盘和原生通知路径绕过无标题栏处理。
+pub(crate) fn show_main_window_with_controlled_state_restore(app: &AppHandle, reason: &str) {
+    let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        log::warn!("[window] 主窗口不存在，无法显示（{reason}）");
+        return;
+    };
+
+    let restore_persisted_state = !MAIN_WINDOW_INITIAL_STATE_RESTORED.swap(true, Ordering::SeqCst);
+    if restore_persisted_state {
+        restore_main_window_geometry_before_reveal(&main);
+    }
+    configure_native_main_window(&main);
+    show_window(&main);
+    if restore_persisted_state {
+        restore_main_window_display_state_after_reveal(&main);
+    }
+    configure_native_main_window(&main);
+    #[cfg(target_os = "windows")]
+    if restore_persisted_state {
+        schedule_native_main_window_chrome_normalization(app.clone());
+    }
+}
+
 /// 首帧就绪（frontend_ready command）或超时兜底后显示主窗口。幂等：只成功一次。
 fn reveal_main_window(app: &AppHandle, reason: &str) {
     if MAIN_WINDOW_REVEALED.swap(true, Ordering::SeqCst) {
@@ -3555,7 +4201,8 @@ fn reveal_main_window(app: &AppHandle, reason: &str) {
         return;
     }
     log::info!("[window] 主窗口显示（{reason}）");
-    show_window(&main);
+    drop(main);
+    show_main_window_with_controlled_state_restore(app, reason);
 }
 
 fn schedule_main_window_reveal_fallback(app: AppHandle) {
@@ -3587,7 +4234,8 @@ fn sync_mode_windows(app: &AppHandle, prefs: &crate::contracts::DesktopUiPrefs) 
         // 启动阶段（主窗口尚未首次显示）不在这里 show——等待前端 frontend_ready
         // 或 3s 兜底，避免默认主题首帧闪变；此后的模式切换沿用即时 show。
         if MAIN_WINDOW_REVEALED.load(Ordering::SeqCst) {
-            show_window(&main);
+            drop(main);
+            show_main_window_with_controlled_state_restore(app, "同步主窗口模式");
         }
     }
     let _ = ensure_floating_panel_window(app);
@@ -3720,15 +4368,17 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(persisted_window_state_flags())
+                .skip_initial_state(MAIN_WINDOW_LABEL)
                 .skip_initial_state(FLOATING_WINDOW_LABEL)
                 .skip_initial_state(FLOATING_PANEL_WINDOW_LABEL)
                 .build(),
         )
         .setup(|app| {
-            let ctx = application::AppContext::resolve_desktop()?;
+            let ctx = tauri::async_runtime::block_on(application::AppContext::resolve_desktop())?;
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -3741,6 +4391,12 @@ pub fn run() {
             if let Err(error) = restore_pending_usage_notifications(&ctx) {
                 log::error!("failed to restore pending usage notifications: {error}");
             }
+            let service_status_monitor =
+                application::service_status_service::ServiceStatusMonitor::start(
+                    ctx.clone(),
+                    app_handle.clone(),
+                );
+            app.manage(service_status_monitor);
             application::scheduler_service::DataSyncScheduler::start(ctx, app_handle.clone());
             {
                 let startup_ctx = app.state::<application::AppContext>().inner().clone();
@@ -3766,7 +4422,7 @@ pub fn run() {
                     }
                 }
                 FLOATING_CONTEXT_OPEN_MAIN_ID => {
-                    open_main_window_from_native(app);
+                    open_main_window_from_native(app, "overview");
                 }
                 FLOATING_CONTEXT_QUIT_ID => {
                     let _ = app.save_window_state(persisted_window_state_flags());
@@ -3779,6 +4435,8 @@ pub fn run() {
             )?;
             if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                 configure_native_main_window(&main);
+                #[cfg(target_os = "windows")]
+                install_main_window_chrome_subclass(&main);
             }
             ensure_floating_window(&app_handle)?;
             ensure_floating_panel_window(&app_handle)?;
@@ -3888,7 +4546,9 @@ pub fn run() {
             adapters::desktop::commands::get_overview_shell_lite,
             adapters::desktop::commands::get_overview,
             adapters::desktop::commands::get_service_status,
+            adapters::desktop::commands::send_service_status_system_notification,
             adapters::desktop::commands::get_codex_radar_intelligence,
+            adapters::desktop::commands::get_codex_radar_insights,
             adapters::desktop::commands::get_codex_radar_fast,
             adapters::desktop::commands::get_codex_radar_model_iq,
             adapters::desktop::commands::get_window_selection,
@@ -3898,22 +4558,31 @@ pub fn run() {
             adapters::desktop::commands::ping_site_public_endpoints,
             adapters::desktop::commands::get_desktop_ui_prefs,
             adapters::desktop::commands::update_desktop_ui_prefs,
+            adapters::desktop::commands::select_floating_notification_sound,
+            adapters::desktop::commands::preview_floating_notification_sound,
+            adapters::desktop::commands::restore_default_floating_notification_sound,
             adapters::desktop::commands::switch_app_mode,
             adapters::desktop::commands::set_floating_window_visible,
             adapters::desktop::commands::show_floating_context_menu,
             adapters::desktop::commands::set_floating_panel_visible,
+            adapters::desktop::commands::get_floating_panel_visible,
             adapters::desktop::commands::begin_floating_native_pointer_session,
             adapters::desktop::commands::position_floating_panel,
             adapters::desktop::commands::enqueue_floating_notification,
             adapters::desktop::commands::get_floating_notification_snapshot,
             adapters::desktop::commands::dismiss_floating_notification,
             adapters::desktop::commands::set_floating_notification_detail_open,
+            adapters::desktop::commands::settle_floating_notification_motion,
             adapters::desktop::commands::open_main_window,
             adapters::desktop::commands::quit_application,
             adapters::desktop::commands::clear_runtime_data,
             adapters::desktop::commands::create_site,
             adapters::desktop::commands::update_site,
             adapters::desktop::commands::remove_site,
+            adapters::desktop::commands::get_site_failover_status,
+            adapters::desktop::commands::test_site_endpoint,
+            adapters::desktop::commands::clear_site_failover_cooldown,
+            adapters::desktop::commands::list_site_failover_transitions,
             adapters::desktop::commands::create_account,
             adapters::desktop::commands::update_account,
             adapters::desktop::commands::remove_account,
@@ -3935,8 +4604,12 @@ pub fn run() {
             adapters::desktop::commands::upsert_subscription_switch_rule,
             adapters::desktop::commands::delete_subscription_switch_rule,
             adapters::desktop::commands::evaluate_subscription_switch_rules,
+            adapters::desktop::commands::query_subscription_quota_alerts,
+            adapters::desktop::commands::upsert_subscription_quota_alert,
             adapters::desktop::commands::list_usage_records,
+            adapters::desktop::commands::list_usage_facets,
             adapters::desktop::commands::get_usage_stats,
+            adapters::desktop::commands::get_usage_analytics,
             adapters::desktop::commands::get_usage_extremes,
             adapters::desktop::commands::get_overview_dashboard_stats,
             adapters::desktop::commands::get_dashboard_models,
@@ -3960,6 +4633,10 @@ pub fn run() {
             adapters::desktop::commands::unbind_auth_identity,
             adapters::desktop::commands::get_scheduler_config,
             adapters::desktop::commands::update_scheduler_config,
+            adapters::desktop::commands::get_runtime_coordination_config,
+            adapters::desktop::commands::update_runtime_coordination_config,
+            adapters::desktop::commands::get_upstream_network_config,
+            adapters::desktop::commands::update_upstream_network_config,
             adapters::desktop::commands::get_database_storage_status,
             adapters::desktop::commands::migrate_database_storage
         ])
@@ -3976,17 +4653,22 @@ mod tests {
         normalize_floating_window_ex_style, physical_to_logical,
         resolve_floating_native_panel_visible, resolve_floating_native_poll_ms,
         resolve_floating_native_poll_ms_with_pointer_near_orb,
-        resolve_floating_notification_detail_open, resolve_floating_notification_height_for_items,
+        resolve_floating_notification_detail_open, resolve_floating_notification_dock_for_size,
+        resolve_floating_notification_height_for_items,
         resolve_floating_notification_hit_regions_for_items,
+        resolve_floating_notification_native_round_rect,
+        resolve_floating_notification_physical_size,
+        resolve_floating_notification_regions_for_motion,
         resolve_floating_notification_visible_items, resolve_floating_notification_window_height,
-        should_begin_floating_native_webview_session, should_hide_floating_panel_after_startup,
-        should_recheck_floating_taskbar_style, FloatingGeometry, FloatingNotificationChannel,
-        FloatingNotificationLayout, FloatingNotificationMailbox, FloatingNotificationPayload,
-        FloatingNotificationReference, FLOATING_NATIVE_DRAG_POLL_MS,
+        should_apply_floating_auxiliary_show, should_begin_floating_native_webview_session,
+        should_hide_floating_panel_after_startup, should_recheck_floating_taskbar_style,
+        FloatingGeometry, FloatingNotificationChannel, FloatingNotificationDock,
+        FloatingNotificationHitRegion, FloatingNotificationLayout, FloatingNotificationMailbox,
+        FloatingNotificationPayload, FloatingNotificationReference, FLOATING_NATIVE_DRAG_POLL_MS,
         FLOATING_NATIVE_HIDDEN_POLL_MS, FLOATING_NATIVE_IDLE_POLL_MS,
         FLOATING_NATIVE_VISIBLE_POLL_MS, FLOATING_NOTIFICATION_DETAIL_WIDTH,
         FLOATING_NOTIFICATION_WIDTH, FLOATING_ORB_ALPHA_REGION_RUNS, FLOATING_ORB_SIZE,
-        FLOATING_PANEL_GAP, FLOATING_PANEL_HEIGHT, FLOATING_PANEL_WIDTH,
+        FLOATING_PANEL_GAP, FLOATING_PANEL_WIDTH,
     };
 
     fn floating_notification_payload(id: &str, dedupe_key: &str) -> FloatingNotificationPayload {
@@ -4019,6 +4701,7 @@ mod tests {
             api_key_label: "usage-key".into(),
             model: "gpt-5".into(),
             reasoning_effort: None,
+            service_tier: None,
             input_tokens: 1,
             output_tokens: 2,
             cache_creation_tokens: 0,
@@ -4150,6 +4833,12 @@ mod tests {
         assert!(super::should_transition_floating_native_panel_visibility(
             true, false
         ));
+    }
+
+    #[test]
+    fn floating_panel_sync_replay_never_reopens_a_panel_that_has_been_hidden() {
+        assert!(super::should_replay_floating_panel_sync(true));
+        assert!(!super::should_replay_floating_panel_sync(false));
     }
 
     #[test]
@@ -4306,6 +4995,42 @@ mod tests {
     }
 
     #[test]
+    fn floating_auxiliary_show_requires_the_latest_visible_intent() {
+        assert!(should_apply_floating_auxiliary_show("floating", 3, 3, true));
+        assert!(should_apply_floating_auxiliary_show(
+            "floating-panel",
+            8,
+            8,
+            true
+        ));
+        assert!(should_apply_floating_auxiliary_show(
+            "floating-notification",
+            12,
+            12,
+            true
+        ));
+
+        // show -> hide 后，旧 show 的 generation 不再是当前意图，不能复活窗口。
+        assert!(!should_apply_floating_auxiliary_show(
+            "floating", 4, 3, false
+        ));
+        // hide -> show 后，早于最新 show 的任务同样必须失效。
+        assert!(!should_apply_floating_auxiliary_show(
+            "floating-panel",
+            10,
+            9,
+            true
+        ));
+        assert!(!should_apply_floating_auxiliary_show(
+            "floating-notification",
+            12,
+            12,
+            false
+        ));
+        assert!(!should_apply_floating_auxiliary_show("main", 1, 1, true));
+    }
+
+    #[test]
     fn only_three_auxiliary_labels_participate_in_taskbar_style_rechecks() {
         assert!(is_floating_auxiliary_window_label("floating"));
         assert!(is_floating_auxiliary_window_label("floating-panel"));
@@ -4353,6 +5078,29 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    fn main_window_chrome_show_message_requires_visible_top_level_hwnd() {
+        assert!(super::should_apply_main_window_chrome_from_show_message(
+            super::WM_SHOWWINDOW,
+            1,
+            true,
+        ));
+        assert!(!super::should_apply_main_window_chrome_from_show_message(
+            super::WM_SHOWWINDOW,
+            0,
+            true,
+        ));
+        assert!(!super::should_apply_main_window_chrome_from_show_message(
+            0x000F, 1, true,
+        ));
+        assert!(!super::should_apply_main_window_chrome_from_show_message(
+            super::WM_SHOWWINDOW,
+            1,
+            false,
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
     fn floating_taskbar_style_only_auxiliary_window_labels_receive_subclass_ids() {
         assert_eq!(
             super::floating_taskbar_style_subclass_id("floating"),
@@ -4392,6 +5140,13 @@ mod tests {
             resolve_floating_native_poll_ms_with_pointer_near_orb(false, false, false, true),
             FLOATING_NATIVE_HIDDEN_POLL_MS
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn floating_native_poller_coalesces_pending_main_thread_ticks() {
+        assert!(super::should_schedule_floating_native_poll_tick(false));
+        assert!(!super::should_schedule_floating_native_poll_tick(true));
     }
 
     #[test]
@@ -4567,8 +5322,9 @@ mod tests {
             right.0,
             right_orb_x - FLOATING_PANEL_WIDTH as i32 - FLOATING_PANEL_GAP
         );
-        assert_eq!(left.1, 300 - FLOATING_PANEL_HEIGHT as i32);
-        assert_eq!(right.1, 300 - FLOATING_PANEL_HEIGHT as i32);
+        let expected_y = FloatingGeometry::for_scale(1.0).safe_margin;
+        assert_eq!(left.1, expected_y);
+        assert_eq!(right.1, expected_y);
     }
 
     #[test]
@@ -4581,8 +5337,38 @@ mod tests {
     }
 
     #[test]
+    fn floating_notification_dock_uses_the_orb_center_on_each_monitor() {
+        assert_eq!(
+            resolve_floating_notification_dock_for_size(0, 1_000, 100, 64),
+            FloatingNotificationDock::Left
+        );
+        assert_eq!(
+            resolve_floating_notification_dock_for_size(0, 1_000, 900, 64),
+            FloatingNotificationDock::Right
+        );
+        assert_eq!(
+            resolve_floating_notification_dock_for_size(0, 1_000, 468, 64),
+            FloatingNotificationDock::Left
+        );
+        assert_eq!(
+            resolve_floating_notification_dock_for_size(-1_920, 1_920, -1_900, 64),
+            FloatingNotificationDock::Left
+        );
+        assert_eq!(
+            resolve_floating_notification_dock_for_size(-1_920, 1_920, -200, 64),
+            FloatingNotificationDock::Right
+        );
+    }
+
+    #[test]
     fn floating_notification_mailbox_preserves_payloads_until_hydration_and_dismissal() {
         let mut mailbox = FloatingNotificationMailbox::default();
+        let empty = mailbox.snapshot();
+        assert_eq!(empty.dock, FloatingNotificationDock::Right);
+        assert_eq!(
+            serde_json::to_value(&empty).expect("serialize default notification snapshot")["dock"],
+            "right"
+        );
         let first = mailbox.enqueue(floating_notification_payload(
             "notification-1",
             "service:down:model-a",
@@ -4673,28 +5459,36 @@ mod tests {
     }
 
     #[test]
-    fn floating_notification_native_geometry_projects_only_the_usage_queue_head_while_filling_normal_slots(
-    ) {
-        let layout = FloatingNotificationLayout::from_prefs(&crate::contracts::DesktopUiPrefs {
-            floating_notification_max_visible: 3,
-            ..crate::contracts::DesktopUiPrefs::default()
-        });
+    fn floating_notification_native_geometry_projects_the_mailbox_prefix_for_every_channel() {
         let items = vec![
             usage_notification_payload("usage-1", "usage-sync:account-1:row-1"),
             usage_notification_payload("usage-2", "usage-sync:account-1:row-2"),
             floating_notification_payload("business-1", "service:one"),
             floating_notification_payload("business-2", "service:two"),
+            usage_notification_payload("usage-3", "usage-sync:account-1:row-3"),
         ];
 
-        let visible = resolve_floating_notification_visible_items(&items, layout);
-
-        assert_eq!(
-            visible
+        for max_visible in [1_i64, 3, 5] {
+            let layout =
+                FloatingNotificationLayout::from_prefs(&crate::contracts::DesktopUiPrefs {
+                    floating_notification_max_visible: max_visible,
+                    ..crate::contracts::DesktopUiPrefs::default()
+                });
+            let visible = resolve_floating_notification_visible_items(&items, layout);
+            let expected = items
                 .iter()
+                .take(usize::try_from(max_visible).expect("supported visible count"))
                 .map(|item| item.id.as_str())
-                .collect::<Vec<_>>(),
-            ["usage-1", "business-1", "business-2"]
-        );
+                .collect::<Vec<_>>();
+
+            assert_eq!(
+                visible
+                    .iter()
+                    .map(|item| item.id.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
     }
 
     #[test]
@@ -4726,8 +5520,8 @@ mod tests {
                 .min_height(),
         );
 
-        assert_eq!(above, (221, 420));
-        assert_eq!(below, (221, 98));
+        assert_eq!(above, (214, 420));
+        assert_eq!(below, (214, 98));
     }
 
     #[test]
@@ -4763,6 +5557,79 @@ mod tests {
     }
 
     #[test]
+    fn floating_notification_physical_size_is_resolved_before_the_atomic_bounds_commit() {
+        assert_eq!(
+            resolve_floating_notification_physical_size(FLOATING_NOTIFICATION_WIDTH, 113, 1.0),
+            (232, 113)
+        );
+        assert_eq!(
+            resolve_floating_notification_physical_size(FLOATING_NOTIFICATION_WIDTH, 224, 1.25),
+            (290, 280)
+        );
+        assert_eq!(
+            resolve_floating_notification_physical_size(FLOATING_NOTIFICATION_WIDTH, 335, 1.5),
+            (348, 503)
+        );
+    }
+
+    #[test]
+    fn floating_notification_native_round_rect_keeps_border_pixels_at_common_dpi_scales() {
+        let region = FloatingNotificationHitRegion {
+            x: 4,
+            y: 4,
+            width: 224,
+            height: 192,
+            corner_radius: 8,
+        };
+
+        for (client_width, client_height, expected) in [
+            (232, 200, (4, 4, 229, 197, 16, 16)),
+            (290, 250, (5, 5, 286, 246, 20, 20)),
+            (348, 300, (6, 6, 343, 295, 24, 24)),
+        ] {
+            let bounds = resolve_floating_notification_native_round_rect(
+                region,
+                232,
+                200,
+                client_width,
+                client_height,
+            );
+
+            assert_eq!(
+                (
+                    bounds.left,
+                    bounds.top,
+                    bounds.right,
+                    bounds.bottom,
+                    bounds.radius_x,
+                    bounds.radius_y,
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn floating_notification_native_round_rect_clamps_compensation_to_client_bounds() {
+        let bounds = resolve_floating_notification_native_round_rect(
+            FloatingNotificationHitRegion {
+                x: 4,
+                y: 4,
+                width: 228,
+                height: 196,
+                corner_radius: 8,
+            },
+            232,
+            200,
+            290,
+            250,
+        );
+
+        assert_eq!((bounds.left, bounds.top), (5, 5));
+        assert_eq!((bounds.right, bounds.bottom), (290, 250));
+    }
+
+    #[test]
     fn floating_notification_hit_regions_only_cover_visible_pills_or_detail_surface() {
         let pills = resolve_floating_notification_hit_regions_for_items(
             &[64, 105],
@@ -4775,7 +5642,7 @@ mod tests {
         assert_eq!(pills.len(), 2);
         assert_eq!(pills[0].x, 4);
         assert_eq!(pills[0].y, 74);
-        assert_eq!(pills[0].width, 210);
+        assert_eq!(pills[0].width, 224);
         assert_eq!(pills[0].height, 105);
         assert_eq!(pills[0].corner_radius, 8);
         assert_eq!(pills[1].y, 4);
@@ -4793,6 +5660,64 @@ mod tests {
         assert_eq!(detail[0].width, 336);
         assert_eq!(detail[0].height, 352);
         assert_eq!(detail[0].corner_radius, 8);
+    }
+
+    #[test]
+    fn floating_notification_motion_region_covers_the_gaps_between_moving_pills() {
+        let layout =
+            FloatingNotificationLayout::from_prefs(&crate::contracts::DesktopUiPrefs::default());
+        let regions = resolve_floating_notification_regions_for_motion(
+            &[64, 105],
+            false,
+            FLOATING_NOTIFICATION_WIDTH,
+            183,
+            layout,
+            true,
+        );
+
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].x, 4);
+        assert_eq!(regions[0].y, 4);
+        assert_eq!(regions[0].width, 224);
+        assert_eq!(regions[0].height, 175);
+        let motion_bounds = resolve_floating_notification_native_round_rect(
+            regions[0],
+            FLOATING_NOTIFICATION_WIDTH,
+            183,
+            FLOATING_NOTIFICATION_WIDTH,
+            183,
+        );
+        assert_eq!((motion_bounds.right, motion_bounds.bottom), (229, 180));
+
+        let settled = resolve_floating_notification_regions_for_motion(
+            &[64, 105],
+            false,
+            FLOATING_NOTIFICATION_WIDTH,
+            183,
+            layout,
+            false,
+        );
+        assert_eq!(settled.len(), 2);
+        assert_eq!(
+            settled[0].y - (settled[1].y + settled[1].height),
+            layout.item_gap
+        );
+        let newest_bounds = resolve_floating_notification_native_round_rect(
+            settled[0],
+            FLOATING_NOTIFICATION_WIDTH,
+            183,
+            FLOATING_NOTIFICATION_WIDTH,
+            183,
+        );
+        let oldest_bounds = resolve_floating_notification_native_round_rect(
+            settled[1],
+            FLOATING_NOTIFICATION_WIDTH,
+            183,
+            FLOATING_NOTIFICATION_WIDTH,
+            183,
+        );
+        assert_eq!((newest_bounds.right, newest_bounds.bottom), (229, 180));
+        assert_eq!((oldest_bounds.right, oldest_bounds.bottom), (229, 69));
     }
 
     #[test]

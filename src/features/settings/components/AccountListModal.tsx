@@ -86,9 +86,9 @@ export function AccountListModal({
           </div>
         </>
       ) : (
-        <p className="modal-hint">当前站点下的账号、状态和余额明细会显示在这里。</p>
+        <p className="modal-hint">这里会显示当前站点下的账号、状态和余额。</p>
       )}
-      <p className="modal-hint">当前站点下的所有账号都会在这里列出，登录、刷新和编辑也统一在这里处理。</p>
+      <p className="modal-hint">你可以在这里统一登录、刷新、编辑和删除账号。</p>
       <div className="context-section">
         <input
           className="search-input"
@@ -106,7 +106,7 @@ export function AccountListModal({
               </div>
               <div className="row-meta">
                 <span>{formatBalanceWarningSummary(account.balanceWarning)}</span>
-                <span>{account.cacheView ? formatTime(account.cacheView.fetchedAt) : "未拉取"}</span>
+                <span>{account.cacheView ? formatTime(account.cacheView.fetchedAt) : "还未更新"}</span>
               </div>
               <div className="row-actions">
                 <StatusBadge state={account.sessionState} />

@@ -27,7 +27,7 @@ if not exist "%START_SCRIPT%" (
 )
 
 echo [INFO] Restarting dev frontend and backend for this repo...
-"%PWSH_EXE%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%START_SCRIPT%"
+"%PWSH_EXE%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%START_SCRIPT%" -Restart
 set "EXIT_CODE=%ERRORLEVEL%"
 
 if not "%EXIT_CODE%"=="0" (

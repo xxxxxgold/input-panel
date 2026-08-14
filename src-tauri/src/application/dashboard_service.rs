@@ -7,8 +7,8 @@ use tokio::{sync::Semaphore, task::JoinSet, time::timeout};
 
 use crate::contracts::{
     AccountAlert, AccountCacheView, AccountRecord, AccountRuntime, OverviewKeyRecord,
-    OverviewModelPoint, OverviewPayload, OverviewSubscriptionRecord, OverviewTotals, OverviewUsageRow,
-    PlatformPoint, SiteRecord, StoredSession, TrendPoint,
+    OverviewModelPoint, OverviewPayload, OverviewSubscriptionRecord, OverviewTotals,
+    OverviewUsageRow, PlatformPoint, SiteRecord, StoredSession, TrendPoint,
 };
 use crate::infrastructure::datetime::{shanghai_today, storage_timestamp_date};
 use crate::infrastructure::sqlite::repositories;
@@ -84,16 +84,18 @@ pub(crate) fn build_overview_payload(
             totals.total_tokens += cache_view.stats.total_tokens;
 
             alerts.extend(filter_account_alerts(account, cache_view));
-            recent_usage.extend(cache_view.recent_usage.iter().cloned().map(|row| OverviewUsageRow {
-                row,
-                account_id: account.account.id.clone(),
-                account_label: account.account.label.clone(),
-                site_id: account.account.site_id.clone(),
-                site_name: account
-                    .site
-                    .as_ref()
-                    .map(|item| item.name.clone())
-                    .unwrap_or_else(|| cache_view.site_name.clone()),
+            recent_usage.extend(cache_view.recent_usage.iter().cloned().map(|row| {
+                OverviewUsageRow {
+                    row,
+                    account_id: account.account.id.clone(),
+                    account_label: account.account.label.clone(),
+                    site_id: account.account.site_id.clone(),
+                    site_name: account
+                        .site
+                        .as_ref()
+                        .map(|item| item.name.clone())
+                        .unwrap_or_else(|| cache_view.site_name.clone()),
+                }
             }));
 
             subscriptions.extend(
@@ -114,16 +116,18 @@ pub(crate) fn build_overview_payload(
                     }),
             );
 
-            keys.extend(cache_view.keys.iter().cloned().map(|key| OverviewKeyRecord {
-                key,
-                account_id: account.account.id.clone(),
-                account_label: account.account.label.clone(),
-                site_id: account.account.site_id.clone(),
-                site_name: account
-                    .site
-                    .as_ref()
-                    .map(|item| item.name.clone())
-                    .unwrap_or_else(|| cache_view.site_name.clone()),
+            keys.extend(cache_view.keys.iter().cloned().map(|key| {
+                OverviewKeyRecord {
+                    key,
+                    account_id: account.account.id.clone(),
+                    account_label: account.account.label.clone(),
+                    site_id: account.account.site_id.clone(),
+                    site_name: account
+                        .site
+                        .as_ref()
+                        .map(|item| item.name.clone())
+                        .unwrap_or_else(|| cache_view.site_name.clone()),
+                }
             }));
 
             for point in &cache_view.trend {
@@ -149,13 +153,15 @@ pub(crate) fn build_overview_payload(
             }
 
             for point in &cache_view.stats.by_platform {
-                let entry = platform_map.entry(point.platform.clone()).or_insert(PlatformPoint {
-                    platform: point.platform.clone(),
-                    total_actual_cost: 0.0,
-                    today_actual_cost: 0.0,
-                    total_requests: 0,
-                    total_tokens: 0,
-                });
+                let entry = platform_map
+                    .entry(point.platform.clone())
+                    .or_insert(PlatformPoint {
+                        platform: point.platform.clone(),
+                        total_actual_cost: 0.0,
+                        today_actual_cost: 0.0,
+                        total_requests: 0,
+                        total_tokens: 0,
+                    });
                 entry.total_actual_cost += point.total_actual_cost;
                 entry.today_actual_cost += point.today_actual_cost;
                 entry.total_requests += point.total_requests;
@@ -163,13 +169,15 @@ pub(crate) fn build_overview_payload(
             }
 
             for point in &cache_view.stats.by_model {
-                let entry = model_map.entry(point.model.clone()).or_insert(OverviewModelPoint {
-                    model: point.model.clone(),
-                    requests: 0,
-                    total_tokens: 0,
-                    actual_cost: 0.0,
-                    total_cost: 0.0,
-                });
+                let entry = model_map
+                    .entry(point.model.clone())
+                    .or_insert(OverviewModelPoint {
+                        model: point.model.clone(),
+                        requests: 0,
+                        total_tokens: 0,
+                        actual_cost: 0.0,
+                        total_cost: 0.0,
+                    });
                 entry.requests += point.requests;
                 entry.total_tokens += point.total_tokens;
                 entry.actual_cost += point.actual_cost;
@@ -456,7 +464,8 @@ fn build_recent_overview_trend(
 ) -> Vec<TrendPoint> {
     let today = shanghai_today();
     let start = today - Days::new(OVERVIEW_TREND_DAYS.saturating_sub(1));
-    let mut recent_points: std::collections::HashMap<NaiveDate, TrendPoint> = std::collections::HashMap::new();
+    let mut recent_points: std::collections::HashMap<NaiveDate, TrendPoint> =
+        std::collections::HashMap::new();
 
     for point in trend_map.into_values() {
         let Some(date) = parse_trend_bucket(&point.bucket) else {
@@ -528,37 +537,44 @@ mod tests {
     use super::{build_overview_payload, get_overview};
     use crate::application::{context::SyncTaskHandle, keys_service, AppContext};
     use crate::contracts::{
-        AccountRecord, AccountRuntime, AccountCacheView, KeyRecord, OverviewModelPoint, PlatformPoint, SiteRecord,
-        AccountAlert, AccountCacheStats, StoredSession, SubscriptionRecord, TrendPoint, UsageRow,
+        AccountAlert, AccountCacheStats, AccountCacheView, AccountRecord, AccountRuntime,
+        KeyRecord, OverviewModelPoint, PlatformPoint, SiteRecord, StoredSession,
+        SubscriptionRecord, TrendPoint, UsageRow,
     };
-    use crate::infrastructure::files::AppPaths;
     use crate::infrastructure::datetime::shanghai_today;
+    use crate::infrastructure::files::AppPaths;
     use crate::infrastructure::sqlite::{repositories, Database};
 
     #[test]
     fn aggregates_totals_and_collections() {
-        let accounts = vec![build_runtime("account-1", "site-1", "主账号", Some(build_test_cache_view(
-            vec![TrendPoint {
-                bucket: "2026-06-05".into(),
-                actual_cost: 1.3,
-                total_cost: 1.6,
-                requests: 30,
-                input_tokens: 3600,
-                output_tokens: 4200,
-                cache_creation_tokens: 300,
-                cache_read_tokens: 900,
-                total_tokens: 9000,
-            }],
-            vec![AccountAlert {
-                id: "alert-1".into(),
-                severity: "high".into(),
-                title: "余额偏低".into(),
-                detail: "快要见底了".into(),
-                site_id: "site-1".into(),
-                account_id: "account-1".into(),
-                created_at: "2026-06-05T08:00:00.000Z".into(),
-            }],
-        )), None)];
+        let accounts = vec![build_runtime(
+            "account-1",
+            "site-1",
+            "主账号",
+            Some(build_test_cache_view(
+                vec![TrendPoint {
+                    bucket: "2026-06-05".into(),
+                    actual_cost: 1.3,
+                    total_cost: 1.6,
+                    requests: 30,
+                    input_tokens: 3600,
+                    output_tokens: 4200,
+                    cache_creation_tokens: 300,
+                    cache_read_tokens: 900,
+                    total_tokens: 9000,
+                }],
+                vec![AccountAlert {
+                    id: "alert-1".into(),
+                    severity: "high".into(),
+                    title: "余额偏低".into(),
+                    detail: "快要见底了".into(),
+                    site_id: "site-1".into(),
+                    account_id: "account-1".into(),
+                    created_at: "2026-06-05T08:00:00.000Z".into(),
+                }],
+            )),
+            None,
+        )];
 
         let overview = build_overview_payload(&[build_site("site-1")], &accounts);
 
@@ -652,9 +668,18 @@ mod tests {
         let overview = build_overview_payload(&[build_site("site-1")], &accounts);
 
         assert_eq!(overview.trend.len(), 7);
-        assert_eq!(overview.trend.first().map(|item| item.bucket.as_str()), Some(window_start.to_string().as_str()));
-        assert_eq!(overview.trend.last().map(|item| item.bucket.as_str()), Some(today.to_string().as_str()));
-        assert!(overview.trend.iter().all(|item| item.bucket != stale_day.to_string()));
+        assert_eq!(
+            overview.trend.first().map(|item| item.bucket.as_str()),
+            Some(window_start.to_string().as_str())
+        );
+        assert_eq!(
+            overview.trend.last().map(|item| item.bucket.as_str()),
+            Some(today.to_string().as_str())
+        );
+        assert!(overview
+            .trend
+            .iter()
+            .all(|item| item.bucket != stale_day.to_string()));
 
         let zero_bucket = (today - Days::new(1)).to_string();
         let zero_point = overview
@@ -757,7 +782,9 @@ mod tests {
             .expect("bind upstream mock");
         let address = listener.local_addr().expect("read upstream mock address");
         let server = tokio::spawn(async move {
-            axum::serve(listener, app).await.expect("serve upstream mock");
+            axum::serve(listener, app)
+                .await
+                .expect("serve upstream mock");
         });
 
         let ctx = build_live_key_source_test_context();
@@ -770,15 +797,17 @@ mod tests {
         )
         .expect("seed usage cache");
 
-        let usage_cache_summary = repositories::summarize_usage_row_cache(&ctx.db, "account-live-keys")
-            .expect("summarize usage cache");
+        let usage_cache_summary =
+            repositories::summarize_usage_row_cache(&ctx.db, "account-live-keys")
+                .expect("summarize usage cache");
         assert_eq!(usage_cache_summary.total_api_keys, 0);
         assert_eq!(usage_cache_summary.active_api_keys, 0);
         assert_eq!(usage_cache_summary.total_requests, 1);
 
-        let managed_keys = keys_service::list_managed_keys(&ctx, "account-live-keys", 1, 100, false)
-            .await
-            .expect("read live managed keys");
+        let managed_keys =
+            keys_service::list_managed_keys(&ctx, "account-live-keys", 1, 100, false)
+                .await
+                .expect("read live managed keys");
         assert_eq!(managed_keys.total, 2);
         assert_eq!(
             managed_keys
@@ -812,6 +841,7 @@ mod tests {
             base_url: "https://ai.input.im".into(),
             created_at: "2026-06-05T00:00:00.000Z".into(),
             updated_at: "2026-06-05T00:00:00.000Z".into(),
+            ..SiteRecord::default()
         }
     }
 
@@ -840,13 +870,16 @@ mod tests {
         }
     }
 
-    fn build_test_cache_view(trend: Vec<TrendPoint>, alerts: Vec<AccountAlert>) -> AccountCacheView {
+    fn build_test_cache_view(
+        trend: Vec<TrendPoint>,
+        alerts: Vec<AccountAlert>,
+    ) -> AccountCacheView {
         AccountCacheView {
             fetched_at: "2026-06-05T08:00:00.000Z".into(),
             online: true,
             site_name: "AI INPUT".into(),
             balance: 8.0,
-                stats: AccountCacheStats {
+            stats: AccountCacheStats {
                 total_api_keys: 2,
                 active_api_keys: 1,
                 today_requests: 30,
@@ -908,11 +941,15 @@ mod tests {
                 stream: None,
                 openai_ws_mode: None,
                 billing_type: None,
+                service_tier: None,
+                long_context_billing_applied: None,
                 image_count: None,
+                image_input_tokens: None,
                 image_size: None,
                 image_input_size: None,
                 image_output_size: None,
                 image_output_tokens: None,
+                image_input_cost: None,
                 image_output_cost: None,
                 image_size_source: None,
                 image_size_breakdown: None,
@@ -949,6 +986,11 @@ mod tests {
             }],
             subscriptions: vec![SubscriptionRecord {
                 id: "subscription-1".into(),
+                subscription_key: "upstream:subscription-1".into(),
+                identity_kind: crate::contracts::SubscriptionIdentityKind::Upstream,
+                identity_ambiguous: false,
+                upstream_subscription_id: Some("subscription-1".into()),
+                fallback_identity: "fallback:v1:openai|%E5%B9%B4%E5%BA%A6|%E4%B8%BB%E8%B4%A6%E5%8F%B7%E5%B9%B4%E5%BA%A6%E5%A5%97%E9%A4%90".into(),
                 group_id: None,
                 name: "主账号年度套餐".into(),
                 status: "active".into(),
@@ -978,10 +1020,14 @@ mod tests {
         let db = Database::new(paths.db_path.clone());
         let _ = db.connect().expect("initialize test sqlite");
         AppContext {
+            runtime_coordination: crate::application::runtime_coordination_service::RuntimeCoordinationService::from_paths_for_test(&paths)
+                .expect("initialize test runtime coordination"),
             paths,
             db,
             sync_tasks: Arc::new(Mutex::new(HashMap::<String, Arc<SyncTaskHandle>>::new())),
-            live_resources: crate::application::resource_coordinator::ResourceCoordinator::default(),
+            live_resources: crate::application::resource_coordinator::ResourceCoordinator::default(
+            ),
+            native_notifications_enabled: false,
         }
     }
 
@@ -994,6 +1040,7 @@ mod tests {
                 base_url: base_url.into(),
                 created_at: "2026-07-16T00:00:00Z".into(),
                 updated_at: "2026-07-16T00:00:00Z".into(),
+                ..SiteRecord::default()
             },
         )
         .expect("insert test site");
@@ -1059,11 +1106,15 @@ mod tests {
             stream: None,
             openai_ws_mode: None,
             billing_type: None,
+            service_tier: None,
+            long_context_billing_applied: None,
             image_count: None,
+            image_input_tokens: None,
             image_size: None,
             image_input_size: None,
             image_output_size: None,
             image_output_tokens: None,
+            image_input_cost: None,
             image_output_cost: None,
             image_size_source: None,
             image_size_breakdown: None,
@@ -1080,4 +1131,3 @@ mod tests {
         }
     }
 }
-

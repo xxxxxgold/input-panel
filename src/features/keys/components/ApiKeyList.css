@@ -11,25 +11,71 @@
   padding: 14px 16px;
 }
 
-.api-key-summary-context-row {
-  width: 100%;
-  gap: 10px;
-}
-
-.api-key-summary-context-row .status-pill {
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-
 .api-key-summary-context {
   justify-content: flex-start;
   overflow: visible;
+  flex: 0 0 auto;
+  min-width: 0;
 }
 
 .api-key-summary-context .key-context-name {
   max-width: 100%;
 }
 
+.api-key-summary-account-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 120px;
+  min-height: 28px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  padding: 0 12px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-soft));
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-key-summary-secret-row {
+  width: 100%;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.api-key-summary-secret-row .key-secret-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-key-summary-copy-button {
+  flex: 0 0 auto;
+}
+
 .api-key-summary-meta {
-  margin-top: 2px;
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+@media (max-width: 560px) {
+  .api-key-summary-row .key-heading-row,
+  .api-key-summary-secret-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .api-key-summary-context {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .api-key-summary-meta {
+    margin-left: 0;
+  }
 }

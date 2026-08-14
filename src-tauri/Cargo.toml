@@ -12,6 +12,10 @@ rust-version = "1.77.2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
 [lib]
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
@@ -24,12 +28,16 @@ anyhow = "1.0"
 axum = { version = "0.7", features = ["macros"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
+httpdate = "1.0"
 log = "0.4"
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "cookies"] }
+rodio = { version = "=0.21.1", default-features = false, features = ["playback", "mp3", "wav"] }
 rusqlite = { version = "0.31", features = ["backup", "bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 tauri = { version = "2.11.2", features = ["tray-icon"] }
+tauri-plugin-dialog = "=2.7.1"
 tauri-plugin-log = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-single-instance = "2.4.3"
@@ -38,6 +46,8 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync",
 uuid = { version = "1.11", features = ["v4", "serde"] }
 
 [target.'cfg(windows)'.dependencies]
+tauri-winrt-notification = "0.7"
+windows-registry = "0.6"
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
 
 [profile.release]

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
+use std::collections::HashMap;
 
 use crate::contracts::StoredSession;
 use crate::infrastructure::sqlite::Database;
@@ -47,9 +48,37 @@ pub fn load_session(db: &Database, account_id: &str) -> Result<Option<StoredSess
     Ok(session)
 }
 
-pub fn remove_session(db: &Database, account_id: &str) -> Result<()> {
+pub fn list_sessions(db: &Database) -> Result<HashMap<String, StoredSession>> {
     let conn = db.connect()?;
-    conn.execute("DELETE FROM sessions WHERE account_id = ?1", params![account_id])?;
-    Ok(())
+    let mut stmt = conn.prepare(
+        "SELECT account_id, saved_at, access_token, refresh_token, token_type, cookie_jar_json
+         FROM sessions",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            StoredSession {
+                saved_at: row.get(1)?,
+                access_token: row.get(2)?,
+                refresh_token: row.get(3)?,
+                token_type: row.get(4)?,
+                cookie_jar_json: row.get(5)?,
+            },
+        ))
+    })?;
+    let mut sessions = HashMap::new();
+    for row in rows {
+        let (account_id, session) = row?;
+        sessions.insert(account_id, session);
+    }
+    Ok(sessions)
 }
 
+pub fn remove_session(db: &Database, account_id: &str) -> Result<()> {
+    let conn = db.connect()?;
+    conn.execute(
+        "DELETE FROM sessions WHERE account_id = ?1",
+        params![account_id],
+    )?;
+    Ok(())
+}

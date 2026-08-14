@@ -1,5 +1,14 @@
 import type { DesktopUiPrefs, DesktopUiPrefsPatch, NavKey, OpenMainWindowPayload } from "../../types";
-import { desktopOrHttp } from "../../shared/transport/runtime";
+import { desktopOrHttp, isTauriRuntime } from "../../shared/transport/runtime";
+
+export const NATIVE_CAPABILITY_UNSUPPORTED_MESSAGE = "当前运行模式不支持原生窗口操作。";
+
+function requireNativeDesktopCapability<T>(command: string, args?: Record<string, unknown>) {
+  if (!isTauriRuntime()) {
+    return Promise.reject(new Error(NATIVE_CAPABILITY_UNSUPPORTED_MESSAGE));
+  }
+  return desktopOrHttp<T>({ command, args, url: "" });
+}
 
 export function getDesktopUiPrefs() {
   return desktopOrHttp<DesktopUiPrefs>({
@@ -20,101 +29,59 @@ export function updateDesktopUiPrefs(payload: DesktopUiPrefsPatch) {
   });
 }
 
+export function selectFloatingNotificationSound() {
+  return requireNativeDesktopCapability<DesktopUiPrefs | null>(
+    "select_floating_notification_sound"
+  );
+}
+
+export function previewFloatingNotificationSound() {
+  return requireNativeDesktopCapability<boolean>("preview_floating_notification_sound");
+}
+
+export function restoreDefaultFloatingNotificationSound() {
+  return requireNativeDesktopCapability<DesktopUiPrefs>(
+    "restore_default_floating_notification_sound"
+  );
+}
+
 export function switchAppMode(launchMode: DesktopUiPrefs["launchMode"]) {
-  return desktopOrHttp<DesktopUiPrefs>({
-    command: "switch_app_mode",
-    args: { launchMode },
-    url: "/api/desktop-ui/mode",
-    init: {
-      method: "POST",
-      body: JSON.stringify({ launchMode })
-    }
-  });
+  return requireNativeDesktopCapability<DesktopUiPrefs>("switch_app_mode", { launchMode });
 }
 
 export function setFloatingWindowVisible(visible: boolean) {
-  return desktopOrHttp<DesktopUiPrefs>({
-    command: "set_floating_window_visible",
-    args: { visible },
-    url: "/api/desktop-ui/floating/visibility",
-    init: {
-      method: "POST",
-      body: JSON.stringify({ visible })
-    }
-  });
+  return requireNativeDesktopCapability<DesktopUiPrefs>("set_floating_window_visible", { visible });
 }
 
 export function setFloatingPanelVisible(visible: boolean) {
-  return desktopOrHttp<boolean>({
-    command: "set_floating_panel_visible",
-    args: { visible },
-    url: "/api/desktop-ui/floating-panel/visibility",
-    init: {
-      method: "POST",
-      body: JSON.stringify({ visible })
-    }
-  });
+  return requireNativeDesktopCapability<boolean>("set_floating_panel_visible", { visible });
+}
+
+export function getFloatingPanelVisible() {
+  return requireNativeDesktopCapability<boolean>("get_floating_panel_visible");
 }
 
 export function positionFloatingPanel(payload: { x: number; y: number }) {
-  return desktopOrHttp<boolean>({
-    command: "position_floating_panel",
-    args: { payload },
-    url: "/api/desktop-ui/floating-panel/position",
-    init: {
-      method: "POST",
-      body: JSON.stringify(payload)
-    }
-  });
+  return requireNativeDesktopCapability<boolean>("position_floating_panel", { payload });
 }
 
 export function pushFloatingPanelToast(payload: {
-  tone: "error" | "info";
+  tone: "error" | "info" | "success";
   message: string;
   durationMs?: number;
 }) {
-  return desktopOrHttp<boolean>({
-    command: "push_floating_panel_toast",
-    args: { payload },
-    url: "/api/desktop-ui/floating-panel/toast",
-    init: {
-      method: "POST",
-      body: JSON.stringify(payload)
-    }
-  });
+  return requireNativeDesktopCapability<boolean>("push_floating_panel_toast", { payload });
 }
 
 export function showFloatingContextMenu(payload?: { x?: number; y?: number }) {
-  return desktopOrHttp<boolean>({
-    command: "show_floating_context_menu",
-    args: { payload },
-    url: "/api/desktop-ui/floating/context-menu",
-    init: {
-      method: "POST",
-      body: JSON.stringify(payload ?? {})
-    }
-  });
+  return requireNativeDesktopCapability<boolean>("show_floating_context_menu", { payload });
 }
 
 export function openMainWindow(nav?: NavKey) {
   const payload: OpenMainWindowPayload = { nav: nav ?? null };
-  return desktopOrHttp<DesktopUiPrefs>({
-    command: "open_main_window",
-    args: { payload },
-    url: "/api/desktop-ui/open-main",
-    init: {
-      method: "POST",
-      body: JSON.stringify(payload)
-    }
-  });
+  return requireNativeDesktopCapability<DesktopUiPrefs>("open_main_window", { payload });
 }
 
 export function quitApplication() {
-  return desktopOrHttp<boolean>({
-    command: "quit_application",
-    url: "/api/desktop-ui/quit",
-    init: {
-      method: "POST"
-    }
-  });
+  return requireNativeDesktopCapability<boolean>("quit_application");
 }

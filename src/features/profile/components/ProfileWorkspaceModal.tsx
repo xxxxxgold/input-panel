@@ -1,6 +1,7 @@
 import { RefreshCcw } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
 
+import type { AccountDataResourcePresentation } from "../../accounts/useAccountDataWorkspace";
 import { Modal } from "../../../shared/ui/Modal";
 import type {
   AccountRuntime,
@@ -14,6 +15,7 @@ export function ProfileWorkspaceModal({
   open,
   selectedAccount,
   profileRecord,
+  profilePresentation,
   profileForm,
   setProfileForm,
   profilePassword,
@@ -21,8 +23,11 @@ export function ProfileWorkspaceModal({
   notifyEmailDraft,
   setNotifyEmailDraft,
   platformQuotas,
+  platformQuotasPresentation,
   onClose,
   onRefreshSelectedAccount,
+  onRetryProfile,
+  onRetryPlatformQuotas,
   onProfileSave,
   onPasswordChange,
   onNotifyEmailSend,
@@ -32,6 +37,7 @@ export function ProfileWorkspaceModal({
   open: boolean;
   selectedAccount: AccountRuntime | null;
   profileRecord: UserProfileRecord | null;
+  profilePresentation: AccountDataResourcePresentation;
   profileForm: ProfileUpdateInput;
   setProfileForm: Dispatch<SetStateAction<ProfileUpdateInput>>;
   profilePassword: { oldPassword: string; newPassword: string };
@@ -39,8 +45,11 @@ export function ProfileWorkspaceModal({
   notifyEmailDraft: { email: string; code: string; target: string };
   setNotifyEmailDraft: Dispatch<SetStateAction<{ email: string; code: string; target: string }>>;
   platformQuotas: PlatformQuotaPayload | null;
+  platformQuotasPresentation: AccountDataResourcePresentation;
   onClose: () => void;
   onRefreshSelectedAccount: () => void;
+  onRetryProfile: () => void;
+  onRetryPlatformQuotas: () => void;
   onProfileSave: () => void;
   onPasswordChange: () => void;
   onNotifyEmailSend: () => void;
@@ -76,6 +85,7 @@ export function ProfileWorkspaceModal({
     >
       <ProfileModalContent
         profileRecord={profileRecord}
+        profilePresentation={profilePresentation}
         profileForm={profileForm}
         setProfileForm={setProfileForm}
         profilePassword={profilePassword}
@@ -83,6 +93,9 @@ export function ProfileWorkspaceModal({
         notifyEmailDraft={notifyEmailDraft}
         setNotifyEmailDraft={setNotifyEmailDraft}
         platformQuotas={platformQuotas}
+        platformQuotasPresentation={platformQuotasPresentation}
+        onRetryProfile={onRetryProfile}
+        onRetryPlatformQuotas={onRetryPlatformQuotas}
         onProfileSave={onProfileSave}
         onPasswordChange={onPasswordChange}
         onNotifyEmailSend={onNotifyEmailSend}

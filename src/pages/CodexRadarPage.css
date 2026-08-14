@@ -1,0 +1,664 @@
+.codex-radar-view {
+  display: grid;
+  gap: 18px;
+}
+
+.codex-radar-metric-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-rows: minmax(104px, auto);
+  align-items: stretch;
+}
+
+.codex-radar-metric-grid > .metric-card {
+  min-height: 104px;
+  height: 100%;
+}
+
+.codex-radar-metric-grid .metric-content {
+  align-self: stretch;
+  height: 100%;
+}
+
+.codex-radar-metric-grid .metric-header {
+  align-items: flex-start;
+  min-height: 34px;
+}
+
+.codex-radar-metric-grid .metric-label,
+.codex-radar-metric-grid .metric-hint {
+  line-height: 17px;
+}
+
+.codex-radar-metric-grid .metric-label {
+  flex: 0 1 auto;
+}
+
+.codex-radar-metric-grid .metric-hint {
+  display: -webkit-box;
+  min-width: 0;
+  max-width: 58%;
+  overflow: hidden;
+  text-align: right;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.codex-radar-metric-grid .metric-value {
+  margin-top: auto;
+  letter-spacing: 0;
+}
+
+.codex-radar-sync-status {
+  margin-top: 14px;
+}
+
+.codex-radar-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 14px 0 0;
+  color: var(--text-subtle);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.codex-radar-meta span {
+  overflow-wrap: anywhere;
+}
+
+.codex-radar-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  min-width: 0;
+}
+
+.codex-radar-header-meta {
+  justify-content: flex-end;
+  margin: 0;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.codex-radar-source {
+  margin: 12px 0 0;
+  color: var(--text-subtle);
+  font-size: 12px;
+}
+
+.codex-radar-detail-source {
+  width: fit-content;
+  margin-inline: auto;
+  text-align: center;
+}
+
+.codex-radar-detail-header-note {
+  max-width: 38rem;
+  margin: 0;
+  color: var(--text-subtle);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: right;
+}
+
+.codex-radar-view .section-card-actions {
+  flex: 0 0 auto;
+}
+
+.codex-radar-view .section-card-actions .ghost-button {
+  min-width: 96px;
+  white-space: nowrap;
+}
+
+.usage-table.codex-radar-table {
+  min-width: 860px;
+}
+
+.codex-radar-fast-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.codex-radar-fast-summary article {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-soft) 74%, var(--bg-card));
+}
+
+.codex-radar-fast-summary span {
+  color: var(--text-subtle);
+  font-size: 12px;
+}
+
+.codex-radar-fast-summary strong {
+  color: var(--text-strong);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-table.codex-radar-fast-table {
+  min-width: 1060px;
+}
+
+.codex-radar-fast-table th,
+.codex-radar-fast-table td {
+  white-space: nowrap;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.codex-radar-rank {
+  color: var(--accent-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.codex-radar-score,
+.codex-radar-cost {
+  color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.codex-radar-efficiency-groups {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.codex-radar-efficiency-group {
+  min-width: 0;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border));
+}
+
+.codex-radar-efficiency-group:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.codex-radar-efficiency-group > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.codex-radar-efficiency-group > header strong {
+  color: var(--text-strong);
+  font-size: 14px;
+}
+
+.codex-radar-efficiency-group > header span {
+  color: var(--text-subtle);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.codex-radar-efficiency-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.codex-radar-efficiency-cell {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-soft) 74%, var(--bg-card));
+}
+
+.codex-radar-efficiency-cell-head,
+.codex-radar-efficiency-cell-metrics {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.codex-radar-efficiency-cell-head > span:not(.codex-radar-effort-pill),
+.codex-radar-efficiency-cell small {
+  color: var(--text-subtle);
+  font-size: 12px;
+}
+
+.codex-radar-efficiency-cell-head strong {
+  color: var(--accent-strong);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.codex-radar-efficiency-cell-metrics {
+  margin-top: 8px;
+  color: var(--text-normal);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.codex-radar-efficiency-cell small {
+  display: block;
+  margin-top: 6px;
+}
+
+.codex-radar-model-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.codex-radar-model-title strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codex-radar-model-title .codex-radar-effort-pill {
+  flex: 0 0 auto;
+}
+
+.codex-radar-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.codex-radar-chart-grid > .section-card {
+  min-width: 0;
+}
+
+.codex-radar-chart-shell {
+  min-height: 310px;
+}
+
+.codex-radar-chart-shell > .echart-card-shell,
+.codex-radar-chart-shell > .echart-card-shell > .echart-host {
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+}
+
+.codex-radar-segmented {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 2px 0 12px;
+}
+
+.codex-radar-segmented button {
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-subtle);
+  background: var(--bg-soft);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.codex-radar-segmented button:hover,
+.codex-radar-segmented button:focus-visible,
+.codex-radar-segmented button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 56%, var(--border));
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-card));
+}
+
+.usage-table.codex-radar-detail-table {
+  min-width: 1360px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.codex-radar-detail-table th,
+.codex-radar-detail-table td {
+  padding: 8px 9px;
+  white-space: nowrap;
+}
+
+.codex-radar-detail-table th:first-child {
+  width: 18%;
+}
+
+.codex-radar-detail-table th:not(:first-child) {
+  width: 7.45%;
+}
+
+.codex-radar-view .status-pill.warning {
+  color: var(--status-warning-fg);
+  background: color-mix(in srgb, var(--status-warning-fg) 12%, transparent);
+}
+
+.codex-radar-recommendation-groups {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 16px;
+  border-block: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border));
+}
+
+.codex-radar-recommendation-group {
+  min-width: 0;
+  padding: 14px;
+  border-left: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border));
+}
+
+.codex-radar-recommendation-group:first-child {
+  border-left: 0;
+}
+
+.codex-radar-recommendation-group > header,
+.codex-radar-degradation-alert > header,
+.codex-radar-recommendation-model {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.codex-radar-recommendation-group h4 {
+  min-width: 0;
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.codex-radar-recommendation-icon,
+.codex-radar-degradation-icon {
+  display: grid;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.codex-radar-insights-rule-help {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  place-items: center;
+  position: relative;
+  border-radius: 50%;
+  color: var(--text-subtle);
+  cursor: help;
+}
+
+.codex-radar-insights-rule-help:hover,
+.codex-radar-insights-rule-help:focus-visible {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  outline: none;
+}
+
+.codex-radar-insights-rule-tooltip {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 8px);
+  right: 0;
+  width: max-content;
+  max-width: min(280px, calc(100vw - 48px));
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface-panel);
+  box-shadow: 0 8px 18px color-mix(in srgb, #000000 24%, transparent);
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 140ms ease, transform 140ms ease, visibility 140ms ease;
+  visibility: hidden;
+}
+
+.codex-radar-insights-rule-help:hover .codex-radar-insights-rule-tooltip,
+.codex-radar-insights-rule-help:focus-visible .codex-radar-insights-rule-tooltip {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+}
+
+.codex-radar-recommendation-items {
+  display: grid;
+}
+
+.codex-radar-recommendation-item {
+  min-width: 0;
+  padding: 10px 0;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 10%, var(--border));
+}
+
+.codex-radar-recommendation-model {
+  flex-wrap: wrap;
+}
+
+.codex-radar-recommendation-model strong,
+.codex-radar-degradation-alert > header > strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-strong);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codex-radar-recommendation-slot {
+  margin-left: auto;
+  color: var(--text-subtle);
+  font-size: 11px;
+}
+
+.codex-radar-recommendation-metrics,
+.codex-radar-degradation-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 9px 0 0;
+}
+
+.codex-radar-recommendation-metrics div,
+.codex-radar-degradation-metrics div {
+  min-width: 0;
+}
+
+.codex-radar-recommendation-metrics dt,
+.codex-radar-degradation-metrics dt,
+.codex-radar-degradation-score span {
+  color: var(--text-subtle);
+  font-size: 11px;
+}
+
+.codex-radar-recommendation-metrics dd,
+.codex-radar-degradation-metrics dd {
+  margin: 3px 0 0;
+  color: var(--text-strong);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.codex-radar-degradation-alerts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  margin-top: 16px;
+  border-block: 1px solid color-mix(in srgb, var(--status-warning-fg) 18%, var(--border));
+}
+
+.codex-radar-degradation-alert {
+  min-width: 0;
+  padding: 14px;
+  border-left: 1px solid color-mix(in srgb, var(--status-warning-fg) 18%, var(--border));
+}
+
+.codex-radar-degradation-alert:first-child {
+  border-left: 0;
+}
+
+.codex-radar-degradation-icon {
+  color: var(--status-warning-fg);
+  background: color-mix(in srgb, var(--status-warning-fg) 10%, transparent);
+}
+
+.codex-radar-degradation-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 56px;
+  margin-top: 12px;
+}
+
+.codex-radar-degradation-score {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
+.codex-radar-degradation-score strong {
+  color: var(--text-strong);
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+}
+
+.codex-radar-insights-sparkline {
+  display: block;
+  flex: 0 0 160px;
+  width: 160px;
+  height: 40px;
+  overflow: visible;
+  color: var(--status-warning-fg);
+}
+
+.codex-radar-insights-sparkline polyline,
+.codex-radar-insights-sparkline line {
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.codex-radar-insights-sparkline circle {
+  fill: currentColor;
+}
+
+@media (max-width: 1120px) {
+  .codex-radar-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .codex-radar-chart-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .codex-radar-fast-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .codex-radar-recommendation-groups {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .codex-radar-recommendation-group:nth-child(odd) {
+    border-left: 0;
+  }
+
+  .codex-radar-recommendation-group:nth-child(n + 3) {
+    border-top: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border));
+  }
+}
+
+@media (max-width: 560px) {
+  .codex-radar-metric-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .codex-radar-meta {
+    display: grid;
+    gap: 4px;
+  }
+
+  .codex-radar-efficiency-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .codex-radar-fast-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .codex-radar-recommendation-groups,
+  .codex-radar-degradation-alerts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .codex-radar-recommendation-group,
+  .codex-radar-degradation-alert {
+    border-left: 0;
+  }
+
+  .codex-radar-recommendation-group + .codex-radar-recommendation-group,
+  .codex-radar-degradation-alert + .codex-radar-degradation-alert {
+    border-top: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border));
+  }
+
+  .codex-radar-degradation-body {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .codex-radar-insights-sparkline {
+    width: 100%;
+    max-width: 240px;
+  }
+
+  .codex-radar-segmented {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .codex-radar-segmented button {
+    min-width: 0;
+    padding-inline: 6px;
+  }
+
+  .codex-radar-view .section-card-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .codex-radar-header-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .codex-radar-header-meta {
+    justify-content: flex-start;
+    text-align: left;
+    white-space: normal;
+  }
+
+  .codex-radar-detail-header-note {
+    max-width: none;
+    text-align: left;
+  }
+
+  .codex-radar-view .section-card-actions .ghost-button {
+    width: 100%;
+    justify-content: center;
+  }
+}

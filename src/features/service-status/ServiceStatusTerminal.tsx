@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, CheckCircle2, RefreshCcw, TimerReset } from "lucide-react";
+import { Activity, AlertTriangle, CheckCircle2, TimerReset } from "lucide-react";
 
 import type {
   ServiceStatusPayload,
@@ -7,35 +7,19 @@ import type {
 } from "../../types";
 import {
   formatDateTimeFull,
-  formatLiveClockTime,
-  formatMilliseconds,
+  formatDurationSeconds,
   formatPercent
 } from "../../shared/lib/formatters";
 import { DetailItem } from "../../shared/ui/DetailItem";
-import { EmptyState } from "../../shared/ui/EmptyState";
 import { MetricCard } from "../../shared/ui/MetricCard";
-import { SectionCard } from "../../shared/ui/SectionCard";
-
-const HISTORY_LEN = 60;
+import { ServiceStatusAnalysis } from "./ServiceStatusAnalysis";
 
 export function ServiceStatusTerminal({
   status,
-  loading,
-  refreshing,
-  lastError,
-  lastSyncedAt,
-  enabled = true,
-  refreshIntervalSeconds = 5,
-  onRefresh
+  lastSyncedAt
 }: {
   status: ServiceStatusPayload | null;
-  loading: boolean;
-  refreshing: boolean;
-  lastError: string | null;
   lastSyncedAt?: number | null;
-  enabled?: boolean;
-  refreshIntervalSeconds?: number;
-  onRefresh: () => void | Promise<void>;
 }) {
   const services = status?.services ?? [];
   const allOk = status?.allOk ?? false;
@@ -43,23 +27,26 @@ export function ServiceStatusTerminal({
   const lastSyncedText = lastSyncedAt ? formatDateTimeFull(new Date(lastSyncedAt).toISOString()) : generatedAtText;
   const onlineCount = services.filter((service) => service.last?.ok).length;
   const totalSamples = services.reduce((sum, service) => sum + service.history.length, 0);
-  const avgLatency = computeAverageLatency(services);
+  const lowestLatestLatency = findLowestLatestLatency(services);
   const averageUptime = computeAverageUptime(services);
   const hourlyUptimeBuckets = buildHourlyUptimeBuckets(services);
+  const onlineSummaryText = services.length > 0 ? `在线${onlineCount}/${services.length}` : "-";
 
   return (
     <section className="content-grid status-page-grid">
-      <div className="metric-grid">
+      <div className="metric-grid status-page-metric-grid">
         <MetricCard
           label="服务数"
-          value={String(services.length)}
-          hint={services.length > 0 ? `在线 ${onlineCount} / ${services.length}` : "等待拉取"}
+          value={onlineSummaryText}
+          hint={services.length > 0 ? "这里显示当前服务在线情况" : "等待拉取"}
           accent="sky"
           icon={<Activity size={18} />}
+          className="overview-metric-card status-page-metric-card"
           detailTitle="当前服务状态"
           detail={
             <>
               <DetailItem label="状态总览" value={allOk ? "全部正常" : "存在异常"} />
+              <DetailItem label="在线服务" value={onlineSummaryText} />
               <DetailItem label="最近同步时间" value={lastSyncedText} />
               <DetailItem label="最近探测结果" value={generatedAtText} />
               <DetailItem label="已采样点数" value={String(totalSamples)} />
@@ -67,11 +54,12 @@ export function ServiceStatusTerminal({
           }
         />
         <MetricCard
-          label="平均延迟"
-          value={formatMilliseconds(avgLatency)}
-          hint="取各服务最新一次探测"
+          label="最低延迟"
+          value={formatServiceStatusLatency(lowestLatestLatency?.latencyMs)}
+          hint={lowestLatestLatency ? `${lowestLatestLatency.model} · 最近一次探测` : "等待有效探测数据"}
           accent="emerald"
           icon={<TimerReset size={18} />}
+          className="overview-metric-card status-page-metric-card"
           detailTitle="最新探测延迟"
           detail={
             <>
@@ -79,7 +67,7 @@ export function ServiceStatusTerminal({
                 <DetailItem
                   key={`${service.model}-latency`}
                   label={service.model}
-                  value={formatMilliseconds(service.last?.latencyMs)}
+                  value={formatServiceStatusLatency(service.last?.latencyMs)}
                 />
               ))}
             </>
@@ -88,9 +76,10 @@ export function ServiceStatusTerminal({
         <MetricCard
           label="总可用率"
           value={services.length > 0 ? formatPercent(averageUptime, 2) : "-"}
-          hint="按全部模型平均值, 悬浮查看分小时明细"
+          hint="这里会汇总显示整体可用情况, 方便快速判断"
           accent="indigo"
           icon={allOk ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}
+          className="overview-metric-card status-page-metric-card"
           detailTitle="所有模型分小时可用率"
           detailPanelAlign="end"
           detail={
@@ -102,123 +91,7 @@ export function ServiceStatusTerminal({
           }
         />
       </div>
-
-      <SectionCard
-        title="AI.INPUT.IM 服务状态"
-        subtitle="监控INPUT的可用状态"
-        actions={
-          <div className="status-page-actions">
-            <button
-              type="button"
-              className="inline-text-button"
-              onClick={() => void onRefresh()}
-              disabled={refreshing || !enabled}
-            >
-              <RefreshCcw size={16} className={refreshing ? "spin" : ""} />
-              {refreshing ? "刷新中" : "立即刷新"}
-            </button>
-            <a
-              className="inline-text-button"
-              href="https://status.input.im"
-              target="_blank"
-              rel="noreferrer"
-            >
-              打开原页面
-            </a>
-          </div>
-        }
-      >
-        {!status && loading ? (
-          <div className="status-terminal-shell loading">
-            <div className="status-terminal-titlebar">
-              <div className="status-terminal-lights" aria-hidden="true">
-                <span className="light close" />
-                <span className="light min" />
-                <span className="light max" />
-              </div>
-              <div className="status-terminal-title">status.input.im</div>
-            </div>
-            <div className="status-terminal-body">
-              <p className="status-terminal-comment"># 正在连接远端状态接口...</p>
-              <p className="status-terminal-line">
-                <span className="status-terminal-prompt">~ $</span>
-                <span className="status-terminal-command"> monitor --watch</span>
-              </p>
-              <p className="status-terminal-loading">loading<span className="status-terminal-cursor" /></p>
-            </div>
-          </div>
-        ) : !status ? (
-          <EmptyState
-            title="当前无法获取服务状态"
-            detail={lastError ? `最近一次错误: ${lastError}` : "稍后重试或打开原页面查看。"}
-          />
-        ) : (
-          <div className="status-terminal-shell">
-            <div className="status-terminal-titlebar">
-              <div className="status-terminal-lights" aria-hidden="true">
-                <span className="light close" />
-                <span className="light min" />
-                <span className="light max" />
-              </div>
-              <div className="status-terminal-title">status.input.im</div>
-            </div>
-
-            <div className="status-terminal-toolbar">
-              <div>
-                <strong>{allOk ? "all systems operational" : "degraded status detected"}</strong>
-                <p>
-                  上次同步 {lastSyncedText} · 最近探测 {generatedAtText} · 本地时钟 {formatLiveClockTime(new Date())}
-                  {lastError ? ` · 最近一次刷新失败` : ""}
-                </p>
-              </div>
-              <span className={`status-pill ${allOk ? "ready" : "critical"}`}>
-                {allOk ? "Live" : "Alert"}
-              </span>
-            </div>
-
-            <div className="status-terminal-body">
-              <div className="status-terminal-block">
-                <p className="status-terminal-comment"># AI.INPUT.IM service monitor · polling every {refreshIntervalSeconds}s</p>
-                <p className="status-terminal-comment"># Last synced: {lastSyncedText}</p>
-                <p className="status-terminal-comment"># Latest probe result: {generatedAtText}</p>
-              </div>
-
-              <div className="status-terminal-block">
-                <p className="status-terminal-line">
-                  <span className="status-terminal-prompt">~ $</span>
-                  <span className="status-terminal-command"> uptime</span>
-                </p>
-                <p className="status-terminal-banner">
-                  <span className={allOk ? "ok" : "bad"}>{allOk ? "up" : "degraded"}</span>, {services.length} services,
-                  avg load <span className={allOk ? "ok" : "warn"}>{formatPercent(computeAverageUptime(services), 2)}</span>
-                </p>
-              </div>
-
-              <div className="status-terminal-block">
-                <p className="status-terminal-line">
-                  <span className="status-terminal-prompt">~ $</span>
-                  <span className="status-terminal-command"> monitor</span>
-                  <span className="status-terminal-flag"> --watch</span>
-                  <span className="status-terminal-args"> {services.map((service) => service.model).join(" ")}</span>
-                </p>
-
-                <div className="status-terminal-services">
-                  {services.map((service) => (
-                    <ServiceRow key={service.model} service={service} />
-                  ))}
-                </div>
-              </div>
-
-              <div className="status-terminal-block">
-                <p className="status-terminal-line">
-                  <span className="status-terminal-prompt">~ $</span>
-                  <span className="status-terminal-cursor" />
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-      </SectionCard>
+      <ServiceStatusAnalysis services={services} />
     </section>
   );
 }
@@ -277,88 +150,24 @@ function ServiceStatusHourlyUptimeDetails({
   );
 }
 
-function ServiceRow({ service }: { service: ServiceStatusServiceRecord }) {
-  const last = service.last;
-  const tone = last?.ok ? "ok" : last ? "bad" : "warn";
-  const statusText = last?.ok ? "online" : last ? "failing" : "pending";
-  const normalizedHistory = normalizeHistory(service.history);
-
-  return (
-    <div className="status-service-card">
-      <div className="status-service-head">
-        <div>
-          <strong>{service.model}</strong>
-          <p>
-            <span className={tone}>● {statusText}</span>
-            <span> uptime {formatPercent(service.uptimePct, 2)}</span>
-            <span> samples {service.history.length}/{HISTORY_LEN}</span>
-          </p>
-        </div>
-        <div className="status-service-last">
-          <span>{last ? formatUnixDateTime(last.ts) : "暂无探测"}</span>
-          <strong>{formatMilliseconds(last?.latencyMs)}</strong>
-        </div>
-      </div>
-
-      <div className="status-history-bars" role="img" aria-label={`${service.model} 最近 60 次探测`}>
-        {normalizedHistory.map((probe, index) => {
-          if (!probe) {
-            return <span key={`${service.model}-empty-${index}`} className="status-history-bar empty" aria-hidden="true" />;
-          }
-          const title = [
-            `${service.model}`,
-            probe.ok ? "OK" : "FAIL",
-            formatUnixDateTime(probe.ts),
-            `延迟 ${formatMilliseconds(probe.latencyMs)}`,
-            probe.error ? `错误 ${probe.error}` : null
-          ]
-            .filter(Boolean)
-            .join(" | ");
-          return (
-            <span
-              key={`${service.model}-${probe.ts}-${index}`}
-              className={`status-history-bar ${probe.ok ? "ok" : "bad"}`}
-              title={title}
-            />
-          );
-        })}
-      </div>
-      <div className="status-history-axis">
-        <span>-60m</span>
-        <span>-45m</span>
-        <span>-30m</span>
-        <span>-15m</span>
-        <span>now</span>
-      </div>
-      {last?.error ? (
-        <p className="status-service-error">最近错误: {last.error}</p>
-      ) : (
-        <p className="status-service-error neutral">
-          最近探测 {last ? formatDateTimeFull(toIsoFromUnix(last.ts)) : "暂无数据"} · 延迟 {formatMilliseconds(last?.latencyMs)}
-        </p>
-      )}
-    </div>
-  );
+function formatServiceStatusLatency(value?: number | null) {
+  return formatDurationSeconds(value, 2, "秒");
 }
 
-function normalizeHistory(history: ServiceStatusProbeRecord[]) {
-  const next: Array<ServiceStatusProbeRecord | null> = [...history];
-  while (next.length < HISTORY_LEN) {
-    next.unshift(null);
-  }
-  return next.slice(-HISTORY_LEN);
-}
-
-function computeAverageLatency(services: ServiceStatusServiceRecord[]) {
-  const latencies = services
-    .map((service) => service.last?.latencyMs ?? null)
-    .filter((value): value is number => typeof value === "number" && value > 0);
-
-  if (latencies.length === 0) {
-    return null;
-  }
-
-  return Math.round(latencies.reduce((sum, value) => sum + value, 0) / latencies.length);
+function findLowestLatestLatency(services: ServiceStatusServiceRecord[]) {
+  return services.reduce<{ model: string; latencyMs: number } | null>((lowest, service) => {
+    const latencyMs = service.last?.latencyMs;
+    if (typeof latencyMs !== "number" || !Number.isFinite(latencyMs) || latencyMs <= 0) {
+      return lowest;
+    }
+    if (lowest && lowest.latencyMs <= latencyMs) {
+      return lowest;
+    }
+    return {
+      model: service.model,
+      latencyMs
+    };
+  }, null);
 }
 
 function computeAverageUptime(services: ServiceStatusServiceRecord[]) {

@@ -5,14 +5,15 @@ export type NavKey =
   | "sites"
   | "accounts"
   | "serviceStatus"
+  | "codexRadar"
   | "keys"
   | "usage"
+  | "modelStats"
   | "subscriptions"
-  | "keyUsage"
   | "profile"
   | "trends"
   | "alerts"
   | "settings"
   | "systemSettings";
 
-export type WindowLabel = "main" | "floating" | "floating-panel";
+export type WindowLabel = "main" | "floating" | "floating-panel" | "floating-notification";

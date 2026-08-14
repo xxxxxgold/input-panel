@@ -1,4 +1,4 @@
-use crate::contracts::{AccountRecord, KeyRecord, SiteRecord, AccountAlert};
+use crate::contracts::{AccountAlert, AccountRecord, KeyRecord, SiteRecord};
 
 pub fn build_alerts(
     account: &AccountRecord,
@@ -66,7 +66,9 @@ mod tests {
         let site = build_site();
         let alerts = build_alerts(&account, &site, 0.0, &[], "2026-06-15T00:00:00Z");
 
-        assert!(alerts.iter().all(|item| !item.id.ends_with(":balance-empty")));
+        assert!(alerts
+            .iter()
+            .all(|item| !item.id.ends_with(":balance-empty")));
     }
 
     #[test]
@@ -90,6 +92,7 @@ mod tests {
             usage5h: None,
             usage1d: None,
             usage7d: None,
+            current_concurrency: None,
         };
 
         let alerts = build_alerts(&account, &site, 0.0, &[key], "2026-06-15T00:00:00Z");
@@ -118,6 +121,7 @@ mod tests {
             base_url: "https://ai.input.im".into(),
             created_at: "2026-06-15T00:00:00Z".into(),
             updated_at: "2026-06-15T00:00:00Z".into(),
+            ..SiteRecord::default()
         }
     }
 }

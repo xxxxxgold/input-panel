@@ -1,3 +1,5 @@
+import { Bell, BellOff } from "lucide-react";
+
 import {
   formatDateTimeFull,
   formatPercent,
@@ -8,25 +10,41 @@ import {
   getSubscriptionQuotaProgressMeta,
   getSubscriptionStatusPresentation
 } from "../../../subscription-view";
-import type { SubscriptionRecord } from "../../../types";
+import type { SubscriptionQuotaAlertSettingsPayload, SubscriptionRecord } from "../../../types";
+import {
+  formatSubscriptionQuotaAlertSummary,
+  resolveEffectiveSubscriptionQuotaAlertRule
+} from "../quota-alert-config";
 
 export function SubscriptionList({
   subscriptions,
   selectedSubscriptionId,
-  onSelectSubscription
+  onSelectSubscription,
+  quotaAlertSettings
 }: {
   subscriptions: SubscriptionRecord[];
   selectedSubscriptionId?: string | null;
   onSelectSubscription?: (subscription: SubscriptionRecord) => void;
+  quotaAlertSettings?: SubscriptionQuotaAlertSettingsPayload | null;
 }) {
   if (subscriptions.length === 0) {
     return <EmptyState title="当前没有订阅数据" detail="该账号未返回有效订阅或套餐信息。" compact />;
   }
+  const listFallbackPlatform = resolveListFallbackPlatform(subscriptions);
   return (
     <div className="stack-list">
       {subscriptions.map((subscription) => {
         const statusPresentation = getSubscriptionStatusPresentation(subscription.status);
         const interactive = Boolean(onSelectSubscription);
+        const resolvedPlatform = resolveSubscriptionPlatform(subscription.platform, listFallbackPlatform);
+        const quotaAlertRule = quotaAlertSettings
+          ? resolveEffectiveSubscriptionQuotaAlertRule(
+              quotaAlertSettings,
+              subscription.subscriptionKey
+            )
+          : null;
+        const QuotaAlertIcon = quotaAlertRule?.enabled ? Bell : BellOff;
+        const subscriptionMetaLabel = resolveSubscriptionMetaLabel(subscription);
         return (
           <button
             key={subscription.id}
@@ -43,11 +61,19 @@ export function SubscriptionList({
                 <div className="subscription-card-title-row">
                   <div className="subscription-card-title-cluster">
                     <div className="subscription-card-tags">
-                      <span className={`subscription-platform-pill ${toPlatformTone(subscription.platform)}`}>
-                        {subscription.platform ?? "unknown"}
+                      <span className={`subscription-platform-pill ${toPlatformTone(resolvedPlatform)}`}>
+                        {formatSubscriptionPlatformLabel(resolvedPlatform)}
                       </span>
                     </div>
                     <strong>{subscription.name}</strong>
+                    {quotaAlertRule && (
+                      <span
+                        className={`subscription-quota-alert-summary ${quotaAlertRule.enabled ? "enabled" : "disabled"}`}
+                      >
+                        <QuotaAlertIcon aria-hidden="true" size={14} strokeWidth={1.8} />
+                        <span>额度提醒 {formatSubscriptionQuotaAlertSummary(quotaAlertRule)}</span>
+                      </span>
+                    )}
                   </div>
                   <div className="subscription-status-block">
                     <span className={`status-pill ${statusPresentation.tone}`}>
@@ -55,11 +81,9 @@ export function SubscriptionList({
                     </span>
                   </div>
                 </div>
-                {resolveSubscriptionMetaLabel(subscription) && (
-                  <div className="subscription-card-meta">
-                    <p>{resolveSubscriptionMetaLabel(subscription)}</p>
-                  </div>
-                )}
+                <div className="subscription-card-meta">
+                  {subscriptionMetaLabel && <p>{subscriptionMetaLabel}</p>}
+                </div>
               </div>
             </div>
             {renderQuotaWindow("每日额度", subscription.daily, subscription.expiresAt)}
@@ -73,7 +97,38 @@ export function SubscriptionList({
 }
 
 function toPlatformTone(platform?: string | null) {
-  return (platform ?? "unknown").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+  return (normalizePlatformValue(platform) ?? "unknown").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+}
+
+function formatSubscriptionPlatformLabel(platform?: string | null) {
+  const normalized = normalizePlatformValue(platform);
+  if (!normalized) {
+    return "未知平台";
+  }
+  return `${normalized.slice(0, 1).toLocaleUpperCase("en-US")}${normalized.slice(1)}`;
+}
+
+function resolveSubscriptionPlatform(
+  platform: string | null | undefined,
+  listFallbackPlatform: string | null
+) {
+  return normalizePlatformValue(platform) ?? listFallbackPlatform;
+}
+
+function resolveListFallbackPlatform(subscriptions: SubscriptionRecord[]) {
+  const distinctPlatforms = Array.from(
+    new Set(
+      subscriptions
+        .map((item) => normalizePlatformValue(item.platform))
+        .filter((item): item is string => item !== null)
+    )
+  );
+  return distinctPlatforms.length === 1 ? distinctPlatforms[0] : null;
+}
+
+function normalizePlatformValue(platform?: string | null) {
+  const trimmed = platform?.trim();
+  return trimmed ? trimmed : null;
 }
 
 function resolveSubscriptionMetaLabel(subscription: SubscriptionRecord) {

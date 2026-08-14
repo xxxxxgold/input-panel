@@ -1,4 +1,5 @@
-import { AlertTriangle, Info, LoaderCircle, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Info, LoaderCircle, RotateCcw, X } from "lucide-react";
+import type { CSSProperties } from "react";
 import { useEffect, useState } from "react";
 
 import type { MonitorToast } from "../shared/state/monitor-store";
@@ -33,6 +34,9 @@ function ToastCard({
   onDismiss: (toastId: string) => void;
 }) {
   const [leaving, setLeaving] = useState(false);
+  const progressStyle = {
+    "--toast-duration": `${toast.durationMs}ms`
+  } as CSSProperties;
 
   useEffect(() => {
     if (toast.loading) {
@@ -50,6 +54,11 @@ function ToastCard({
     window.setTimeout(() => onDismiss(toast.id), 180);
   }
 
+  function handleAction() {
+    onDismiss(toast.id);
+    toast.action?.onClick();
+  }
+
   return (
     <section
       className={`toast-card ${toast.tone}${toast.loading ? " loading" : ""}${leaving ? " leaving" : ""}`}
@@ -62,21 +71,38 @@ function ToastCard({
             <LoaderCircle size={16} className="spin" />
           ) : toast.tone === "error" ? (
             <AlertTriangle size={16} />
+          ) : toast.tone === "success" ? (
+            <CheckCircle2 size={16} />
           ) : (
             <Info size={16} />
           )}
         </div>
         <div className="toast-card-copy">
-          <strong>{toast.loading ? "处理中" : toast.tone === "error" ? "请求失败" : "提示"}</strong>
+          <strong>
+            {toast.title ?? (toast.loading ? "处理中" : toast.tone === "error" ? "请求失败" : toast.tone === "success" ? "服务已恢复" : "提示")}
+          </strong>
           <span>{toast.message}</span>
         </div>
-        <button type="button" className="toast-dismiss" onClick={handleDismiss} aria-label="关闭通知">
-          <X size={14} />
-        </button>
+        <div className="toast-card-actions">
+          {toast.action && (
+            <button
+              type="button"
+              className="toast-action"
+              onClick={handleAction}
+              aria-label={toast.action.label}
+              title={toast.action.label}
+            >
+              <RotateCcw size={14} />
+            </button>
+          )}
+          <button type="button" className="toast-dismiss" onClick={handleDismiss} aria-label="关闭通知">
+            <X size={14} />
+          </button>
+        </div>
       </div>
       {!toast.loading && (
         <div className="toast-progress-track" aria-hidden="true">
-          <div className="toast-progress-bar" style={{ animationDuration: `${toast.durationMs}ms` }} />
+          <div className="toast-progress-bar" style={progressStyle} />
         </div>
       )}
     </section>

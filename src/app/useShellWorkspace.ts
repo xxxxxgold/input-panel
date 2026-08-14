@@ -19,6 +19,7 @@ export function useShellWorkspace({ accounts }: { accounts: AccountRuntime[] }) 
   const [topbarAccountSearch, setTopbarAccountSearch] = useState("");
   const [isRailExpanded, setIsRailExpanded] = useState(() => !isCompactRailViewport());
   const topbarServiceStatusRef = useRef<HTMLDivElement | null>(null);
+  const topbarSiteEndpointsRef = useRef<HTMLDivElement | null>(null);
   const topbarAlertsRef = useRef<HTMLDivElement | null>(null);
   const topbarSubscriptionsRef = useRef<HTMLDivElement | null>(null);
   const topbarAccountMenuRef = useRef<HTMLDivElement | null>(null);
@@ -67,7 +68,8 @@ export function useShellWorkspace({ accounts }: { accounts: AccountRuntime[] }) 
     function handlePointerDown(event: PointerEvent) {
       const target = event.target as Node;
       if (
-        topbarServiceStatusRef.current?.contains(target)
+        topbarSiteEndpointsRef.current?.contains(target)
+        || topbarServiceStatusRef.current?.contains(target)
         || topbarAlertsRef.current?.contains(target)
         || topbarSubscriptionsRef.current?.contains(target)
       ) {
@@ -116,6 +118,7 @@ export function useShellWorkspace({ accounts }: { accounts: AccountRuntime[] }) 
   }
 
   const topbarServiceStatusExpanded = isTopbarPeekExpanded(topbarPeekState, "serviceStatus");
+  const topbarSiteEndpointsExpanded = isTopbarPeekExpanded(topbarPeekState, "siteEndpoints");
   const topbarAlertsExpanded = isTopbarPeekExpanded(topbarPeekState, "alerts");
   const topbarSubscriptionsExpanded = isTopbarPeekExpanded(topbarPeekState, "subscriptions");
 
@@ -123,6 +126,7 @@ export function useShellWorkspace({ accounts }: { accounts: AccountRuntime[] }) 
     isRailExpanded,
     setIsRailExpanded,
     railToggleTitle,
+    topbarSiteEndpointsExpanded,
     topbarServiceStatusExpanded,
     setTopbarServiceStatusExpanded: (value: boolean) => {
       if (value) {
@@ -151,6 +155,7 @@ export function useShellWorkspace({ accounts }: { accounts: AccountRuntime[] }) 
     setTopbarAccountMenuOpen,
     topbarAccountSearch,
     setTopbarAccountSearch,
+    topbarSiteEndpointsRef,
     topbarServiceStatusRef,
     topbarAlertsRef,
     topbarSubscriptionsRef,

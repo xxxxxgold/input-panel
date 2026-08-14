@@ -9,7 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { AlertTriangle, CircleAlert, CircleCheck, Info, X } from "lucide-react";
 
-import { getDesktopUiPrefs } from "../features/desktop-ui/client";
+import { getDesktopUiPrefs, getFloatingPanelVisible } from "../features/desktop-ui/client";
 import {
   acknowledgeBusinessNotificationDismissal,
   closeBusinessNotificationDetail,
@@ -25,7 +25,9 @@ import {
   markBusinessNotificationVisible,
   pauseBusinessNotifications,
   releaseBusinessNotificationDedupeKey,
+  restoreBusinessNotificationAfterFailedDismissal,
   resumeBusinessNotifications,
+  setBusinessNotificationDuration,
   setBusinessNotificationMaxVisible,
   type BusinessNotificationLevel,
   type BusinessNotificationPayload,
@@ -44,11 +46,16 @@ import {
   compact,
   formatDateTimeFull,
   formatDurationSeconds,
-  formatTime
+  formatTimeOnly,
+  formatUsageServiceTier
 } from "../shared/lib/formatters";
 import { DEFAULT_THEME_ID, normalizeThemeId, type ThemeId } from "../shared/lib/theme";
 import { applyThemeToDocument } from "../shared/lib/apply-theme";
 import { shouldApplyMailboxRevision } from "../shared/lib/mailbox-revision";
+import {
+  normalizeFloatingNotificationDock,
+  type FloatingNotificationDock
+} from "../shared/lib/floating-notification-dock";
 import { isTauriRuntime } from "../shared/transport/runtime";
 
 export interface FloatingNotificationMailboxReference {
@@ -72,6 +79,7 @@ export interface FloatingNotificationMailboxItem {
     apiKeyLabel: string;
     model: string;
     reasoningEffort?: string | null;
+    serviceTier?: string | null;
     inputTokens: number;
     outputTokens: number;
     cacheCreationTokens: number;
@@ -85,17 +93,16 @@ export interface FloatingNotificationMailboxItem {
 export interface FloatingNotificationMailboxSnapshot {
   revision: number;
   items: FloatingNotificationMailboxItem[];
+  dock?: FloatingNotificationDock | null;
 }
 
-const emptySnapshot: FloatingNotificationMailboxSnapshot = {
-  revision: 0,
-  items: []
-};
-
-export const FLOATING_NOTIFICATION_EXIT_DURATION_MS = 300;
-export const FLOATING_NOTIFICATION_ENTER_DURATION_MS = 300;
-export const FLOATING_NOTIFICATION_REDUCED_MOTION_DURATION_MS = 140;
+export const FLOATING_NOTIFICATION_EXIT_DURATION_MS = 560;
+export const FLOATING_NOTIFICATION_ENTER_DURATION_MS = 520;
 export const FLOATING_NOTIFICATION_ANIMATION_FALLBACK_BUFFER_MS = 48;
+export const FLOATING_NOTIFICATION_REGION_SETTLE_DELAY_MS =
+  360 + FLOATING_NOTIFICATION_ANIMATION_FALLBACK_BUFFER_MS;
+const NATIVE_DISMISS_SYNC_PAUSE_REASON = "native-dismiss-sync";
+const NATIVE_DISMISS_SNAPSHOT_RETRY_DELAY_MS = 500;
 
 export type FloatingNotificationAnimationLifecycle = "enter" | "exit";
 
@@ -165,14 +172,14 @@ export function resolveFloatingNotificationAnimationLifecycle(
   animationName: string
 ): FloatingNotificationAnimationLifecycle | null {
   if (
-    animationName === "floating-notification-enter" ||
-    animationName === "floating-notification-enter-reduced"
+    animationName === "floating-notification-enter-left" ||
+    animationName === "floating-notification-enter-right"
   ) {
     return "enter";
   }
   if (
-    animationName === "floating-notification-exit" ||
-    animationName === "floating-notification-exit-reduced"
+    animationName === "floating-notification-exit-left" ||
+    animationName === "floating-notification-exit-right"
   ) {
     return "exit";
   }
@@ -195,10 +202,48 @@ export function collectNewlyExitingNotificationIds(
     .map((entry) => entry.notification.id);
 }
 
+export function isFloatingNotificationDismissalAcknowledged(
+  snapshot: FloatingNotificationMailboxSnapshot,
+  notificationId: string
+): boolean {
+  return !snapshot.items.some((item) => item.id === notificationId);
+}
+
+export function isFloatingNotificationMotionSettled(
+  state: BusinessNotificationQueueState
+): boolean {
+  return (
+    state.visible.length > 0 &&
+    state.awaitingAcknowledgement.length === 0 &&
+    state.visible.every((entry) => entry.lifecycle === "visible")
+  );
+}
+
+/** 确认详情时保留详情表面，直到原生 mailbox 返回删除确认。 */
+export function beginFloatingNotificationDetailDismissal(
+  state: BusinessNotificationQueueState,
+  notificationId: string,
+  now = Date.now()
+): BusinessNotificationQueueState {
+  const withoutHover = resumeBusinessNotifications(state, "hover", now);
+  const withoutTransientPause = resumeBusinessNotifications(withoutHover, "focus", now);
+  // 详情会隐藏列表并暂停动画 fallback，先结算入场事务，避免显式确认被永久阻塞。
+  const withoutEnteringTransition: BusinessNotificationQueueState = {
+    ...withoutTransientPause,
+    visible: withoutTransientPause.visible.map((entry) =>
+      entry.lifecycle === "entering"
+        ? { ...entry, lifecycle: "visible", lastResumedAt: now }
+        : entry
+    )
+  };
+  return markBusinessNotificationExiting(withoutEnteringTransition, [notificationId]);
+}
+
 const levelLabels: Record<BusinessNotificationLevel, string> = {
   critical: "严重",
   high: "高",
   medium: "中",
+  warning: "警告",
   low: "低",
   success: "成功",
   info: "信息"
@@ -217,7 +262,7 @@ function FloatingNotificationLevelIcon({
   if (level === "critical" || level === "high") {
     return <CircleAlert aria-hidden="true" size={size} strokeWidth={2.2} />;
   }
-  if (level === "medium") {
+  if (level === "medium" || level === "warning") {
     return <AlertTriangle aria-hidden="true" size={size} strokeWidth={2.2} />;
   }
   return <Info aria-hidden="true" size={size} strokeWidth={2.2} />;
@@ -232,6 +277,7 @@ function normalizeNotificationLevel(level: string): BusinessNotificationLevel {
     level === "critical" ||
     level === "high" ||
     level === "medium" ||
+    level === "warning" ||
     level === "low" ||
     level === "success"
   ) {
@@ -258,6 +304,7 @@ function toBusinessNotification(item: FloatingNotificationMailboxItem): Business
           apiKeyLabel: item.usage.apiKeyLabel,
           model: item.usage.model,
           reasoningEffort: item.usage.reasoningEffort,
+          serviceTier: item.usage.serviceTier,
           inputTokens: item.usage.inputTokens,
           outputTokens: item.usage.outputTokens,
           cacheCreationTokens: item.usage.cacheCreationTokens,
@@ -280,6 +327,12 @@ function formatUsageCost(value: number) {
 
 function formatFirstToken(value: number | null | undefined) {
   return formatDurationSeconds(value, 3, "秒");
+}
+
+// 上游用 `none` 表示未启用推理，展示层统一收敛为短占位符。
+function formatUsageReasoningEffort(value: string | null | undefined) {
+  const normalized = value?.trim();
+  return normalized && normalized.toLowerCase() !== "none" ? normalized : "-";
 }
 
 export function UsageNotificationMetrics({
@@ -307,7 +360,7 @@ export function UsageNotificationMetrics({
       {!detail ? (
         <div className="floating-usage-model-metric">
           <dt>
-            模型 <span>{usage.reasoningEffort || "默认模型"}</span>
+            模型 <span>{formatUsageReasoningEffort(usage.reasoningEffort)}</span>
           </dt>
           <dd title={usage.model}>{usage.model}</dd>
         </div>
@@ -386,6 +439,21 @@ export function reconcileFloatingNotificationSnapshot(
   return next;
 }
 
+/**
+ * 原生快照到达后再结算退出态，避免最后一张卡片先被本地移除而暴露空窗口。
+ */
+export function settleFloatingNotificationExitAfterNativeDismissal(
+  state: BusinessNotificationQueueState,
+  notificationId: string,
+  snapshot: FloatingNotificationMailboxSnapshot,
+  now = Date.now()
+): BusinessNotificationQueueState {
+  const next = completeBusinessNotificationExit(state, notificationId, now);
+  return snapshot.items.some((item) => item.id === notificationId)
+    ? next
+    : acknowledgeBusinessNotificationDismissal(next, notificationId, now);
+}
+
 export function FloatingNotificationWindowRoot() {
   const [theme, setTheme] = useState<ThemeId>(DEFAULT_THEME_ID);
   const [queue, setQueue] = useState<BusinessNotificationQueueState>(() =>
@@ -394,8 +462,10 @@ export function FloatingNotificationWindowRoot() {
   const queueRef = useRef(queue);
   const lastAppliedRevisionRef = useRef(0);
   const panelVisibleRef = useRef(false);
+  const panelVisibilityEventVersionRef = useRef(0);
   const nativeLifecyclePauseReasonsRef = useRef(new Set<string>());
-  const locallyDismissedIdsRef = useRef(new Set<string>());
+  const nativeDismissPendingIdsRef = useRef(new Set<string>());
+  const nativeDismissRetryTimersRef = useRef(new Map<string, number>());
   const animationFallbackTimersRef = useRef(
     new Map<string, FloatingNotificationAnimationFallbackTimer>()
   );
@@ -408,6 +478,8 @@ export function FloatingNotificationWindowRoot() {
   const [notificationMaxVisible, setNotificationMaxVisible] = useState(
     DEFAULT_FLOATING_NOTIFICATION_MAX_VISIBLE
   );
+  const [notificationDock, setNotificationDock] = useState<FloatingNotificationDock>("right");
+  const [notificationGeometryEpoch, setNotificationGeometryEpoch] = useState(0);
   const notificationDurationRef = useRef(notificationDurationMs);
   const notificationMaxVisibleRef = useRef(notificationMaxVisible);
   notificationDurationRef.current = notificationDurationMs;
@@ -434,27 +506,22 @@ export function FloatingNotificationWindowRoot() {
 
   const applyMailboxSnapshot = useCallback(
     (snapshot: FloatingNotificationMailboxSnapshot) => {
+      setNotificationDock(normalizeFloatingNotificationDock(snapshot.dock));
+      setNotificationGeometryEpoch((current) => current + 1);
+      const now = Date.now();
       if (!shouldApplyMailboxRevision(lastAppliedRevisionRef.current, snapshot.revision)) {
+        commitQueue((current) =>
+          resumeBusinessNotifications(current, NATIVE_DISMISS_SYNC_PAUSE_REASON, now)
+        );
         return;
       }
       lastAppliedRevisionRef.current = snapshot.revision;
-      const incomingIds = new Set(snapshot.items.map((item) => item.id));
-      for (const notificationId of locallyDismissedIdsRef.current) {
-        if (!incomingIds.has(notificationId)) {
-          locallyDismissedIdsRef.current.delete(notificationId);
-        }
-      }
-      const filteredSnapshot = {
-        ...snapshot,
-        items: snapshot.items.filter((item) => !locallyDismissedIdsRef.current.has(item.id))
-      };
-      const now = Date.now();
       commitQueue((current) =>
         applyFloatingPanelPause(
           applyNativeNotificationLifecyclePauseReasons(
             reconcileFloatingNotificationSnapshot(
-              current,
-              filteredSnapshot,
+              resumeBusinessNotifications(current, NATIVE_DISMISS_SYNC_PAUSE_REASON, now),
+              snapshot,
               now,
               notificationDurationRef.current,
               notificationMaxVisibleRef.current
@@ -469,23 +536,45 @@ export function FloatingNotificationWindowRoot() {
     [applyFloatingPanelPause, commitQueue]
   );
 
-  const dismissNativeNotification = useCallback(
-    (notificationId: string, channel: BusinessNotificationPayload["channel"]) => {
-      if (channel === "business") {
-        locallyDismissedIdsRef.current.add(notificationId);
-      }
-      void invoke<FloatingNotificationMailboxSnapshot>("dismiss_floating_notification", {
+  const dismissNativeNotification = useCallback(async (notificationId: string) => {
+    try {
+      const snapshot = await invoke<FloatingNotificationMailboxSnapshot>("dismiss_floating_notification", {
         notificationId
-      })
-        .then(applyMailboxSnapshot)
-        .catch(() => {
-          if (channel === "business") {
-            locallyDismissedIdsRef.current.delete(notificationId);
-          }
-          void invoke<FloatingNotificationMailboxSnapshot>("get_floating_notification_snapshot")
-            .then(applyMailboxSnapshot)
-            .catch(() => undefined);
-        });
+      });
+      return isFloatingNotificationDismissalAcknowledged(snapshot, notificationId)
+        ? snapshot
+        : null;
+    } catch {
+      try {
+        const snapshot = await invoke<FloatingNotificationMailboxSnapshot>(
+          "get_floating_notification_snapshot"
+        );
+        return isFloatingNotificationDismissalAcknowledged(snapshot, notificationId)
+          ? snapshot
+          : null;
+      } catch {
+        return null;
+      }
+    }
+  }, []);
+
+  const retryNativeDismissSnapshot = useCallback(
+    (notificationId: string) => {
+      if (nativeDismissRetryTimersRef.current.has(notificationId)) {
+        return;
+      }
+      const timer = window.setTimeout(() => {
+        if (nativeDismissRetryTimersRef.current.get(notificationId) !== timer) {
+          return;
+        }
+        nativeDismissRetryTimersRef.current.delete(notificationId);
+        void invoke<FloatingNotificationMailboxSnapshot>("get_floating_notification_snapshot")
+          .then((snapshot) => {
+            applyMailboxSnapshot(snapshot);
+          })
+          .catch(() => undefined);
+      }, NATIVE_DISMISS_SNAPSHOT_RETRY_DELAY_MS);
+      nativeDismissRetryTimersRef.current.set(notificationId, timer);
     },
     [applyMailboxSnapshot]
   );
@@ -495,15 +584,49 @@ export function FloatingNotificationWindowRoot() {
       const currentEntry = queueRef.current.visible.find(
         (entry) => entry.notification.id === notificationId
       );
-      if (currentEntry?.lifecycle !== "exiting") {
-        return;
+      const isDetailDismissal = queueRef.current.detailNotificationId === notificationId;
+      if (
+        currentEntry?.lifecycle !== "exiting" ||
+        nativeDismissPendingIdsRef.current.has(notificationId)
+      ) {
+        return Promise.resolve(false);
       }
-      commitQueue((current) =>
-        completeBusinessNotificationExit(current, notificationId, Date.now())
-      );
-      dismissNativeNotification(notificationId, currentEntry.notification.channel);
+      nativeDismissPendingIdsRef.current.add(notificationId);
+      return dismissNativeNotification(notificationId)
+        .then((snapshot) => {
+          if (snapshot) {
+            commitQueue((current) =>
+              settleFloatingNotificationExitAfterNativeDismissal(
+                current,
+                notificationId,
+                snapshot,
+                Date.now()
+              )
+            );
+            applyMailboxSnapshot(snapshot);
+            if (isDetailDismissal) {
+              void invoke("set_floating_notification_detail_open", { open: false }).catch(
+                () => undefined
+              );
+            }
+            return true;
+          }
+          const now = Date.now();
+          commitQueue((current) =>
+            pauseBusinessNotifications(
+              restoreBusinessNotificationAfterFailedDismissal(current, notificationId, now),
+              NATIVE_DISMISS_SYNC_PAUSE_REASON,
+              now
+            )
+          );
+          retryNativeDismissSnapshot(notificationId);
+          return false;
+        })
+        .finally(() => {
+          nativeDismissPendingIdsRef.current.delete(notificationId);
+        });
     },
-    [commitQueue, dismissNativeNotification]
+    [applyMailboxSnapshot, commitQueue, dismissNativeNotification, retryNativeDismissSnapshot]
   );
 
   const beginExit = useCallback(
@@ -628,9 +751,7 @@ export function FloatingNotificationWindowRoot() {
           applyMailboxSnapshot(next);
         }
       } catch {
-        if (!disposed) {
-          applyMailboxSnapshot(emptySnapshot);
-        }
+        // 读取失败不能等价为原生 mailbox 为空，否则会留下已显示窗口的前端空壳。
       }
     }
 
@@ -640,6 +761,12 @@ export function FloatingNotificationWindowRoot() {
       unlisten?.();
     };
   }, [applyMailboxSnapshot]);
+
+  useEffect(() => {
+    commitQueue((current) =>
+      setBusinessNotificationDuration(current, notificationDurationMs, Date.now())
+    );
+  }, [commitQueue, notificationDurationMs]);
 
   useEffect(() => {
     commitQueue((current) =>
@@ -662,6 +789,7 @@ export function FloatingNotificationWindowRoot() {
           if (disposed) {
             return;
           }
+          panelVisibilityEventVersionRef.current += 1;
           panelVisibleRef.current = payload.visible;
           commitQueue((current) => applyFloatingPanelPause(current, Date.now()));
         }
@@ -671,6 +799,18 @@ export function FloatingNotificationWindowRoot() {
         return;
       }
       unlisten = cleanup;
+
+      // 不依赖一次性事件重放：监听就绪后以原生状态补齐面板打开期间漏掉的暂停。
+      const hydrationEventVersion = panelVisibilityEventVersionRef.current;
+      try {
+        const panelVisible = await getFloatingPanelVisible();
+        if (!disposed && panelVisibilityEventVersionRef.current === hydrationEventVersion) {
+          panelVisibleRef.current = panelVisible;
+          commitQueue((current) => applyFloatingPanelPause(current, Date.now()));
+        }
+      } catch {
+        // 状态读取失败时保持现有暂停状态，避免凭空恢复消息倒计时。
+      }
     }
 
     void subscribePanelVisibility();
@@ -723,13 +863,6 @@ export function FloatingNotificationWindowRoot() {
   }, [commitQueue]);
 
   useEffect(() => {
-    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    const duration = reducedMotion
-      ? FLOATING_NOTIFICATION_REDUCED_MOTION_DURATION_MS
-      : Math.max(
-          FLOATING_NOTIFICATION_ENTER_DURATION_MS,
-          FLOATING_NOTIFICATION_EXIT_DURATION_MS
-        );
     const activeFallbackKeys = new Set<string>();
     for (const entry of queue.visible) {
       if (entry.lifecycle !== "entering" && entry.lifecycle !== "exiting") {
@@ -737,6 +870,10 @@ export function FloatingNotificationWindowRoot() {
       }
       const fallbackKey = `${entry.notification.id}:${entry.lifecycle}`;
       activeFallbackKeys.add(fallbackKey);
+      const duration =
+        entry.lifecycle === "entering"
+          ? FLOATING_NOTIFICATION_ENTER_DURATION_MS
+          : FLOATING_NOTIFICATION_EXIT_DURATION_MS;
       let fallback = animationFallbackTimersRef.current.get(fallbackKey);
       if (!fallback) {
         fallback = {
@@ -797,6 +934,10 @@ export function FloatingNotificationWindowRoot() {
         }
       }
       animationFallbackTimersRef.current.clear();
+      for (const timer of nativeDismissRetryTimersRef.current.values()) {
+        window.clearTimeout(timer);
+      }
+      nativeDismissRetryTimersRef.current.clear();
     },
     []
   );
@@ -815,6 +956,20 @@ export function FloatingNotificationWindowRoot() {
     }, expiryDelay);
     return () => window.clearTimeout(timer);
   }, [beginExit, queue]);
+
+  useEffect(() => {
+    if (
+      !isTauriRuntime() ||
+      queue.detailNotificationId ||
+      !isFloatingNotificationMotionSettled(queue)
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void invoke("settle_floating_notification_motion").catch(() => undefined);
+    }, FLOATING_NOTIFICATION_REGION_SETTLE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [notificationDensity, notificationDock, notificationGeometryEpoch, queue]);
 
   useEffect(() => {
     if (!queue.detailNotificationId) {
@@ -855,14 +1010,10 @@ export function FloatingNotificationWindowRoot() {
     void invoke("set_floating_notification_detail_open", { open: false }).catch(() => undefined);
   };
   const dismissDetail = (notificationId: string) => {
-    const now = Date.now();
-    commitQueue((current) => {
-      const withoutHover = resumeBusinessNotifications(current, "hover", now);
-      const withoutTransientPause = resumeBusinessNotifications(withoutHover, "focus", now);
-      return closeBusinessNotificationDetail(withoutTransientPause, now);
-    });
-    beginExit([notificationId]);
-    void invoke("set_floating_notification_detail_open", { open: false }).catch(() => undefined);
+    commitQueue((current) =>
+      beginFloatingNotificationDetailDismissal(current, notificationId, Date.now())
+    );
+    void finishExit(notificationId);
   };
 
   const detail = queue.detailNotificationId
@@ -887,6 +1038,7 @@ export function FloatingNotificationWindowRoot() {
     <main
       className={`floating-notification-window${detail ? " detail-open" : ""}`}
       data-density={notificationDensity}
+      data-dock={notificationDock}
       data-lifecycle-paused={notificationLifecyclePaused ? "true" : "false"}
       style={
         {
@@ -928,7 +1080,7 @@ export function FloatingNotificationWindowRoot() {
                   <dl>
                     <div><dt>API Key</dt><dd>{detail.usage.apiKeyLabel}</dd></div>
                     <div><dt>模型</dt><dd>{detail.usage.model}</dd></div>
-                    <div><dt>推理强度</dt><dd>{detail.usage.reasoningEffort || "未设置"}</dd></div>
+                    <div><dt>推理强度</dt><dd>{formatUsageReasoningEffort(detail.usage.reasoningEffort)}</dd></div>
                     <div><dt>更新时间</dt><dd><time dateTime={detail.createdAt}>{formatDateTimeFull(detail.createdAt)}</time></dd></div>
                   </dl>
                 </section>
@@ -967,14 +1119,13 @@ export function FloatingNotificationWindowRoot() {
         <ol className="floating-notification-list" aria-live="polite" aria-atomic="false">
           {queue.visible.map((entry) => {
             const { notification } = entry;
-            const exiting = entry.lifecycle === "exiting";
             const slot = notificationSlots.get(notification.id) ?? {
               height: getFloatingNotificationItemHeight(Boolean(notification.usage), notificationDensity),
               offset: layout.verticalPadding / 2
             };
             return (
               <li
-                className={`floating-notification-slot${exiting ? " is-exiting" : ""}`}
+                className={`floating-notification-slot is-${entry.lifecycle} level-${notification.level}`}
                 key={notification.id}
                 style={
                   {
@@ -982,42 +1133,42 @@ export function FloatingNotificationWindowRoot() {
                     "--notification-offset": `${slot.offset}px`
                   } as CSSProperties
                 }
+                onAnimationEnd={(event) => {
+                  if (event.target !== event.currentTarget) {
+                    return;
+                  }
+                  const lifecycle = resolveFloatingNotificationAnimationLifecycle(
+                    event.animationName
+                  );
+                  if (lifecycle === "exit") {
+                    const fallbackKey = `${notification.id}:exiting`;
+                    const fallback = animationFallbackTimersRef.current.get(fallbackKey);
+                    if (fallback?.timer !== null && fallback?.timer !== undefined) {
+                      window.clearTimeout(fallback.timer);
+                    }
+                    animationFallbackTimersRef.current.delete(fallbackKey);
+                    finishExit(notification.id);
+                  } else if (lifecycle === "enter") {
+                    const fallbackKey = `${notification.id}:entering`;
+                    const fallback = animationFallbackTimersRef.current.get(fallbackKey);
+                    if (fallback?.timer !== null && fallback?.timer !== undefined) {
+                      window.clearTimeout(fallback.timer);
+                    }
+                    animationFallbackTimersRef.current.delete(fallbackKey);
+                    commitQueue((current) =>
+                      markBusinessNotificationVisible(current, notification.id, Date.now())
+                    );
+                  }
+                }}
               >
                 <button
-                  className={`floating-notification-pill is-${entry.lifecycle} level-${notification.level}${notification.usage ? " usage-notification-pill" : ""}`}
+                  className={`floating-notification-pill level-${notification.level}${notification.usage ? " usage-notification-pill" : ""}`}
                   type="button"
                   onPointerEnter={() => pause("hover")}
                   onPointerLeave={() => resume("hover")}
                   onFocus={() => pause("focus")}
                   onBlur={() => resume("focus")}
                   onClick={() => openDetail(notification.id)}
-                  onAnimationEnd={(event) => {
-                    if (event.target !== event.currentTarget) {
-                      return;
-                    }
-                    const lifecycle = resolveFloatingNotificationAnimationLifecycle(
-                      event.animationName
-                    );
-                    if (lifecycle === "exit") {
-                      const fallbackKey = `${notification.id}:exiting`;
-                      const fallback = animationFallbackTimersRef.current.get(fallbackKey);
-                      if (fallback?.timer !== null && fallback?.timer !== undefined) {
-                        window.clearTimeout(fallback.timer);
-                      }
-                      animationFallbackTimersRef.current.delete(fallbackKey);
-                      finishExit(notification.id);
-                    } else if (lifecycle === "enter") {
-                      const fallbackKey = `${notification.id}:entering`;
-                      const fallback = animationFallbackTimersRef.current.get(fallbackKey);
-                      if (fallback?.timer !== null && fallback?.timer !== undefined) {
-                        window.clearTimeout(fallback.timer);
-                      }
-                      animationFallbackTimersRef.current.delete(fallbackKey);
-                      commitQueue((current) =>
-                        markBusinessNotificationVisible(current, notification.id, Date.now())
-                      );
-                    }
-                  }}
                   aria-label={`打开消息详情: ${notification.title}`}
                 >
                   {notification.usage ? (
@@ -1027,8 +1178,13 @@ export function FloatingNotificationWindowRoot() {
                         <span className="floating-usage-card-identity">
                           <strong title={notification.usage.apiKeyLabel}>{notification.usage.apiKeyLabel}</strong>
                         </span>
+                        {notification.usage.serviceTier?.trim() ? (
+                          <span className="floating-usage-service-tier" title={notification.usage.serviceTier}>
+                            {formatUsageServiceTier(notification.usage.serviceTier)}
+                          </span>
+                        ) : null}
                         <span className="floating-usage-card-meta">
-                          <time dateTime={notification.createdAt} title={formatDateTimeFull(notification.createdAt)}>{formatTime(notification.createdAt)}</time>
+                          <time dateTime={notification.createdAt} title={formatDateTimeFull(notification.createdAt)}>{formatTimeOnly(notification.createdAt)}</time>
                         </span>
                       </span>
                       <UsageNotificationMetrics usage={notification.usage} />
@@ -1040,7 +1196,7 @@ export function FloatingNotificationWindowRoot() {
                         <span className="floating-notification-title-line"><strong title={notification.title}>{notification.title}</strong><span>{levelLabels[notification.level]}</span></span>
                         <span className="floating-notification-content" title={notification.content}>{notification.content}</span>
                       </span>
-                      <time className="floating-notification-time" dateTime={notification.createdAt} title={formatDateTimeFull(notification.createdAt)}>{formatTime(notification.createdAt)}</time>
+                      <time className="floating-notification-time" dateTime={notification.createdAt} title={formatDateTimeFull(notification.createdAt)}>{formatTimeOnly(notification.createdAt)}</time>
                     </>
                   )}
                 </button>

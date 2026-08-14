@@ -309,21 +309,12 @@
   white-space: nowrap;
 }
 
-.workspace-subtitle,
 .section-card-header p,
 .metric-hint,
 .empty-state p,
 .modal-hint {
   margin: 6px 0 0;
   color: var(--text-subtle);
-}
-
-.workspace-subtitle {
-  margin: 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .metric-hint {

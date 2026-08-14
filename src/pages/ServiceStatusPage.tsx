@@ -2,24 +2,14 @@ import { ServiceStatusTerminal } from "../features/service-status/ServiceStatusT
 import type { useServiceStatusWorkspace } from "../features/service-status/useServiceStatusWorkspace";
 
 export function ServiceStatusPage({
-  workspace,
-  enabled = true,
-  refreshIntervalSeconds
+  workspace
 }: {
   workspace: ReturnType<typeof useServiceStatusWorkspace>;
-  enabled?: boolean;
-  refreshIntervalSeconds: number;
 }) {
   return (
     <ServiceStatusTerminal
       status={workspace.status}
-      loading={workspace.loading}
-      refreshing={workspace.refreshing}
-      lastError={workspace.lastError}
       lastSyncedAt={workspace.lastSyncedAt}
-      enabled={enabled}
-      refreshIntervalSeconds={refreshIntervalSeconds}
-      onRefresh={workspace.refreshNow}
     />
   );
 }

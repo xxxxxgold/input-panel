@@ -15,19 +15,28 @@ export const ERROR_TOAST_DURATION_MS = 4200;
 
 export type MonitorToastTone = "error" | "info" | "success";
 
+export interface MonitorToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 export interface MonitorToast {
   id: string;
   tone: MonitorToastTone;
+  title?: string;
   message: string;
   durationMs: number;
   loading?: boolean;
+  action?: MonitorToastAction;
 }
 
 interface ToastInput {
   tone: MonitorToastTone;
+  title?: string;
   message: string;
   durationMs?: number;
   loading?: boolean;
+  action?: MonitorToastAction;
 }
 
 interface LoadOverviewOptions {
@@ -127,8 +136,10 @@ export function appendToastDeduped(
   const duplicate = toasts.find(
     (item) =>
       item.tone === toast.tone &&
+      item.title === toast.title &&
       item.message === toast.message &&
-      item.loading === toast.loading
+      item.loading === toast.loading &&
+      item.action?.label === toast.action?.label
   );
   if (duplicate) {
     return {
@@ -291,10 +302,10 @@ export const useMonitorStore = create<MonitorStore>((set, get) => ({
       });
     }
   },
-  pushToast: ({ tone, message, durationMs, loading }) => {
+  pushToast: ({ tone, title, message, durationMs, loading, action }) => {
     const resolvedDurationMs =
       durationMs ?? (tone === "error" ? ERROR_TOAST_DURATION_MS : INFO_TOAST_DURATION_MS);
-    const nextToast = { tone, message, durationMs: resolvedDurationMs, loading };
+    const nextToast = { tone, title, message, durationMs: resolvedDurationMs, loading, action };
     let toastId = "";
     set((state) => {
       const next = appendToastDeduped(state.toasts, nextToast);

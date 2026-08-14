@@ -1,16 +1,18 @@
 import type {
+  EmailIdentityBindInput,
   PlatformQuotaPayload,
   ProfileUpdateInput,
+  SubscriptionRecord,
   SubscriptionSummaryPayload,
   UserProfileRecord
 } from "../../types";
 import { desktopOrHttp } from "../../shared/transport/runtime";
 
-export function getProfileRecord(accountId: string) {
+export function getProfileRecord(accountId: string, force = false) {
   return desktopOrHttp<UserProfileRecord>({
     command: "get_profile_record",
-    args: { accountId },
-    url: `/api/accounts/${accountId}/profile`
+    args: { accountId, force },
+    url: `/api/accounts/${accountId}/profile${force ? "?force=true" : ""}`
   });
 }
 
@@ -46,6 +48,14 @@ export function getPlatformQuotas(accountId: string) {
     command: "get_platform_quotas",
     args: { accountId },
     url: `/api/accounts/${accountId}/profile/platform-quotas`
+  });
+}
+
+export function getSubscriptions(accountId: string, force = false) {
+  return desktopOrHttp<SubscriptionRecord[]>({
+    command: "get_subscriptions",
+    args: { accountId, force },
+    url: `/api/accounts/${accountId}/subscriptions${force ? "?force=true" : ""}`
   });
 }
 
@@ -117,10 +127,10 @@ export function sendEmailBindingCode(accountId: string, email: string) {
   });
 }
 
-export function bindEmailIdentity(accountId: string, payload: { email: string; code: string }) {
-  return desktopOrHttp<boolean>({
+export function bindEmailIdentity(accountId: string, payload: EmailIdentityBindInput) {
+  return desktopOrHttp<UserProfileRecord>({
     command: "bind_email_identity",
-    args: { accountId, email: payload.email, code: payload.code },
+    args: { accountId, payload },
     url: `/api/accounts/${accountId}/identity-bindings/email`,
     init: {
       method: "POST",
