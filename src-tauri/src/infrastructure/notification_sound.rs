@@ -5,11 +5,18 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use rodio::{Decoder, OutputStreamBuilder, Sink};
+use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink};
 use tauri::{path::BaseDirectory, AppHandle, Manager};
 use uuid::Uuid;
 
 use crate::infrastructure::files::AppPaths;
+
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::{
+    Foundation::BOOL,
+    System::Diagnostics::Debug::MessageBeep,
+    UI::WindowsAndMessaging::{MB_ICONINFORMATION, MESSAGEBOX_STYLE},
+};
 
 pub(crate) const DEFAULT_NOTIFICATION_SOUND_RESOURCE: &str = "resources/sounds/manbo.mp3";
 const CUSTOM_NOTIFICATION_SOUND_DIRECTORY: &str = "notification-sounds";
@@ -20,6 +27,40 @@ const CUSTOM_NOTIFICATION_SOUND_PREFIX: &str = "notification-sound-";
 pub(crate) struct ImportedNotificationSound {
     pub display_name: String,
     pub storage_key: String,
+}
+
+/// 已启动的播放会话必须持有输出流和 Sink，直到声音播放完成。
+pub(crate) struct ActiveNotificationSound {
+    _stream: OutputStream,
+    sink: Sink,
+}
+
+impl ActiveNotificationSound {
+    pub(crate) fn wait_until_end(self) {
+        self.sink.sleep_until_end();
+    }
+}
+
+/// 请求 Windows 当前声音方案中的中性提示音，不由应用改写系统混音器音量。
+#[cfg(target_os = "windows")]
+fn request_windows_system_notification_sound_with(
+    request: impl FnOnce(MESSAGEBOX_STYLE) -> BOOL,
+) -> Result<()> {
+    if request(MB_ICONINFORMATION) == 0 {
+        return Err(std::io::Error::last_os_error()).context("请求 Windows 系统提示音失败");
+    }
+    Ok(())
+}
+
+/// Windows 系统提示音由 API 异步排队，调用方无需持有 Rodio 播放会话。
+#[cfg(target_os = "windows")]
+pub(crate) fn request_windows_system_notification_sound() -> Result<()> {
+    request_windows_system_notification_sound_with(|style| unsafe { MessageBeep(style) })
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn request_windows_system_notification_sound() -> Result<()> {
+    bail!("当前系统不支持 Windows 系统提示音")
 }
 
 /// 解析随应用打包的默认提示音，运行时不依赖开发机文件路径。
@@ -130,38 +171,33 @@ pub(crate) fn remove_custom_notification_sound(paths: &AppPaths, storage_key: &s
     }
 }
 
-/// 在后台播放一条提示音。自定义文件不可用时自动回退到内置默认音。
-pub(crate) fn schedule_notification_sound_playback(
+/// 启动一条提示音。自定义文件不可用时自动回退到内置默认音。
+pub(crate) fn start_notification_sound(
     default_path: PathBuf,
     custom_path: Option<PathBuf>,
     volume_percent: i64,
-) -> Result<()> {
+) -> Result<Option<ActiveNotificationSound>> {
     let volume_percent = volume_percent.clamp(0, 100);
     if volume_percent == 0 {
-        return Ok(());
+        return Ok(None);
     }
     if !default_path.is_file() {
         bail!("内置提示音资源不存在");
     }
 
-    tauri::async_runtime::spawn_blocking(move || {
-        let volume = volume_percent as f32 / 100.0;
-        if let Some(custom_path) = custom_path {
-            match play_audio_file(&custom_path, volume) {
-                Ok(()) => return,
-                Err(error) => {
-                    log::warn!(
-                        "[notification-sound] 自定义提示音不可用，已回退内置提示音: {error}"
-                    );
-                }
+    let volume = volume_percent as f32 / 100.0;
+    if let Some(custom_path) = custom_path {
+        match start_audio_file(&custom_path, volume) {
+            Ok(playback) => return Ok(Some(playback)),
+            Err(error) => {
+                log::warn!("[notification-sound] 自定义提示音不可用，已回退内置提示音: {error}");
             }
         }
+    }
 
-        if let Err(error) = play_audio_file(&default_path, volume) {
-            log::warn!("[notification-sound] 内置提示音播放失败: {error}");
-        }
-    });
-    Ok(())
+    start_audio_file(&default_path, volume)
+        .map(Some)
+        .context("内置提示音播放失败")
 }
 
 fn supported_audio_extension(path: &Path) -> Result<&'static str> {
@@ -183,15 +219,17 @@ fn validate_audio_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn play_audio_file(path: &Path, volume: f32) -> Result<()> {
+fn start_audio_file(path: &Path, volume: f32) -> Result<ActiveNotificationSound> {
     let file = File::open(path).context("无法读取提示音文件")?;
     let decoder = Decoder::try_from(file).context("提示音格式或内容无效")?;
     let stream = OutputStreamBuilder::open_default_stream().context("默认音频设备不可用")?;
     let sink = Sink::connect_new(stream.mixer());
     sink.set_volume(volume);
     sink.append(decoder);
-    sink.sleep_until_end();
-    Ok(())
+    Ok(ActiveNotificationSound {
+        _stream: stream,
+        sink,
+    })
 }
 
 #[cfg(test)]
@@ -200,9 +238,12 @@ mod tests {
 
     use super::{
         custom_notification_sound_path, import_custom_notification_sound,
-        is_valid_custom_notification_sound_storage_key,
+        is_valid_custom_notification_sound_storage_key, DEFAULT_NOTIFICATION_SOUND_RESOURCE,
     };
     use crate::infrastructure::files::AppPaths;
+
+    #[cfg(target_os = "windows")]
+    use super::{request_windows_system_notification_sound_with, MB_ICONINFORMATION};
 
     fn test_root() -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -225,6 +266,14 @@ mod tests {
         assert!(!is_valid_custom_notification_sound_storage_key(
             "notification-sound-550e8400-e29b-41d4-a716-446655440000.ogg"
         ));
+    }
+
+    #[test]
+    fn default_sound_path_preserves_the_bundled_resource_prefix() {
+        assert_eq!(
+            DEFAULT_NOTIFICATION_SOUND_RESOURCE,
+            "resources/sounds/manbo.mp3"
+        );
     }
 
     #[test]
@@ -269,5 +318,19 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_system_sound_uses_the_information_notification_style() {
+        let mut requested_style = 0;
+        request_windows_system_notification_sound_with(|style| {
+            requested_style = style;
+            1
+        })
+        .expect("request system sound");
+
+        assert_eq!(requested_style, MB_ICONINFORMATION);
+        assert!(request_windows_system_notification_sound_with(|_| 0).is_err());
     }
 }

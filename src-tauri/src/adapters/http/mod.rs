@@ -2403,6 +2403,8 @@ mod tests {
             json!({ "floatingNotificationDensity": "compact" }),
             json!({ "floatingNotificationMaxVisible": 4 }),
             json!({ "floatingNotificationSoundSource": "custom" }),
+            json!({ "floatingNotificationSoundSource": "system" }),
+            json!({ "floatingNotificationSoundSource": "muted" }),
             json!({ "floatingNotificationSoundFileName": "custom-tone.mp3" }),
             json!({ "floatingNotificationSoundStorageKey": "notification-sound-550e8400-e29b-41d4-a716-446655440000.mp3" }),
             json!({ "floatingNotificationSoundVolume": 36 }),

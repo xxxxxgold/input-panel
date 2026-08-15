@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
         Arc, Mutex, OnceLock,
@@ -232,6 +233,7 @@ pub struct FloatingNotificationSnapshot {
 pub(crate) struct FloatingNotificationMailbox {
     revision: u64,
     items: Vec<FloatingNotificationPayload>,
+    sound_eligible_notification_ids: HashSet<String>,
 }
 
 impl FloatingNotificationMailbox {
@@ -243,6 +245,7 @@ impl FloatingNotificationMailbox {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn enqueue(
         &mut self,
         payload: FloatingNotificationPayload,
@@ -265,14 +268,23 @@ impl FloatingNotificationMailbox {
             return (self.snapshot(), false);
         }
 
+        self.sound_eligible_notification_ids
+            .insert(payload.id.clone());
         self.items.push(payload);
         self.revision = self.revision.wrapping_add(1);
         (self.snapshot(), true)
     }
 
+    /// 仅在消息仍在 mailbox 且确实来自本会话 live 入队时，领取一次播放资格。
+    fn take_sound_eligibility(&mut self, notification_id: &str) -> bool {
+        self.items.iter().any(|item| item.id == notification_id)
+            && self.sound_eligible_notification_ids.remove(notification_id)
+    }
+
     fn dismiss(&mut self, notification_id: &str) -> FloatingNotificationSnapshot {
         let previous_len = self.items.len();
         self.items.retain(|item| item.id != notification_id);
+        self.sound_eligible_notification_ids.remove(notification_id);
         if self.items.len() != previous_len {
             self.revision = self.revision.wrapping_add(1);
         }
@@ -345,6 +357,8 @@ static FLOATING_NOTIFICATION_MAILBOX: OnceLock<Arc<Mutex<FloatingNotificationMai
 static FLOATING_NOTIFICATION_SYNC_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static FLOATING_NOTIFICATION_MUTATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static FLOATING_NOTIFICATION_DETAIL_OPEN: AtomicBool = AtomicBool::new(false);
+// 仅在原生窗口本轮允许展示通知卡片时开放声音资格，避免 hide/show 交接窗口产生误响。
+static FLOATING_NOTIFICATION_PRESENTATION_ALLOWED: AtomicBool = AtomicBool::new(false);
 static FLOATING_NOTIFICATION_PREFS_SYNC_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// 只记录启动可见性交接，不承载业务状态或跨进程持久化。
@@ -1978,6 +1992,7 @@ fn hide_window(app: &AppHandle, label: &str) {
 }
 
 pub(crate) fn hide_floating_notification_window(app: &AppHandle) {
+    FLOATING_NOTIFICATION_PRESENTATION_ALLOWED.store(false, Ordering::Relaxed);
     emit_floating_notification_lifecycle_pause(app, "notification-window-hidden", true);
     hide_window(app, FLOATING_NOTIFICATION_WINDOW_LABEL);
 }
@@ -4195,6 +4210,7 @@ fn sync_floating_notification_window_with_prefs_for_drag_restore(
         floating_drag_surfaces_suppressed(),
         allow_drag_restore,
     ) {
+        FLOATING_NOTIFICATION_PRESENTATION_ALLOWED.store(false, Ordering::Relaxed);
         emit_floating_notification_snapshot(app, &snapshot);
         return Ok(snapshot);
     }
@@ -4222,6 +4238,8 @@ fn sync_floating_notification_window_with_prefs_for_drag_restore(
         return Ok(snapshot);
     }
 
+    // 创建或重设窗口期间不能把上一轮展示权限借给尚未真正显示的新卡片。
+    FLOATING_NOTIFICATION_PRESENTATION_ALLOWED.store(false, Ordering::Relaxed);
     let detail_open = FLOATING_NOTIFICATION_DETAIL_OPEN.load(Ordering::Relaxed);
     let notification_width = resolve_floating_notification_width(detail_open);
     let item_heights = resolve_floating_notification_item_heights(&snapshot.items, layout);
@@ -4257,6 +4275,7 @@ fn sync_floating_notification_window_with_prefs_for_drag_restore(
     if !window_was_visible {
         show_floating_notification_window(&window);
     }
+    FLOATING_NOTIFICATION_PRESENTATION_ALLOWED.store(true, Ordering::Relaxed);
     emit_floating_notification_lifecycle_pause(app, "notification-window-hidden", false);
     emit_floating_notification_snapshot(app, &snapshot);
     Ok(snapshot)
@@ -4387,11 +4406,36 @@ pub(crate) fn get_floating_notification_snapshot_for_app(
     Ok(snapshot)
 }
 
+/// 只有通知窗口实际可见且前端卡片已进入首帧时，才消费一次声音资格。
+pub(crate) fn request_floating_notification_sound(
+    app: &AppHandle,
+    notification_id: &str,
+) -> Result<bool, String> {
+    let should_play = {
+        let _mutation_guard = floating_notification_mutation_lock()
+            .lock()
+            .map_err(|_| "floating notification mutation unavailable".to_string())?;
+        if !FLOATING_NOTIFICATION_PRESENTATION_ALLOWED.load(Ordering::Relaxed)
+            || !is_window_visible(app, FLOATING_NOTIFICATION_WINDOW_LABEL)
+        {
+            return Ok(false);
+        }
+        let mut mailbox = floating_notification_mailbox()
+            .lock()
+            .map_err(|_| "floating notification mailbox unavailable".to_string())?;
+        mailbox.take_sound_eligibility(notification_id)
+    };
+    if should_play {
+        application::desktop_ui_service::schedule_floating_notification_sound(app);
+    }
+    Ok(should_play)
+}
+
 pub(crate) fn enqueue_floating_notification(
     app: &AppHandle,
     payload: FloatingNotificationPayload,
 ) -> Result<FloatingNotificationSnapshot, String> {
-    let inserted = {
+    let _inserted = {
         let _mutation_guard = floating_notification_mutation_lock()
             .lock()
             .map_err(|_| "floating notification mutation unavailable".to_string())?;
@@ -4418,12 +4462,6 @@ pub(crate) fn enqueue_floating_notification(
             .map_err(|_| "floating notification mailbox unavailable".to_string())?;
         mailbox.enqueue_with_inserted(payload).1
     };
-    if inserted {
-        if let Err(error) = application::desktop_ui_service::schedule_floating_notification_sound(app)
-        {
-            log::warn!("[notification-sound] 新悬浮消息提示音调度失败: {error}");
-        }
-    }
     sync_floating_notification_window(app)
 }
 
@@ -5018,6 +5056,9 @@ pub fn run() {
             adapters::desktop::commands::select_floating_notification_sound,
             adapters::desktop::commands::preview_floating_notification_sound,
             adapters::desktop::commands::restore_default_floating_notification_sound,
+            adapters::desktop::commands::use_system_floating_notification_sound,
+            adapters::desktop::commands::mute_floating_notification_sound,
+            adapters::desktop::commands::use_saved_floating_notification_custom_sound,
             adapters::desktop::commands::switch_app_mode,
             adapters::desktop::commands::set_floating_window_visible,
             adapters::desktop::commands::show_floating_context_menu,
@@ -5027,6 +5068,7 @@ pub fn run() {
             adapters::desktop::commands::position_floating_panel,
             adapters::desktop::commands::enqueue_floating_notification,
             adapters::desktop::commands::get_floating_notification_snapshot,
+            adapters::desktop::commands::request_floating_notification_sound,
             adapters::desktop::commands::dismiss_floating_notification,
             adapters::desktop::commands::set_floating_notification_detail_open,
             adapters::desktop::commands::settle_floating_notification_motion,
@@ -5937,6 +5979,36 @@ mod tests {
     }
 
     #[test]
+    fn floating_notification_mailbox_reports_only_new_inserts_for_sound_triggers() {
+        let mut mailbox = FloatingNotificationMailbox::default();
+
+        let (first, first_inserted) = mailbox.enqueue_with_inserted(floating_notification_payload(
+            "notification-1",
+            "service:down:model-a",
+        ));
+        let (duplicate, duplicate_inserted) = mailbox.enqueue_with_inserted(
+            floating_notification_payload("notification-2", "service:down:model-a"),
+        );
+        assert!(mailbox.take_sound_eligibility("notification-1"));
+        assert!(!mailbox.take_sound_eligibility("notification-1"));
+        assert!(!mailbox.take_sound_eligibility("notification-2"));
+        let dismissed = mailbox.dismiss("notification-1");
+        let (rearmed, rearmed_inserted) = mailbox.enqueue_with_inserted(
+            floating_notification_payload("notification-3", "service:down:model-a"),
+        );
+
+        assert!(first_inserted);
+        assert!(!duplicate_inserted);
+        assert!(rearmed_inserted);
+        assert!(mailbox.take_sound_eligibility("notification-3"));
+        assert!(!mailbox.take_sound_eligibility("notification-3"));
+        assert!(!mailbox.take_sound_eligibility("notification-2"));
+        assert_eq!(duplicate.revision, first.revision);
+        assert_eq!(dismissed.revision, first.revision + 1);
+        assert_eq!(rearmed.revision, dismissed.revision + 1);
+    }
+
+    #[test]
     fn floating_notification_usage_mailbox_restores_unacknowledged_items_in_persisted_fifo_order() {
         let first = usage_notification_payload("usage-1", "usage-sync:account-1:row-1");
         let second = usage_notification_payload("usage-2", "usage-sync:account-1:row-2");
@@ -5953,6 +6025,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["usage-1", "usage-2"]
         );
+        assert!(!restarted_mailbox.take_sound_eligibility("usage-1"));
         let acknowledged = restarted_mailbox.dismiss("usage-1");
         assert_eq!(
             acknowledged

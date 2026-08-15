@@ -1675,6 +1675,8 @@ pub enum FloatingNotificationSoundSource {
     #[default]
     Default,
     Custom,
+    System,
+    Muted,
 }
 
 pub const DEFAULT_FLOATING_NOTIFICATION_SOUND_VOLUME: i64 = 100;

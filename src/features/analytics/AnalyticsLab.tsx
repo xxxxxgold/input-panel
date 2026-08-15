@@ -1699,9 +1699,10 @@ function buildSubscriptionUsageOption(rows: SubscriptionChartRow[], palette: Cha
     },
     grid: {
       top: 48,
-      left: 120,
+      left: 12,
       right: 20,
-      bottom: 24
+      bottom: 24,
+      containLabel: true
     },
     xAxis: {
       type: "value",

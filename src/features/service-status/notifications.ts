@@ -353,7 +353,8 @@ export async function sendAppNotification(notification: AppNotificationItem) {
     }
     if (permission === "granted") {
       new Notification(notification.title, {
-        body: notification.detail
+        body: notification.detail,
+        silent: true
       });
     }
   } catch {

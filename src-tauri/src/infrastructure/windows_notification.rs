@@ -55,6 +55,7 @@ pub(crate) fn show_windows_notification(
     register_notification_identity(&identity)?;
 
     let activation_app = app.clone();
+    // Windows Toast 仅承担视觉提示；提示音由右下角 floating-notification 卡片独占。
     Toast::new(&identity.app_id)
         .sound(None)
         .title(title)

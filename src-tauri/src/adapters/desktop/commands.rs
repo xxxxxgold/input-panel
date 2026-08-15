@@ -1,8 +1,8 @@
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::{DialogExt, FilePath};
 #[cfg(not(target_os = "windows"))]
 use tauri_plugin_notification::NotificationExt;
-use tauri_plugin_dialog::{DialogExt, FilePath};
 
 use crate::application::{
     account_service, auth_service, codex_radar_service, dashboard_service, data_center_service,
@@ -312,9 +312,28 @@ pub async fn select_floating_notification_sound(
 
 /// 使用当前来源和音量试听一次提示音。
 #[tauri::command]
-pub fn preview_floating_notification_sound(app: AppHandle) -> Result<bool, String> {
-    desktop_ui_service::schedule_floating_notification_sound(&app).map_err(to_message)?;
-    Ok(true)
+pub async fn preview_floating_notification_sound(app: AppHandle) -> Result<bool, String> {
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    tauri::async_runtime::spawn_blocking(move || {
+        match desktop_ui_service::start_floating_notification_sound(&app) {
+            Ok(desktop_ui_service::FloatingNotificationSoundStart::Audio(playback)) => {
+                let _ = started_tx.send(Ok(true));
+                playback.wait_until_end();
+            }
+            Ok(desktop_ui_service::FloatingNotificationSoundStart::System) => {
+                let _ = started_tx.send(Ok(true));
+            }
+            Ok(desktop_ui_service::FloatingNotificationSoundStart::Muted) => {
+                let _ = started_tx.send(Ok(false));
+            }
+            Err(error) => {
+                let _ = started_tx.send(Err(to_message(error)));
+            }
+        }
+    });
+    started_rx
+        .await
+        .map_err(|_| "提示音试听任务已中断".to_string())?
 }
 
 /// 恢复内置提示音并向所有桌面窗口同步完整偏好。
@@ -324,6 +343,41 @@ pub fn restore_default_floating_notification_sound(
     ctx: State<'_, AppContext>,
 ) -> Result<DesktopUiPrefs, String> {
     let prefs = desktop_ui_service::restore_default_floating_notification_sound(&ctx)
+        .map_err(to_message)?;
+    let _ = app.emit("desktop-ui-prefs-updated", &prefs);
+    Ok(prefs)
+}
+
+/// 切换为 Windows 当前声音方案中的系统提示音。
+#[tauri::command]
+pub fn use_system_floating_notification_sound(
+    app: AppHandle,
+    ctx: State<'_, AppContext>,
+) -> Result<DesktopUiPrefs, String> {
+    let prefs =
+        desktop_ui_service::use_system_floating_notification_sound(&ctx).map_err(to_message)?;
+    let _ = app.emit("desktop-ui-prefs-updated", &prefs);
+    Ok(prefs)
+}
+
+/// 静音后保留当前来源和受控自定义文件，供后续恢复使用。
+#[tauri::command]
+pub fn mute_floating_notification_sound(
+    app: AppHandle,
+    ctx: State<'_, AppContext>,
+) -> Result<DesktopUiPrefs, String> {
+    let prefs = desktop_ui_service::mute_floating_notification_sound(&ctx).map_err(to_message)?;
+    let _ = app.emit("desktop-ui-prefs-updated", &prefs);
+    Ok(prefs)
+}
+
+/// 恢复已保存的自定义提示音副本；原始选择文件已删除时仍可使用。
+#[tauri::command]
+pub fn use_saved_floating_notification_custom_sound(
+    app: AppHandle,
+    ctx: State<'_, AppContext>,
+) -> Result<DesktopUiPrefs, String> {
+    let prefs = desktop_ui_service::use_saved_floating_notification_custom_sound(&ctx)
         .map_err(to_message)?;
     let _ = app.emit("desktop-ui-prefs-updated", &prefs);
     Ok(prefs)
@@ -443,6 +497,15 @@ pub fn get_floating_notification_snapshot(
     app: AppHandle,
 ) -> Result<crate::FloatingNotificationSnapshot, String> {
     crate::get_floating_notification_snapshot_for_app(&app)
+}
+
+/// 前端卡片进入首帧后领取一次声音资格，窗口不可见时保持资格等待后续显示。
+#[tauri::command]
+pub fn request_floating_notification_sound(
+    app: AppHandle,
+    notification_id: String,
+) -> Result<bool, String> {
+    crate::request_floating_notification_sound(&app, &notification_id)
 }
 
 #[tauri::command]
