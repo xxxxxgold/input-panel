@@ -520,6 +520,8 @@ async function ignoreWindowMutation(task: Promise<unknown>) {
 const STARTUP_SPLASH_LEAVE_CLASS = "is-leaving";
 const STARTUP_SPLASH_LEAVE_MS = 220;
 const STARTUP_SPLASH_NATIVE_REVEAL_SETTLE_MS = 240;
+const STARTUP_REVEAL_RETRY_DELAY_MS = 800;
+const STARTUP_REVEAL_RETRY_LIMIT = 3;
 
 // React 主壳已完成可见交接后，幂等移除 HTML 阶段的启动遮罩。
 function dismissStartupSplash() {
@@ -606,6 +608,8 @@ export function MainWindowApp() {
   const invalidateUsageAccountRef = useRef<(accountId: string) => void>(() => {});
   const topbarReloadRunningRef = useRef(false);
   const startupRevealCompletedRef = useRef(false);
+  const startupRevealInFlightRef = useRef(false);
+  const startupRevealRetryCountRef = useRef(0);
   const pagePreloadCoordinatorRef = useRef<Promise<PagePreloadCoordinator> | null>(null);
   const pagePreloadNavRef = useRef<NavKey | null>(null);
   const pagePreloadIntentTimerRef = useRef<number | null>(null);
@@ -648,6 +652,7 @@ export function MainWindowApp() {
   >(null);
   const [selectionBootstrapDone, setSelectionBootstrapDone] = useState(false);
   const [mainWindowChromeReady, setMainWindowChromeReady] = useState(false);
+  const [startupRevealRetryVersion, setStartupRevealRetryVersion] = useState(0);
   const lastPersistedSelectionKeyRef = useRef<string | null>(null);
   const lastQueuedSelectionKeyRef = useRef<string | null>(null);
   const selectionSyncQueueRef = useRef<ReturnType<typeof createWindowSelectionSyncQueue> | null>(null);
@@ -1071,7 +1076,7 @@ export function MainWindowApp() {
     ) {
       return;
     }
-    if (startupRevealCompletedRef.current) {
+    if (startupRevealCompletedRef.current || startupRevealInFlightRef.current) {
       return;
     }
 
@@ -1079,6 +1084,7 @@ export function MainWindowApp() {
     let firstPaintFrame: number | null = null;
     let secondPaintFrame: number | null = null;
     let splashDismissTimer: number | null = null;
+    let retryTimer: number | null = null;
 
     firstPaintFrame = window.requestAnimationFrame(() => {
       secondPaintFrame = window.requestAnimationFrame(() => {
@@ -1086,22 +1092,35 @@ export function MainWindowApp() {
           return;
         }
 
-        startupRevealCompletedRef.current = true;
         if (!isTauriRuntime()) {
+          startupRevealCompletedRef.current = true;
+          startupRevealInFlightRef.current = false;
           dismissStartupSplash();
           return;
         }
 
-        // 等主壳完成连续两帧可见绘制后再显示原生窗口；Rust 侧仍保留 3s 兜底。
+        // 等主壳完成连续两帧可见绘制后再请求原生交接。失败时保留 HTML splash，
+        // 让后续依赖变化或重载仍能安全重试，而不是暴露透明主窗口。
+        startupRevealInFlightRef.current = true;
         void invoke("frontend_ready")
-          .catch(() => undefined)
-          .finally(() => {
-            if (!disposed) {
-              splashDismissTimer = window.setTimeout(
-                dismissStartupSplash,
-                STARTUP_SPLASH_NATIVE_REVEAL_SETTLE_MS
-              );
+          .then(() => {
+            startupRevealCompletedRef.current = true;
+            startupRevealInFlightRef.current = false;
+            startupRevealRetryCountRef.current = 0;
+            splashDismissTimer = window.setTimeout(
+              dismissStartupSplash,
+              STARTUP_SPLASH_NATIVE_REVEAL_SETTLE_MS
+            );
+          })
+          .catch(() => {
+            startupRevealInFlightRef.current = false;
+            if (startupRevealRetryCountRef.current >= STARTUP_REVEAL_RETRY_LIMIT) {
+              return;
             }
+            startupRevealRetryCountRef.current += 1;
+            retryTimer = window.setTimeout(() => {
+              setStartupRevealRetryVersion((version) => version + 1);
+            }, STARTUP_REVEAL_RETRY_DELAY_MS);
           });
       });
     });
@@ -1117,8 +1136,17 @@ export function MainWindowApp() {
       if (splashDismissTimer !== null) {
         window.clearTimeout(splashDismissTimer);
       }
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+      }
     };
-  }, [desktopUi.loading, desktopUi.prefs.theme, mainWindowChromeReady, theme]);
+  }, [
+    desktopUi.loading,
+    desktopUi.prefs.theme,
+    mainWindowChromeReady,
+    startupRevealRetryVersion,
+    theme
+  ]);
 
   useEffect(() => {
     if (typeof document === "undefined") {
