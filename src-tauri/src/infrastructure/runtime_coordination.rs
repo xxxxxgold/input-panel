@@ -2483,6 +2483,104 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn upstream_network_config_defaults_to_direct_and_is_shared_across_instances() {
+        let (first, root) = test_store("upstream-network-shared");
+        let second = RuntimeCoordinationStore::new(first.path().to_path_buf());
+        first
+            .initialize_and_register_for_test(&registration("web-instance", 1_000))
+            .expect("initialize first runtime");
+        second
+            .initialize_and_register_for_test(&registration("desktop-instance", 1_000))
+            .expect("initialize second runtime");
+
+        assert_eq!(
+            first
+                .get_upstream_network_config()
+                .await
+                .expect("read direct default"),
+            UpstreamNetworkConfig::default()
+        );
+        let system_proxy = UpstreamNetworkConfig {
+            use_system_proxy: true,
+        };
+        first
+            .update_upstream_network_config(system_proxy, 1_001)
+            .await
+            .expect("enable system proxy");
+        assert_eq!(
+            second
+                .get_upstream_network_config()
+                .await
+                .expect("read shared system proxy mode"),
+            system_proxy
+        );
+
+        second
+            .update_upstream_network_config(UpstreamNetworkConfig::default(), 1_002)
+            .await
+            .expect("restore direct mode");
+        assert_eq!(
+            first
+                .get_upstream_network_config()
+                .await
+                .expect("read shared direct mode"),
+            UpstreamNetworkConfig::default()
+        );
+
+        drop(second);
+        drop(first);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn legacy_coordination_database_gains_the_direct_upstream_network_default() {
+        let (store, root) = test_store("upstream-network-upgrade");
+        let legacy = Connection::open(store.path()).expect("open legacy coordination database");
+        legacy
+            .execute_batch(
+                "CREATE TABLE coordination_metadata (
+                   key TEXT PRIMARY KEY,
+                   value BLOB NOT NULL,
+                   updated_at_ms INTEGER NOT NULL
+                 );
+                 CREATE TABLE coordination_config (
+                   singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+                   site_requests_per_second INTEGER NOT NULL,
+                   site_max_in_flight INTEGER NOT NULL,
+                   usage_page_max_in_flight INTEGER NOT NULL,
+                   updated_at_ms INTEGER NOT NULL
+                 );",
+            )
+            .expect("seed legacy coordination schema");
+        drop(legacy);
+
+        store
+            .initialize_and_register_for_test(&registration("upgraded-instance", 1_000))
+            .expect("upgrade legacy coordination database");
+        assert_eq!(
+            store
+                .get_upstream_network_config()
+                .await
+                .expect("read upgraded direct default"),
+            UpstreamNetworkConfig::default()
+        );
+
+        let conn = Connection::open(store.path()).expect("inspect upgraded coordination database");
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM upstream_network_config
+                 WHERE singleton_id = 1 AND use_system_proxy = 0",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read upgraded upstream network row");
+        assert_eq!(rows, 1);
+        drop(conn);
+        drop(store);
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn account_demand(
         instance_id: &str,
         demand_id: &str,

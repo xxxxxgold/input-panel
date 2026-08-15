@@ -950,6 +950,55 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[tokio::test]
+    async fn upstream_network_payload_round_trip_stays_separate_from_request_budget() {
+        let (service, root) = test_service("upstream-network-payload");
+        let request_budget = service
+            .get_config_payload()
+            .await
+            .expect("read request budget payload");
+
+        assert_eq!(
+            service
+                .get_upstream_network_config_payload()
+                .await
+                .expect("read direct upstream network default"),
+            UpstreamNetworkConfigPayload {
+                use_system_proxy: false,
+            }
+        );
+        assert_eq!(
+            service
+                .update_upstream_network_config_payload(UpstreamNetworkConfigPayload {
+                    use_system_proxy: true,
+                })
+                .await
+                .expect("enable system proxy payload"),
+            UpstreamNetworkConfigPayload {
+                use_system_proxy: true,
+            }
+        );
+        assert_eq!(
+            service
+                .get_upstream_network_config_payload()
+                .await
+                .expect("read persisted system proxy payload"),
+            UpstreamNetworkConfigPayload {
+                use_system_proxy: true,
+            }
+        );
+        assert_eq!(
+            service
+                .get_config_payload()
+                .await
+                .expect("read unchanged request budget payload"),
+            request_budget
+        );
+
+        drop(service);
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn endpoint_family_rejects_urls_and_sensitive_labels() {
         assert!(validate_endpoint_family("usage_page").is_ok());

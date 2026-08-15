@@ -74,6 +74,7 @@ import { useSchedulerConfig } from "./useSchedulerConfig";
 import { useRuntimeCoordinationConfig } from "./useRuntimeCoordinationConfig";
 import { useSiteFailoverTransitionObserver } from "./useSiteFailoverTransitionObserver";
 import { useSystemSettingsSaveToasts } from "./useSystemSettingsSaveToasts";
+import { useUpstreamNetworkConfig } from "./useUpstreamNetworkConfig";
 import { mergeAccountSyncStatusesIntoTasks } from "./sync-task-records";
 import { useAccountWorkspace } from "../features/accounts/useAccountWorkspace";
 import { clearRuntimeData } from "../features/maintenance/client";
@@ -707,6 +708,16 @@ export function MainWindowApp() {
     retryRuntimeCoordinationConfigSave,
     retryRuntimeCoordinationConfigLoad
   } = useRuntimeCoordinationConfig();
+  const {
+    upstreamNetworkConfig,
+    upstreamNetworkConfigLoading,
+    upstreamNetworkConfigSaving,
+    upstreamNetworkLoadError,
+    upstreamNetworkSaveError,
+    handleUpstreamNetworkConfigChange,
+    retryUpstreamNetworkConfigSave,
+    retryUpstreamNetworkConfigLoad
+  } = useUpstreamNetworkConfig();
   useSystemSettingsSaveToasts({
     desktopUiSaveState: desktopUi.saveState,
     retryDesktopUiPrefs: desktopUi.retryFailedPrefs,
@@ -715,7 +726,10 @@ export function MainWindowApp() {
     retrySchedulerConfigSave,
     runtimeCoordinationConfigSaving,
     runtimeCoordinationSaveError,
-    retryRuntimeCoordinationConfigSave
+    retryRuntimeCoordinationConfigSave,
+    upstreamNetworkConfigSaving,
+    upstreamNetworkSaveError,
+    retryUpstreamNetworkConfigSave
   });
   const sites = overview?.sites ?? [];
   const accounts = overview?.accounts ?? [];
@@ -2963,6 +2977,11 @@ export function MainWindowApp() {
               runtimeCoordinationLoadError={runtimeCoordinationLoadError}
               onRetryRuntimeCoordinationConfigLoad={retryRuntimeCoordinationConfigLoad}
               onRuntimeCoordinationConfigChange={handleRuntimeCoordinationConfigChange}
+              upstreamNetworkConfig={upstreamNetworkConfig}
+              upstreamNetworkConfigLoading={upstreamNetworkConfigLoading}
+              upstreamNetworkLoadError={upstreamNetworkLoadError}
+              onRetryUpstreamNetworkConfigLoad={retryUpstreamNetworkConfigLoad}
+              onUpstreamNetworkConfigChange={handleUpstreamNetworkConfigChange}
               databaseStorageStatus={databaseStorage.status}
               databaseStorageTargetDirectory={databaseStorage.targetDirectory}
               databaseStorageLoading={databaseStorage.loading}

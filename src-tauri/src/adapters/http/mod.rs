@@ -1904,6 +1904,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upstream_network_config_http_uses_an_independent_camel_case_contract() {
+        let ctx = build_test_context("upstream-network-config");
+        let cleanup_root = ctx.paths.root.clone();
+        let (base_url, shutdown_tx, server) = start_test_http_server(ctx.clone()).await;
+        let client = reqwest::Client::new();
+
+        let initial = client
+            .get(format!("{base_url}/api/upstream-network/config"))
+            .send()
+            .await
+            .expect("get direct upstream network default");
+        assert_eq!(initial.status(), StatusCode::OK);
+        assert_eq!(
+            initial
+                .json::<Value>()
+                .await
+                .expect("decode direct upstream network default"),
+            json!({ "useSystemProxy": false })
+        );
+
+        let updated = client
+            .patch(format!("{base_url}/api/upstream-network/config"))
+            .json(&json!({ "useSystemProxy": true }))
+            .send()
+            .await
+            .expect("enable system proxy");
+        assert_eq!(updated.status(), StatusCode::OK);
+        assert_eq!(
+            updated
+                .json::<Value>()
+                .await
+                .expect("decode updated upstream network config"),
+            json!({ "useSystemProxy": true })
+        );
+
+        let reread = client
+            .get(format!("{base_url}/api/upstream-network/config"))
+            .send()
+            .await
+            .expect("re-read persisted system proxy mode");
+        assert_eq!(reread.status(), StatusCode::OK);
+        assert_eq!(
+            reread
+                .json::<Value>()
+                .await
+                .expect("decode persisted upstream network config"),
+            json!({ "useSystemProxy": true })
+        );
+
+        stop_test_http_server(shutdown_tx, server).await;
+        drop(ctx);
+        let _ = fs::remove_dir_all(cleanup_root);
+    }
+
+    #[tokio::test]
     async fn database_storage_http_internal_failure_keeps_error_only_and_unfreezes_source() {
         let mut ctx = build_test_context("database-storage-bootstrap-failure");
         ctx.paths.override_active = false;
