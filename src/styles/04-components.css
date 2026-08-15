@@ -4069,6 +4069,11 @@
   box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
+.system-settings-switch > input[type="checkbox"]:checked:hover + .system-settings-switch-track {
+  border-color: color-mix(in srgb, var(--accent-strong) 88%, var(--text-strong));
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
 .system-settings-switch > input[type="checkbox"]:checked + .system-settings-switch-track::after {
   transform: translateX(18px);
   background: var(--text-inverse);
@@ -4391,11 +4396,6 @@
   background: color-mix(in srgb, var(--border-strong) 34%, transparent);
 }
 
-.sync-task-center-row.is-interrupted .sync-task-center-status-icon {
-  color: var(--text-subtle);
-  background: color-mix(in srgb, var(--border-strong) 34%, transparent);
-}
-
 .sync-task-center-row-copy {
   min-width: 0;
   display: grid;
@@ -4540,11 +4540,6 @@
 .sync-task-center-row.is-failed .sync-task-center-row-title span,
 .sync-task-center-error {
   color: var(--danger) !important;
-}
-
-.sync-task-center-row.is-interrupted .sync-task-center-row-title span,
-.sync-task-center-interrupted {
-  color: var(--text-subtle) !important;
 }
 
 .sync-task-center-row.is-interrupted .sync-task-center-row-title span,

@@ -1688,6 +1688,13 @@ mod tests {
 
     #[test]
     fn accepts_integral_float_counters_from_intelligence_snapshot() {
+        let integer_fixture = intelligence_response_fixture("210", "420");
+        let integer_response =
+            serde_json::from_str::<CodexRadarIntelligenceResponse>(&integer_fixture)
+                .expect("parse integer counters");
+        assert_eq!(integer_response.points[0].passed, 210);
+        assert_eq!(integer_response.points[0].valid_tasks, 420);
+
         let fixture = intelligence_response_fixture("210.0", "420.0");
         let response = serde_json::from_str::<CodexRadarIntelligenceResponse>(&fixture)
             .expect("parse integral float counters");
@@ -1707,8 +1714,9 @@ mod tests {
         for (passed, valid_tasks) in [
             ("210.5", "420.0"),
             ("210.0", "420.5"),
+            ("-9223372036854775809.0", "420.0"),
             ("9223372036854775808.0", "420.0"),
-            (r#"\"210\""#, "420.0"),
+            (r#""210""#, "420.0"),
         ] {
             let fixture = intelligence_response_fixture(passed, valid_tasks);
             assert!(
