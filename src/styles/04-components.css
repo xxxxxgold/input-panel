@@ -4299,6 +4299,11 @@
   background: color-mix(in srgb, var(--border-strong) 34%, transparent);
 }
 
+.sync-task-center-row.is-interrupted .sync-task-center-status-icon {
+  color: var(--text-subtle);
+  background: color-mix(in srgb, var(--border-strong) 34%, transparent);
+}
+
 .sync-task-center-row-copy {
   min-width: 0;
   display: grid;
@@ -4443,6 +4448,11 @@
 .sync-task-center-row.is-failed .sync-task-center-row-title span,
 .sync-task-center-error {
   color: var(--danger) !important;
+}
+
+.sync-task-center-row.is-interrupted .sync-task-center-row-title span,
+.sync-task-center-interrupted {
+  color: var(--text-subtle) !important;
 }
 
 .sync-task-center-row.is-interrupted .sync-task-center-row-title span,
