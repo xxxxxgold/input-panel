@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
-use serde::Deserialize;
+use serde::{de, Deserialize, Deserializer};
 
 use crate::contracts::{
     CodexRadarDegradationAlert, CodexRadarFastRadarItem, CodexRadarFastRadarPayload,
@@ -96,13 +96,46 @@ struct CodexRadarIntelligenceRawPoint {
     model: String,
     effort: String,
     iq: f64,
+    #[serde(deserialize_with = "deserialize_integral_i64")]
     passed: i64,
+    #[serde(deserialize_with = "deserialize_integral_i64")]
     valid_tasks: i64,
     average_price_usd: Option<f64>,
     average_minutes: Option<f64>,
     combined_cost_index: Option<f64>,
     total_runs: i64,
     latest_graded_at: String,
+}
+
+/// 兼容上游把整数计数写成 `210.0`，但拒绝真实小数以保持计数语义。
+fn deserialize_integral_i64<'de, D>(deserializer: D) -> std::result::Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let number = serde_json::Number::deserialize(deserializer)?;
+    if let Some(value) = number.as_i64() {
+        return Ok(value);
+    }
+    if let Some(value) = number.as_u64() {
+        return i64::try_from(value)
+            .map_err(|_| de::Error::custom(format!("Codex Radar 计数超出 i64 范围: {number}")));
+    }
+
+    let value = number.to_string();
+    let Some((integer, fraction)) = value.split_once('.') else {
+        return Err(de::Error::custom(format!(
+            "Codex Radar 计数必须是整数: {value}"
+        )));
+    };
+    if !fraction.chars().all(|digit| digit == '0') {
+        return Err(de::Error::custom(format!(
+            "Codex Radar 计数必须是整数: {value}"
+        )));
+    }
+
+    integer
+        .parse::<i64>()
+        .map_err(|_| de::Error::custom(format!("Codex Radar 计数超出 i64 范围: {value}")))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1442,6 +1475,32 @@ mod tests {
         }
     }
 
+    fn intelligence_response_fixture(passed: &str, valid_tasks: &str) -> String {
+        format!(
+            r#"
+            {{
+              "schema": 2,
+              "type": "distributed_intelligence_efficiency",
+              "source_updated_at": "2026-08-13T09:07:46+00:00",
+              "points": [
+                {{
+                  "model": "gpt-5.6-sol",
+                  "effort": "low",
+                  "iq": 75.0,
+                  "passed": {passed},
+                  "valid_tasks": {valid_tasks},
+                  "average_price_usd": 2.047978,
+                  "average_minutes": 11.83,
+                  "combined_cost_index": 8.74,
+                  "total_runs": 1537,
+                  "latest_graded_at": "2026-08-13T09:07:46+00:00"
+                }}
+              ]
+            }}
+            "#
+        )
+    }
+
     fn cached_fast_radar_payload() -> CodexRadarFastRadarPayload {
         CodexRadarFastRadarPayload {
             summary: CodexRadarFastRadarSummary {
@@ -1625,6 +1684,38 @@ mod tests {
         assert_eq!(sol_xhigh.status, None);
         assert_eq!(payload.source_updated_at, "2026-07-31T07:25:33+08:00");
         assert!(!payload.is_stale);
+    }
+
+    #[test]
+    fn accepts_integral_float_counters_from_intelligence_snapshot() {
+        let fixture = intelligence_response_fixture("210.0", "420.0");
+        let response = serde_json::from_str::<CodexRadarIntelligenceResponse>(&fixture)
+            .expect("parse integral float counters");
+        assert_eq!(response.points[0].passed, 210);
+        assert_eq!(response.points[0].valid_tasks, 420);
+
+        let payload = build_model_iq_payload_from_intelligence(
+            serde_json::from_str(&fixture).expect("parse Model IQ source"),
+            "2026-08-14T12:30:00+08:00".into(),
+        )
+        .expect("build Model IQ payload");
+        assert_eq!(payload.items[0].passed, 210);
+    }
+
+    #[test]
+    fn rejects_non_integral_or_invalid_intelligence_counters() {
+        for (passed, valid_tasks) in [
+            ("210.5", "420.0"),
+            ("210.0", "420.5"),
+            ("9223372036854775808.0", "420.0"),
+            (r#"\"210\""#, "420.0"),
+        ] {
+            let fixture = intelligence_response_fixture(passed, valid_tasks);
+            assert!(
+                serde_json::from_str::<CodexRadarIntelligenceResponse>(&fixture).is_err(),
+                "expected {passed}/{valid_tasks} to be rejected"
+            );
+        }
     }
 
     #[test]
@@ -1985,8 +2076,8 @@ mod tests {
                   "model": "gpt-5.6-sol",
                   "effort": "max",
                   "iq": 101.8,
-                  "passed": 76,
-                  "valid_tasks": 112,
+                  "passed": 210.0,
+                  "valid_tasks": 420.0,
                   "average_price_usd": 9.27,
                   "average_minutes": 35.42,
                   "combined_cost_index": 8.74,
@@ -1997,8 +2088,8 @@ mod tests {
                   "model": "gpt-5.6-terra",
                   "effort": "ultra",
                   "iq": 100.4,
-                  "passed": 75,
-                  "valid_tasks": 112,
+                  "passed": 75.0,
+                  "valid_tasks": 112.0,
                   "average_price_usd": 13.60,
                   "average_minutes": 42.21,
                   "combined_cost_index": 21.90,
@@ -2030,6 +2121,13 @@ mod tests {
             .find(|item| item.reasoning_effort == "ultra")
             .expect("Terra ultra efficiency point");
         assert_eq!(terra_ultra.average_cost_usd, Some(13.60));
+        let sol_efficiency = payload
+            .efficiency_points
+            .iter()
+            .find(|item| item.model == "gpt-5.6-sol")
+            .expect("Sol efficiency point");
+        assert_eq!(sol_efficiency.passed, 210);
+        assert_eq!(sol_efficiency.valid_tasks, 420);
         let terra_detail = payload
             .detail_items
             .iter()
