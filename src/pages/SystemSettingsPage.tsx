@@ -195,6 +195,34 @@ function SettingsNumberStepper({
   );
 }
 
+function SystemSettingsToggle({
+  checked,
+  disabled,
+  onChange,
+  ariaLabel,
+  testId
+}: {
+  checked: boolean;
+  disabled: boolean;
+  onChange: (value: boolean) => void;
+  ariaLabel?: string;
+  testId?: string;
+}) {
+  return (
+    <span className="system-settings-switch">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        disabled={disabled}
+        aria-label={ariaLabel}
+        data-testid={testId}
+      />
+      <span className="system-settings-switch-track" aria-hidden="true" />
+    </span>
+  );
+}
+
 export function SystemSettingsPage({
   theme,
   setTheme,
@@ -440,15 +468,14 @@ export function SystemSettingsPage({
               <option value="floating">悬浮窗模式</option>
             </select>
           </label>
-          <label className="toggle-field motion-surface-card">
+          <label className="toggle-field system-settings-toggle-field motion-surface-card">
             <div>
               <strong>主窗口模式默认显示悬浮窗</strong>
               <p>关闭后只显示主窗口, 需要时再手动打开悬浮窗。</p>
             </div>
-            <input
-              type="checkbox"
+            <SystemSettingsToggle
               checked={desktopUiPrefs.openFloatingInMainMode}
-              onChange={(event) => onFloatingVisibleChange(event.target.checked)}
+              onChange={onFloatingVisibleChange}
               disabled={desktopUiLoading}
             />
           </label>
@@ -728,15 +755,14 @@ export function SystemSettingsPage({
               </small>
             </label>
           </fieldset>
-          <label className="toggle-field motion-surface-card">
+          <label className="toggle-field system-settings-toggle-field motion-surface-card">
             <div>
               <strong>悬浮快捷菜单常驻显示</strong>
               <p>开启后悬浮菜单会一直显示; 关闭后只有鼠标靠近时才显示。</p>
             </div>
-            <input
-              type="checkbox"
+            <SystemSettingsToggle
               checked={desktopUiPrefs.keepFloatingPanelVisible}
-              onChange={(event) => onFloatingPanelPinnedChange(event.target.checked)}
+              onChange={onFloatingPanelPinnedChange}
               disabled={desktopUiLoading}
             />
           </label>
@@ -773,12 +799,11 @@ export function SystemSettingsPage({
             <strong>{input.title}</strong>
             <p>{input.description}</p>
           </div>
-          <input
-            type="checkbox"
+          <SystemSettingsToggle
             checked={input.enabled}
-            onChange={(event) => input.onEnabledChange(event.target.checked)}
+            onChange={input.onEnabledChange}
             disabled={desktopUiLoading}
-            aria-label={`${input.title}自动刷新开关`}
+            ariaLabel={`${input.title}自动刷新开关`}
           />
         </div>
         <div className="field">
@@ -877,15 +902,14 @@ export function SystemSettingsPage({
               设置读取失败: {desktopUiLoadError}
             </div>
           )}
-          <label className="toggle-field motion-surface-card">
+          <label className="toggle-field system-settings-toggle-field motion-surface-card">
             <div>
               <strong>启用前端自动刷新</strong>
               <p>关闭后会暂停全部自动刷新。手动刷新始终可用。</p>
             </div>
-            <input
-              type="checkbox"
+            <SystemSettingsToggle
               checked={desktopUiPrefs.autoRefreshEnabled}
-              onChange={(event) => onAutoRefreshEnabledChange(event.target.checked)}
+              onChange={onAutoRefreshEnabledChange}
               disabled={desktopUiLoading}
             />
           </label>
@@ -983,15 +1007,14 @@ export function SystemSettingsPage({
               </button>
             </div>
           )}
-          <label className="toggle-field motion-surface-card">
+          <label className="toggle-field system-settings-toggle-field motion-surface-card">
             <div>
               <strong>启用后端自动同步</strong>
               <p>关闭后只停止后端向上游同步, 前端自动刷新和手动刷新不受影响。</p>
             </div>
-            <input
-              type="checkbox"
+            <SystemSettingsToggle
               checked={schedulerConfig.enabled}
-              onChange={(event) => onSchedulerConfigChange({ ...schedulerConfig, enabled: event.target.checked })}
+              onChange={(enabled) => onSchedulerConfigChange({ ...schedulerConfig, enabled })}
               disabled={schedulerControlsDisabled}
             />
           </label>
@@ -1173,21 +1196,20 @@ export function SystemSettingsPage({
               </button>
             </div>
           )}
-          <label className="toggle-field motion-surface-card">
+          <label className="toggle-field system-settings-toggle-field motion-surface-card">
             <div>
               <strong>使用系统代理</strong>
               <p>关闭后，应用会绕过系统和环境代理，直接请求上游。切换只影响新发起的请求。</p>
             </div>
-            <input
-              type="checkbox"
+            <SystemSettingsToggle
               checked={upstreamNetworkConfig.useSystemProxy}
-              onChange={(event) =>
+              onChange={(useSystemProxy) =>
                 onUpstreamNetworkConfigChange({
-                  useSystemProxy: event.target.checked
+                  useSystemProxy
                 })
               }
               disabled={upstreamNetworkControlsDisabled}
-              data-testid="use-system-proxy"
+              testId="use-system-proxy"
             />
           </label>
           {upstreamNetworkConfigLoading && !upstreamNetworkLoadError && (
@@ -1471,15 +1493,14 @@ export function SystemSettingsPage({
             <p>这个操作会清空当前设备上保存的使用数据和登录状态。</p>
             <p>默认不会删除站点和账号. 只有勾选下面这项时, 才会把站点和账号一起删除。</p>
           </div>
-          <label className="toggle-field motion-surface-card">
+          <label className="toggle-field system-settings-toggle-field motion-surface-card">
             <div>
               <strong>同时删除站点和账号</strong>
               <p>勾选后会把站点、账号以及相关登录信息一起删除。</p>
             </div>
-            <input
-              type="checkbox"
+            <SystemSettingsToggle
               checked={removeSitesAndAccounts}
-              onChange={(event) => setRemoveSitesAndAccounts(event.target.checked)}
+              onChange={setRemoveSitesAndAccounts}
               disabled={clearRuntimeDataLoading}
             />
           </label>

@@ -3996,6 +3996,98 @@
   opacity: 0.56;
 }
 
+.system-settings-toggle-field > :first-child {
+  min-width: 0;
+}
+
+.system-settings-switch {
+  position: relative;
+  display: inline-flex;
+  width: 44px;
+  height: 26px;
+  flex: 0 0 44px;
+}
+
+.auto-refresh-group-header .system-settings-switch {
+  margin-top: 2px;
+}
+
+.system-settings-switch > input[type="checkbox"] {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.system-settings-switch-track {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 92%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-elevated) 84%, var(--border));
+  box-shadow: inset 0 1px 1px color-mix(in srgb, var(--bg-overlay) 18%, transparent);
+  pointer-events: none;
+  transition:
+    border-color var(--motion-fast, 160ms) ease,
+    background var(--motion-fast, 160ms) ease,
+    box-shadow var(--motion-fast, 160ms) ease,
+    transform var(--motion-fast, 160ms) ease;
+}
+
+.system-settings-switch-track::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--text-subtle);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--bg-overlay) 32%, transparent);
+  content: "";
+  transition:
+    transform var(--motion-fast, 160ms) ease,
+    background var(--motion-fast, 160ms) ease,
+    box-shadow var(--motion-fast, 160ms) ease;
+}
+
+.system-settings-switch > input[type="checkbox"]:hover + .system-settings-switch-track {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--border-strong));
+}
+
+.system-settings-switch > input[type="checkbox"]:active + .system-settings-switch-track {
+  transform: scale(0.96);
+}
+
+.system-settings-switch > input[type="checkbox"]:checked + .system-settings-switch-track {
+  border-color: color-mix(in srgb, var(--accent-strong) 78%, var(--border-strong));
+  background: color-mix(in srgb, var(--accent) 72%, var(--bg-elevated));
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.system-settings-switch > input[type="checkbox"]:checked + .system-settings-switch-track::after {
+  transform: translateX(18px);
+  background: var(--text-inverse);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--bg-overlay) 42%, transparent);
+}
+
+.system-settings-switch > input[type="checkbox"]:focus-visible + .system-settings-switch-track {
+  outline: 2px solid color-mix(in srgb, var(--accent) 68%, transparent);
+  outline-offset: 2px;
+}
+
+.system-settings-switch > input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+}
+
+.system-settings-switch > input[type="checkbox"]:disabled + .system-settings-switch-track {
+  opacity: 0.56;
+}
+
 .subscription-switch-threshold-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
