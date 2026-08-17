@@ -23,15 +23,10 @@
     "build": "pnpm build:web",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "check:css": "node scripts/check-css-duplicates.mjs",
     "build:desktop": "pwsh -NoLogo -NoProfile -File ./scripts/prepare-desktop-build.ps1 && pnpm tauri build --no-bundle",
     "build:desktop:debug": "pwsh -NoLogo -NoProfile -File ./scripts/prepare-desktop-build.ps1 && pnpm tauri build --debug --no-bundle",
     "preview": "vite preview",
     "start": "pnpm tauri dev",
-    "test": "vitest run",
-    "smoke:real": "cargo run --manifest-path src-tauri/Cargo.toml --example real_smoke",
-    "gitnexus:refresh": "npx gitnexus analyze --force --skip-agents-md --skip-skills",
-    "gitnexus:status": "npx gitnexus status",
     "tauri": "tauri"
   },
   "dependencies": {
