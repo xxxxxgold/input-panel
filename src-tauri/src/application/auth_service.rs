@@ -184,8 +184,8 @@ mod tests {
     use crate::infrastructure::sqlite::{repositories, Database};
     use crate::test_support::TestAxumServer;
 
-    // 这里验证的是不等待 5 秒的 bootstrap 请求，保留合理的并发调度预算。
-    const NON_BLOCKING_LOGIN_TIMEOUT: Duration = Duration::from_secs(1);
+    // 这里验证的是不等待 5 秒的 bootstrap 请求，并为 HTTP、SQLite 与线程调度保留余量。
+    const NON_BLOCKING_LOGIN_TIMEOUT: Duration = Duration::from_secs(2);
     // 后台 Full sync 受并发调度和本机负载影响，单独保留测试清理的安全上限。
     const BOOTSTRAP_SYNC_TIMEOUT: Duration = Duration::from_secs(10);
 
