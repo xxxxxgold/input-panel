@@ -1019,7 +1019,7 @@ mod tests {
     #[test]
     fn saved_custom_sound_can_be_restored_after_system_and_muted() {
         let ctx = build_test_context();
-        let storage_key = "notification-sound-550e8400-e29b-41d4-a716-446655440000.mp3";
+        let storage_key = "notification-sound-550e8400-e29b-41d4-a716-446655440000.wav";
         let controlled_path =
             notification_sound::custom_notification_sound_path(&ctx.paths, storage_key)
                 .expect("resolve controlled custom sound path");
@@ -1027,12 +1027,12 @@ mod tests {
             .expect("create controlled sound directory");
         fs::write(
             &controlled_path,
-            include_bytes!("../../resources/sounds/manbo.mp3"),
+            include_bytes!("../../resources/sounds/input-panel-notification.wav"),
         )
         .expect("retain controlled custom sound copy");
         let custom_prefs = DesktopUiPrefs {
             floating_notification_sound_source: FloatingNotificationSoundSource::Custom,
-            floating_notification_sound_file_name: Some("custom-tone.mp3".into()),
+            floating_notification_sound_file_name: Some("custom-tone.wav".into()),
             floating_notification_sound_storage_key: Some(storage_key.into()),
             ..DesktopUiPrefs::default()
         };
@@ -1054,7 +1054,7 @@ mod tests {
         );
         assert_eq!(
             restored.floating_notification_sound_file_name.as_deref(),
-            Some("custom-tone.mp3")
+            Some("custom-tone.wav")
         );
         assert_eq!(
             restored.floating_notification_sound_storage_key.as_deref(),

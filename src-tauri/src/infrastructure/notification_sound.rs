@@ -18,7 +18,8 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::{MB_ICONINFORMATION, MESSAGEBOX_STYLE},
 };
 
-pub(crate) const DEFAULT_NOTIFICATION_SOUND_RESOURCE: &str = "resources/sounds/manbo.mp3";
+pub(crate) const DEFAULT_NOTIFICATION_SOUND_RESOURCE: &str =
+    "resources/sounds/input-panel-notification.wav";
 const CUSTOM_NOTIFICATION_SOUND_DIRECTORY: &str = "notification-sounds";
 const CUSTOM_NOTIFICATION_SOUND_PREFIX: &str = "notification-sound-";
 
@@ -260,7 +261,7 @@ mod tests {
             "notification-sound-550e8400-e29b-41d4-a716-446655440000.wav"
         ));
         assert!(!is_valid_custom_notification_sound_storage_key(
-            "../manbo.mp3"
+            "../outside.mp3"
         ));
         assert!(!is_valid_custom_notification_sound_storage_key(
             "notification-sound-not-a-uuid.mp3"
@@ -274,18 +275,18 @@ mod tests {
     fn default_sound_path_preserves_the_bundled_resource_prefix() {
         assert_eq!(
             DEFAULT_NOTIFICATION_SOUND_RESOURCE,
-            "resources/sounds/manbo.mp3"
+            "resources/sounds/input-panel-notification.wav"
         );
     }
 
     #[test]
     fn imported_sound_is_copied_into_the_controlled_directory() {
         let root = test_root();
-        let source_path = root.join("picked-tone.MP3");
+        let source_path = root.join("picked-tone.WAV");
         fs::create_dir_all(&root).expect("create source directory");
         fs::write(
             &source_path,
-            include_bytes!("../../resources/sounds/manbo.mp3"),
+            include_bytes!("../../resources/sounds/input-panel-notification.wav"),
         )
         .expect("write source audio");
         let paths = AppPaths::from_root(root.join("app"));
@@ -296,7 +297,7 @@ mod tests {
         let copied_path = custom_notification_sound_path(&paths, &imported.storage_key)
             .expect("resolve controlled path");
 
-        assert_eq!(imported.display_name, "picked-tone.MP3");
+        assert_eq!(imported.display_name, "picked-tone.WAV");
         assert!(copied_path.is_file());
         assert_ne!(copied_path, source_path);
         assert!(copied_path.starts_with(paths.config_dir.join("notification-sounds")));

@@ -39,7 +39,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["icons/128x128.png", "resources/sounds/manbo.mp3"],
+    "resources": [
+      "icons/128x128.png",
+      "resources/sounds/input-panel-notification.wav"
+    ],
     "android": {
       "debugApplicationIdSuffix": ".debug"
     }
