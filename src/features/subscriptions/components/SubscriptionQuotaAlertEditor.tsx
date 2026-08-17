@@ -111,12 +111,15 @@ export function SubscriptionQuotaAlertEditor({
         </div>
         <label className="toggle-field subscription-quota-alert-toggle">
           <span>启用提醒</span>
-          <input
-            type="checkbox"
-            checked={draft.enabled}
-            onChange={(event) => updateDraft({ enabled: event.target.checked })}
-            disabled={controlsDisabled}
-          />
+          <span className="subscription-switch-toggle-control">
+            <input
+              type="checkbox"
+              checked={draft.enabled}
+              onChange={(event) => updateDraft({ enabled: event.target.checked })}
+              disabled={controlsDisabled}
+            />
+            <span className="subscription-switch-toggle-track" aria-hidden="true" />
+          </span>
         </label>
       </header>
 
