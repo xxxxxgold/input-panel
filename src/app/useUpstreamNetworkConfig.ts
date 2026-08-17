@@ -30,7 +30,7 @@ export function useUpstreamNetworkConfig() {
   const [upstreamNetworkSaveError, setUpstreamNetworkSaveError] = useState<string | null>(null);
   const pendingSaveRef = useRef<UpstreamNetworkPendingSave | null>(null);
   const saveRunningRef = useRef(false);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveTimerRef = useRef<number | null>(null);
   const saveRevisionRef = useRef(0);
   const loadRevisionRef = useRef(0);
 
