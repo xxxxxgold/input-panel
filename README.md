@@ -73,7 +73,6 @@ Input Panel 面向需要同时管理多个 Sub2API 站点与账号的个人用�
 | 状态管理 | Zustand 5 |
 | HTTP 与上游访问 | Axum 0.7, Reqwest 0.12 |
 | 本地存储 | SQLite, rusqlite 0.31 |
-| 测试 | Vitest 3, Testing Library, Rust tests |
 
 ---
 
@@ -88,7 +87,9 @@ Input Panel 面向需要同时管理多个 Sub2API 站点与账号的个人用�
 ### 安装依赖
 
 ```powershell
-pnpm install
+git clone https://github.com/xxxxxgold/input-panel.git
+Set-Location input-panel
+pnpm install --frozen-lockfile
 ```
 
 ### 浏览器联调
@@ -188,37 +189,22 @@ src-tauri/target/release/app.exe
 
 ```powershell
 pnpm lint
-pnpm check:css
-pnpm test
 pnpm build:web
 cargo check --manifest-path src-tauri/Cargo.toml
-cargo test --manifest-path src-tauri/Cargo.toml
 pnpm build:desktop
 ```
-
-真实站点 smoke:
-
-```powershell
-$env:SUB2API_SITE_URL='https://ai.input.im'
-$env:SUB2API_EMAIL='your@email'
-$env:SUB2API_PASSWORD='your-password'
-pnpm smoke:real
-```
-
-> [!WARNING]
-> 真实站点 smoke 会读取账号凭据. 不要在终端截图、日志、测试数据或提交内容中保留真实邮箱、密码、Cookie 或 Token.
 
 ## 项目结构
 
 ```text
-src/                 React UI、页面壳层、feature client 与 workspace hooks
-src-tauri/src/       Rust adapters、application、contracts 与 infrastructure
-src-tauri/examples/  Browser HTTP adapter、smoke 与诊断程序
-tests/               Vitest 前端、展示、状态与契约回归
-scripts/             Windows 启动、生命周期与桌面构建辅助脚本
-config/              仅供 SUB2API_APP_ROOT 隔离运行使用
-docs/                当前架构、契约摘要与研究资料入口
-.trellis/spec/       项目级前后端实现规范
+src/                            React UI、页面壳层、feature client 与 workspace hooks
+src-tauri/src/                  Rust adapters、application、contracts 与 infrastructure
+src-tauri/examples/inputApi.rs  Browser HTTP adapter 入口
+src-tauri/icons/                桌面与移动平台图标套件
+src-tauri/resources/            桌面运行时资源
+scripts/                        Windows 启动、生命周期与桌面构建辅助脚本
+img/                            README 功能截图
+THIRD_PARTY_LICENSES/           随源码分发的第三方许可证文本
 ```
 
 ### 关键入口
@@ -233,16 +219,6 @@ docs/                当前架构、契约摘要与研究资料入口
 | 悬浮通知入口 | `src/floating-notification-main.tsx` |
 | Browser HTTP backend | `src-tauri/examples/inputApi.rs` |
 | Tauri 桌面运行入口 | `src-tauri/src/lib.rs` |
-
-## 文档入口
-
-- [当前运行时架构](./docs/runtime-architecture.md)
-- [项目文档入口](./docs/README.md)
-- [Sub2API 用户中心契约摘要](./docs/user-center-contract.md)
-- [Sub2API 生成研究资料目录](./docs/generated-sub2api-research.md)
-- [后端实现规范](./.trellis/spec/backend/index.md)
-- [前端实现规范](./.trellis/spec/frontend/index.md)
-- [上游 Sub2API 请求契约](./.trellis/spec/backend/upstream-sub2api-requests.md)
 
 ## 运行边界
 
@@ -271,7 +247,18 @@ docs/                当前架构、契约摘要与研究资料入口
 - 普通 web 与 desktop scope 会在各自默认目录旁读取 `storage.json`, 用它定位自定义数据库目录; 数据库文件名始终为 `config.sqlite`.
 - 页面主数据来自 SQLite 缓存与读模型. `storage.json` 只保存数据库目录指针, 不承载业务状态.
 - 系统设置支持选择用户目录、程序目录或绝对目标目录. 迁移使用 SQLite online backup 并保留源库; 成功后必须重启 Rust 后端或桌面应用, 不支持进程内热切换.
-- 当前 `credentials.password` 会以明文写入本机 SQLite, 不是加密存储. 数据库、日志、截图和测试数据都应按敏感资料处理.
+- 当前 `credentials.password` 会以明文写入本机 SQLite, 不是加密存储. 数据库、日志和截图都应按敏感资料处理.
 
 > [!WARNING]
 > 本地存储不等于加密存储. 在共享电脑、备份目录或云同步目录中使用自定义数据库路径前, 请先评估凭据暴露风险.
+
+## 许可证
+
+Input Panel 由 xxxxxgold 以 [GNU General Public License v3.0 only](./LICENSE) 发布.
+
+```text
+Copyright (C) 2026 xxxxxgold
+SPDX-License-Identifier: GPL-3.0-only
+```
+
+第三方组件及其许可证见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md), 正式资产的来源、生成方式和哈希见 [ASSET_PROVENANCE.md](./ASSET_PROVENANCE.md).
