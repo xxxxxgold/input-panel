@@ -71,6 +71,9 @@ const fastRefreshNonComponentExportAllowlist = {
   "src/pages/OverviewPage.tsx": [
     "buildOverviewConcurrencyKeyItems"
   ],
+  "src/pages/SubscriptionsPage.tsx": [
+    "buildSubscriptionKeyUsageScopeKey"
+  ],
   "src/pages/SettingsPage.tsx": [
     "runSiteCardAction",
     "runSiteAccountRowAction"
