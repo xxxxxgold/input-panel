@@ -31,9 +31,9 @@ use crate::contracts::{
     SubscriptionQuotaAlertUpsertInput, SubscriptionRecord, SubscriptionSummaryPayload,
     SubscriptionSwitchEvaluationResult, SubscriptionSwitchRuleRecord,
     SubscriptionSwitchRuleUpsertInput, SyncAccountDataInput, SyncFailureResponse,
-    TransportErrorPayload, UpstreamNetworkConfigPayload, UsageAnalyticsPayload, UsageCursorPage, UsageExtremesPayload,
-    UsageFacetPage, UsageFacetRequest, UsageFilter, UsageInsightsPayload, UsageListRequest,
-    UsageRow, UsageStatsRecord, UsageTrendPayload, UserProfileRecord,
+    TransportErrorPayload, UpstreamNetworkConfigPayload, UsageAnalyticsPayload, UsageCursorPage,
+    UsageExtremesPayload, UsageFacetPage, UsageFacetRequest, UsageFilter, UsageInsightsPayload,
+    UsageListRequest, UsageRow, UsageStatsRecord, UsageTrendPayload, UserProfileRecord,
 };
 
 fn sync_keep_floating_panel_visible(app: &AppHandle, prefs: &DesktopUiPrefs) {
@@ -133,7 +133,9 @@ pub async fn get_overview_shell_lite(
 }
 
 #[tauri::command]
-pub async fn get_service_status(ctx: State<'_, AppContext>) -> Result<ServiceStatusPayload, String> {
+pub async fn get_service_status(
+    ctx: State<'_, AppContext>,
+) -> Result<ServiceStatusPayload, String> {
     service_status_service::get_service_status(&ctx)
         .await
         .map_err(to_message)
@@ -399,12 +401,13 @@ pub fn switch_app_mode(
     let mut main_window_activation_applied = false;
     match launch_mode {
         AppLaunchMode::Main => {
-            main_window_activation_applied = crate::request_main_window_activation_after_startup_handoff(
-                &app,
-                &prefs,
-                None,
-                "切换到主窗口模式",
-            )?;
+            main_window_activation_applied =
+                crate::request_main_window_activation_after_startup_handoff(
+                    &app,
+                    &prefs,
+                    None,
+                    "切换到主窗口模式",
+                )?;
         }
         AppLaunchMode::Floating => {
             if let Some(window) = &main {

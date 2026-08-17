@@ -977,8 +977,8 @@ mod tests {
     };
     use crate::application::{context::SyncTaskHandle, AppContext};
     use crate::contracts::{
-        AccountRecord, SiteRecord, StoredSession, UsageFacetRequest, UsageFilter,
-        UsageListRequest, UsageRow, UsageTextFilter, UsageTextMatchMode,
+        AccountRecord, SiteRecord, StoredSession, UsageFacetRequest, UsageFilter, UsageListRequest,
+        UsageRow, UsageTextFilter, UsageTextMatchMode,
     };
     use crate::infrastructure::datetime::shanghai_today;
     use crate::infrastructure::files::AppPaths;
@@ -1262,13 +1262,9 @@ mod tests {
         let stats = get_usage_stats(&ctx, "account-local-read", advanced_filter.clone())
             .await
             .expect("read detail stats");
-        let models = get_dashboard_models(
-            &ctx,
-            "account-local-read",
-            advanced_filter.clone(),
-        )
-        .await
-        .expect("read detail models");
+        let models = get_dashboard_models(&ctx, "account-local-read", advanced_filter.clone())
+            .await
+            .expect("read detail models");
         let trend = get_dashboard_trend(&ctx, "account-local-read", advanced_filter)
             .await
             .expect("read detail trend");

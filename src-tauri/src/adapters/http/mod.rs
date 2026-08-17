@@ -981,9 +981,7 @@ async fn list_usage_records(
     Path(account_id): Path<String>,
     Json(request): Json<crate::contracts::UsageListRequest>,
 ) -> impl IntoResponse {
-    map_async_json_result(
-        usage_service::list_usage_records(&ctx, &account_id, request).await,
-    )
+    map_async_json_result(usage_service::list_usage_records(&ctx, &account_id, request).await)
 }
 
 async fn list_usage_facets(
@@ -1492,8 +1490,7 @@ mod tests {
         contracts::{
             AccountRecord, AppLaunchMode, CloseBehavior, CodexRadarInsightsPayload,
             CodexRadarIntelligenceEfficiencyPoint, CodexRadarIntelligencePayload,
-            CodexRadarModelIqEntry, CodexRadarModelIqPayload, SiteRecord, StoredSession,
-            UsageRow,
+            CodexRadarModelIqEntry, CodexRadarModelIqPayload, SiteRecord, StoredSession, UsageRow,
         },
         infrastructure::{
             files::AppPaths,
@@ -2325,7 +2322,14 @@ mod tests {
         seed_usage_http_account(&ctx);
         let (base_url, shutdown_tx, server) = start_test_http_server(ctx).await;
         let client = reqwest::Client::new();
-        let routes = ["stats", "analytics", "extremes", "models", "trend", "insights"];
+        let routes = [
+            "stats",
+            "analytics",
+            "extremes",
+            "models",
+            "trend",
+            "insights",
+        ];
         let filter = json!({
             "startDate": "2026-08-11",
             "endDate": "2026-08-11",

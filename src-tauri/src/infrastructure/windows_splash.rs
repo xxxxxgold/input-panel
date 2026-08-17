@@ -3,6 +3,7 @@
 //! 它只覆盖 Tauri 创建 WebView 到主窗口首帧可见之间的空白，不属于 Tauri
 //! 窗口体系，因此不增加 label、capability 或额外 WebView。
 
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::{
     ffi::c_void,
     panic::{catch_unwind, AssertUnwindSafe},
@@ -13,7 +14,6 @@ use std::{
     },
     time::Duration,
 };
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use windows_sys::Win32::{
     Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{
@@ -233,7 +233,8 @@ fn load_persisted_startup_splash_theme() -> StartupSplashTheme {
     }
 
     // Splash 必须先于 AppContext 显示，不能通过 Database::connect() 触发 schema、迁移或锁等待。
-    let Ok(connection) = Connection::open_with_flags(&paths.db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    let Ok(connection) =
+        Connection::open_with_flags(&paths.db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
     else {
         return StartupSplashTheme::default();
     };
