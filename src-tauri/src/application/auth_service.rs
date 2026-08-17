@@ -186,16 +186,34 @@ mod tests {
 
     // 这里验证的是不等待 5 秒的 bootstrap 请求，保留合理的并发调度预算。
     const NON_BLOCKING_LOGIN_TIMEOUT: Duration = Duration::from_secs(1);
+    // 后台 Full sync 受并发调度和本机负载影响，单独保留测试清理的安全上限。
+    const BOOTSTRAP_SYNC_TIMEOUT: Duration = Duration::from_secs(10);
 
     /// 持有阻塞用量 mock 的释放信号与服务任务，避免后台同步跨测试遗留。
     struct BlockedUsageTestContext {
         ctx: AppContext,
         base_url: String,
+        usage_started: watch::Receiver<bool>,
         release_usage: watch::Sender<bool>,
         server: Option<TestAxumServer>,
     }
 
     impl BlockedUsageTestContext {
+        /// 等待 Full bootstrap 确实进入阻塞用量请求，避免只观察到任务登记状态。
+        async fn wait_for_usage_request(&self) {
+            let mut usage_started = self.usage_started.clone();
+            tokio::time::timeout(BOOTSTRAP_SYNC_TIMEOUT, async {
+                while !*usage_started.borrow() {
+                    usage_started
+                        .changed()
+                        .await
+                        .expect("usage request signal remains available");
+                }
+            })
+            .await
+            .expect("bootstrap sync must enter the blocked usage request");
+        }
+
         async fn finish(mut self) {
             self.release_usage.send_replace(true);
             wait_for_bootstrap_sync_completion(&self.ctx).await;
@@ -226,6 +244,7 @@ mod tests {
 
         assert_successful_login(&fixture.ctx, result);
         wait_for_bootstrap_sync(&fixture.ctx).await;
+        fixture.wait_for_usage_request().await;
         assert!(fixture.base_url.starts_with("http://127.0.0.1:"));
         fixture.finish().await;
     }
@@ -254,6 +273,7 @@ mod tests {
             .expect("load session")
             .is_some());
         wait_for_bootstrap_sync(&fixture.ctx).await;
+        fixture.wait_for_usage_request().await;
         fixture.finish().await;
     }
 
@@ -266,6 +286,7 @@ mod tests {
                 "data": { "access_token": "access-1", "refresh_token": "refresh-1" }
             })
         };
+        let (usage_started, usage_started_rx) = watch::channel(false);
         let (release_usage, usage_release) = watch::channel(false);
         let app = Router::new()
             .route(
@@ -287,17 +308,26 @@ mod tests {
             .route(
                 "/api/v1/usage",
                 get({
+                    let usage_started = usage_started.clone();
                     let usage_release = usage_release.clone();
                     move || {
+                        let usage_started = usage_started.clone();
                         let mut usage_release = usage_release.clone();
                         async move {
+                            usage_started.send_replace(true);
                             while !*usage_release.borrow() {
                                 usage_release
                                     .changed()
                                     .await
                                     .expect("usage release signal remains available");
                             }
-                            Json(json!({ "items": [] }))
+                            Json(json!({
+                                "items": [],
+                                "page": 1,
+                                "page_size": 1_000,
+                                "total": 0,
+                                "pages": 1
+                            }))
                         }
                     }
                 }),
@@ -305,6 +335,28 @@ mod tests {
             .route(
                 "/api/v1/user/profile",
                 get(|| async { Json(json!({ "balance": 0.0, "email": "demo@example.com" })) }),
+            )
+            .route(
+                "/api/v1/user/platform-quotas",
+                get(|| async { Json(json!({ "platform_quotas": [] })) }),
+            )
+            .route(
+                "/api/v1/subscriptions",
+                get(|| async { Json(json!({ "items": [] })) }),
+            )
+            .route(
+                "/api/v1/subscriptions/summary",
+                get(|| async {
+                    Json(json!({
+                        "active_count": 0,
+                        "total_used_usd": 0.0,
+                        "subscriptions": []
+                    }))
+                }),
+            )
+            .route(
+                "/api/v1/groups/available",
+                get(|| async { Json(json!({ "items": [] })) }),
             )
             .route(
                 "/api/v1/keys",
@@ -358,6 +410,7 @@ mod tests {
         BlockedUsageTestContext {
             ctx,
             base_url,
+            usage_started: usage_started_rx,
             release_usage,
             server: Some(server),
         }
@@ -412,14 +465,23 @@ mod tests {
     }
 
     async fn wait_for_bootstrap_sync_completion(ctx: &AppContext) {
-        tokio::time::timeout(Duration::from_secs(5), async {
+        let task_handle = {
+            let tasks = ctx.sync_tasks.lock().await;
+            tasks
+                .get("account-1:full")
+                .cloned()
+                .expect("bootstrap sync task remains registered")
+        };
+        tokio::time::timeout(BOOTSTRAP_SYNC_TIMEOUT, async {
             loop {
-                if !crate::application::data_center_service::has_running_full_sync(ctx, "account-1")
-                    .await
-                {
+                let notified = task_handle.notify.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                let completed = task_handle.state.lock().await.completed;
+                if completed {
                     break;
                 }
-                tokio::task::yield_now().await;
+                notified.await;
             }
         })
         .await
