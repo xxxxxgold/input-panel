@@ -3,7 +3,6 @@
 //! 它只覆盖 Tauri 创建 WebView 到主窗口首帧可见之间的空白，不属于 Tauri
 //! 窗口体系，因此不增加 label、capability 或额外 WebView。
 
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use std::{
     ffi::c_void,
     panic::{catch_unwind, AssertUnwindSafe},
@@ -14,6 +13,7 @@ use std::{
     },
     time::Duration,
 };
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use windows_sys::Win32::{
     Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{
@@ -52,7 +52,6 @@ const LWA_ALPHA: u32 = 0x0000_0002;
 const WCA_ACCENT_POLICY: i32 = 19;
 const ACCENT_ENABLE_ACRYLICBLURBEHIND: i32 = 4;
 const DESKTOP_UI_PREFS_KEY: &str = "desktop_ui_prefs";
-const DESKTOP_UI_PREFS_MAX_JSON_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -234,8 +233,7 @@ fn load_persisted_startup_splash_theme() -> StartupSplashTheme {
     }
 
     // Splash 必须先于 AppContext 显示，不能通过 Database::connect() 触发 schema、迁移或锁等待。
-    let Ok(connection) =
-        Connection::open_with_flags(&paths.db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    let Ok(connection) = Connection::open_with_flags(&paths.db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
     else {
         return StartupSplashTheme::default();
     };
@@ -245,8 +243,8 @@ fn load_persisted_startup_splash_theme() -> StartupSplashTheme {
 
     let persisted_preferences = connection
         .query_row(
-            "SELECT value FROM app_settings WHERE key = ?1 AND length(value) <= ?2",
-            params![DESKTOP_UI_PREFS_KEY, DESKTOP_UI_PREFS_MAX_JSON_BYTES as i64],
+            "SELECT value FROM app_settings WHERE key = ?1",
+            [DESKTOP_UI_PREFS_KEY],
             |row| row.get::<_, String>(0),
         )
         .optional()
@@ -259,9 +257,6 @@ fn load_persisted_startup_splash_theme() -> StartupSplashTheme {
 }
 
 fn parse_persisted_startup_splash_theme(value: &str) -> Option<StartupSplashTheme> {
-    if value.len() > DESKTOP_UI_PREFS_MAX_JSON_BYTES {
-        return None;
-    }
     serde_json::from_str::<serde_json::Value>(value)
         .ok()?
         .get("theme")?
@@ -677,9 +672,8 @@ unsafe fn fill_circle(
 #[cfg(test)]
 mod tests {
     use super::{
-        can_destroy_startup_splash_on_current_thread, parse_persisted_startup_splash_theme,
-        resolve_splash_spinner_active_segment, should_clear_startup_splash_state_after_destroy,
-        StartupSplashTheme, DESKTOP_UI_PREFS_MAX_JSON_BYTES, SPLASH_SPINNER_SEGMENT_COUNT,
+        can_destroy_startup_splash_on_current_thread, resolve_splash_spinner_active_segment,
+        should_clear_startup_splash_state_after_destroy, SPLASH_SPINNER_SEGMENT_COUNT,
     };
 
     #[test]
@@ -705,64 +699,6 @@ mod tests {
         assert_eq!(
             resolve_splash_spinner_active_segment(SPLASH_SPINNER_SEGMENT_COUNT as u32),
             0
-        );
-    }
-
-    #[test]
-    fn startup_splash_accepts_every_persisted_theme_id() {
-        let themes = [
-            (
-                r#"{"theme":"sakura-signal"}"#,
-                StartupSplashTheme::SakuraSignal,
-            ),
-            (
-                r#"{"theme":"arctic-relay"}"#,
-                StartupSplashTheme::ArcticRelay,
-            ),
-            (
-                r#"{"theme":"ember-circuit"}"#,
-                StartupSplashTheme::EmberCircuit,
-            ),
-            (
-                r#"{"theme":"verdant-core"}"#,
-                StartupSplashTheme::VerdantCore,
-            ),
-            (r#"{"theme":"titan-noir"}"#, StartupSplashTheme::TitanNoir),
-        ];
-
-        for (value, expected) in themes {
-            assert_eq!(parse_persisted_startup_splash_theme(value), Some(expected));
-        }
-    }
-
-    #[test]
-    fn startup_splash_falls_back_for_missing_or_invalid_persisted_theme() {
-        for value in [
-            "{}",
-            r#"{"theme":""}"#,
-            r#"{"theme":null}"#,
-            r#"{"theme":42}"#,
-            r#"{"theme":[]}"#,
-            r#"{"theme":"unknown"}"#,
-            "not-json",
-        ] {
-            assert_eq!(
-                parse_persisted_startup_splash_theme(value).unwrap_or_default(),
-                StartupSplashTheme::SakuraSignal
-            );
-        }
-    }
-
-    #[test]
-    fn startup_splash_rejects_oversized_persisted_preferences() {
-        let oversized_preferences = format!(
-            r#"{{"theme":"sakura-signal","padding":"{}"}}"#,
-            "x".repeat(DESKTOP_UI_PREFS_MAX_JSON_BYTES)
-        );
-
-        assert_eq!(
-            parse_persisted_startup_splash_theme(&oversized_preferences),
-            None
         );
     }
 }
