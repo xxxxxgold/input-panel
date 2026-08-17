@@ -54,11 +54,20 @@ import {
 } from "../shared/lib/formatters";
 import { DEFAULT_THEME_ID, normalizeThemeId, type ThemeId } from "../shared/lib/theme";
 import { applyThemeToDocument } from "../shared/lib/apply-theme";
-import { shouldApplyMailboxRevision } from "../shared/lib/mailbox-revision";
+import {
+  shouldApplyFloatingNotificationPresentation,
+  shouldApplyMailboxRevision,
+  shouldReplaceFloatingNotificationSnapshotBuffer
+} from "../shared/lib/mailbox-revision";
 import {
   normalizeFloatingNotificationDock,
   type FloatingNotificationDock
 } from "../shared/lib/floating-notification-dock";
+import {
+  normalizeFloatingNotificationPlacement,
+  resolveFloatingNotificationSlots,
+  type FloatingNotificationPlacement
+} from "../shared/lib/floating-notification-placement";
 import { isTauriRuntime } from "../shared/transport/runtime";
 
 export interface FloatingNotificationMailboxReference {
@@ -97,7 +106,16 @@ export interface FloatingNotificationMailboxSnapshot {
   revision: number;
   items: FloatingNotificationMailboxItem[];
   dock?: FloatingNotificationDock | null;
+  placement?: FloatingNotificationPlacement | null;
 }
+
+type FloatingNotificationDesktopUiPrefs = Awaited<ReturnType<typeof getDesktopUiPrefs>>;
+type FloatingNotificationDesktopUiPrefsEvent = Omit<
+  Partial<FloatingNotificationDesktopUiPrefs>,
+  "theme"
+> & {
+  theme?: string | null;
+};
 
 export const FLOATING_NOTIFICATION_EXIT_DURATION_MS = 560;
 export const FLOATING_NOTIFICATION_ENTER_DURATION_MS = 520;
@@ -463,6 +481,14 @@ export function FloatingNotificationWindowRoot() {
   );
   const queueRef = useRef(queue);
   const lastAppliedRevisionRef = useRef(0);
+  const mailboxPresentationEventVersionRef = useRef(0);
+  const mailboxPreferencesReadyRef = useRef(false);
+  const desktopUiPrefsEventVersionRef = useRef(0);
+  const latestDesktopUiPrefsEventRef = useRef<FloatingNotificationDesktopUiPrefsEvent | null>(null);
+  const pendingMailboxSnapshotRef = useRef<{
+    snapshot: FloatingNotificationMailboxSnapshot;
+    eventVersionAtRequest: number;
+  } | null>(null);
   const panelVisibleRef = useRef(false);
   const panelVisibilityEventVersionRef = useRef(0);
   const nativeLifecyclePauseReasonsRef = useRef(new Set<string>());
@@ -481,10 +507,14 @@ export function FloatingNotificationWindowRoot() {
     DEFAULT_FLOATING_NOTIFICATION_MAX_VISIBLE
   );
   const [notificationDock, setNotificationDock] = useState<FloatingNotificationDock>("right");
+  const [notificationPlacement, setNotificationPlacement] =
+    useState<FloatingNotificationPlacement>("above");
   const [notificationGeometryEpoch, setNotificationGeometryEpoch] = useState(0);
   const notificationDurationRef = useRef(notificationDurationMs);
+  const notificationDensityRef = useRef(notificationDensity);
   const notificationMaxVisibleRef = useRef(notificationMaxVisible);
   notificationDurationRef.current = notificationDurationMs;
+  notificationDensityRef.current = notificationDensity;
   notificationMaxVisibleRef.current = notificationMaxVisible;
   const notificationLifecyclePaused = isFloatingNotificationAnimationPaused(queue.pauseReasons);
 
@@ -507,9 +537,22 @@ export function FloatingNotificationWindowRoot() {
   );
 
   const applyMailboxSnapshot = useCallback(
-    (snapshot: FloatingNotificationMailboxSnapshot) => {
-      setNotificationDock(normalizeFloatingNotificationDock(snapshot.dock));
-      setNotificationGeometryEpoch((current) => current + 1);
+    (
+      snapshot: FloatingNotificationMailboxSnapshot,
+      eventVersionAtRequest: number | null = null
+    ) => {
+      if (
+        shouldApplyFloatingNotificationPresentation(
+          lastAppliedRevisionRef.current,
+          snapshot.revision,
+          eventVersionAtRequest,
+          mailboxPresentationEventVersionRef.current
+        )
+      ) {
+        setNotificationDock(normalizeFloatingNotificationDock(snapshot.dock));
+        setNotificationPlacement(normalizeFloatingNotificationPlacement(snapshot.placement));
+        setNotificationGeometryEpoch((current) => current + 1);
+      }
       const now = Date.now();
       if (!shouldApplyMailboxRevision(lastAppliedRevisionRef.current, snapshot.revision)) {
         commitQueue((current) =>
@@ -536,6 +579,67 @@ export function FloatingNotificationWindowRoot() {
       );
     },
     [applyFloatingPanelPause, commitQueue]
+  );
+
+  const bufferMailboxSnapshot = useCallback(
+    (
+      snapshot: FloatingNotificationMailboxSnapshot,
+      eventVersionAtRequest = mailboxPresentationEventVersionRef.current
+    ) => {
+      if (mailboxPreferencesReadyRef.current) {
+        applyMailboxSnapshot(snapshot, eventVersionAtRequest);
+        return;
+      }
+      const current = pendingMailboxSnapshotRef.current;
+      if (
+        shouldReplaceFloatingNotificationSnapshotBuffer(
+          current?.eventVersionAtRequest ?? null,
+          current?.snapshot.revision ?? null,
+          eventVersionAtRequest,
+          snapshot.revision
+        )
+      ) {
+        pendingMailboxSnapshotRef.current = { snapshot, eventVersionAtRequest };
+      }
+    },
+    [applyMailboxSnapshot]
+  );
+
+  const flushPendingMailboxSnapshot = useCallback(() => {
+    mailboxPreferencesReadyRef.current = true;
+    const pending = pendingMailboxSnapshotRef.current;
+    pendingMailboxSnapshotRef.current = null;
+    if (pending) {
+      applyMailboxSnapshot(pending.snapshot, pending.eventVersionAtRequest);
+    }
+  }, [applyMailboxSnapshot]);
+
+  const markMailboxPreferencesReady = useCallback(
+    (prefs?: FloatingNotificationDesktopUiPrefsEvent) => {
+      if (prefs) {
+        const resolvedDensity = normalizeFloatingNotificationDensity(
+          prefs.floatingNotificationDensity ?? notificationDensityRef.current
+        );
+        const resolvedMaxVisible = normalizeFloatingNotificationMaxVisible(
+          prefs.floatingNotificationMaxVisible ?? notificationMaxVisibleRef.current
+        );
+        const resolvedDuration =
+          typeof prefs.floatingNotificationDurationMs === "number"
+            ? prefs.floatingNotificationDurationMs
+            : notificationDurationRef.current;
+        notificationDensityRef.current = resolvedDensity;
+        notificationMaxVisibleRef.current = resolvedMaxVisible;
+        notificationDurationRef.current = resolvedDuration;
+        if (typeof prefs.theme === "string") {
+          setTheme(normalizeThemeId(prefs.theme));
+        }
+        setNotificationDurationMs(resolvedDuration);
+        setNotificationDensity(resolvedDensity);
+        setNotificationMaxVisible(resolvedMaxVisible);
+      }
+      flushPendingMailboxSnapshot();
+    },
+    [flushPendingMailboxSnapshot]
   );
 
   const dismissNativeNotification = useCallback(async (notificationId: string) => {
@@ -570,15 +674,16 @@ export function FloatingNotificationWindowRoot() {
           return;
         }
         nativeDismissRetryTimersRef.current.delete(notificationId);
+        const eventVersionAtRequest = mailboxPresentationEventVersionRef.current;
         void invoke<FloatingNotificationMailboxSnapshot>("get_floating_notification_snapshot")
           .then((snapshot) => {
-            applyMailboxSnapshot(snapshot);
+            bufferMailboxSnapshot(snapshot, eventVersionAtRequest);
           })
           .catch(() => undefined);
       }, NATIVE_DISMISS_SNAPSHOT_RETRY_DELAY_MS);
       nativeDismissRetryTimersRef.current.set(notificationId, timer);
     },
-    [applyMailboxSnapshot]
+    [bufferMailboxSnapshot]
   );
 
   const finishExit = useCallback(
@@ -593,6 +698,7 @@ export function FloatingNotificationWindowRoot() {
       ) {
         return Promise.resolve(false);
       }
+      const eventVersionAtRequest = mailboxPresentationEventVersionRef.current;
       nativeDismissPendingIdsRef.current.add(notificationId);
       return dismissNativeNotification(notificationId)
         .then((snapshot) => {
@@ -605,7 +711,7 @@ export function FloatingNotificationWindowRoot() {
                 Date.now()
               )
             );
-            applyMailboxSnapshot(snapshot);
+            bufferMailboxSnapshot(snapshot, eventVersionAtRequest);
             if (isDetailDismissal) {
               void invoke("set_floating_notification_detail_open", { open: false }).catch(
                 () => undefined
@@ -628,7 +734,7 @@ export function FloatingNotificationWindowRoot() {
           nativeDismissPendingIdsRef.current.delete(notificationId);
         });
     },
-    [applyMailboxSnapshot, commitQueue, dismissNativeNotification, retryNativeDismissSnapshot]
+    [bufferMailboxSnapshot, commitQueue, dismissNativeNotification, retryNativeDismissSnapshot]
   );
 
   const beginExit = useCallback(
@@ -666,18 +772,29 @@ export function FloatingNotificationWindowRoot() {
     let unlisten: (() => void) | undefined;
 
     async function hydrateTheme() {
+      const requestEventVersion = desktopUiPrefsEventVersionRef.current;
       try {
         const prefs = await getDesktopUiPrefs();
         if (!disposed) {
-          setTheme(normalizeThemeId(prefs.theme));
-          setNotificationDurationMs(prefs.floatingNotificationDurationMs);
-          setNotificationDensity(normalizeFloatingNotificationDensity(prefs.floatingNotificationDensity));
-          setNotificationMaxVisible(
-            normalizeFloatingNotificationMaxVisible(prefs.floatingNotificationMaxVisible)
-          );
+          if (desktopUiPrefsEventVersionRef.current === requestEventVersion) {
+            markMailboxPreferencesReady(prefs);
+          } else if (!mailboxPreferencesReadyRef.current) {
+            markMailboxPreferencesReady({
+              ...prefs,
+              ...(latestDesktopUiPrefsEventRef.current ?? {})
+            });
+          }
         }
       } catch {
-        // 主题读取失败时保留默认主题，不影响通知窗口接收 mailbox 快照。
+        if (!disposed) {
+          // 偏好读取失败时使用默认 layout, 也不能让 mailbox 永久停在缓冲区。
+          const latestEvent = latestDesktopUiPrefsEventRef.current;
+          const hasCompleteLayoutPrefs =
+            typeof latestEvent?.floatingNotificationDensity === "string" &&
+            typeof latestEvent?.floatingNotificationMaxVisible === "number" &&
+            typeof latestEvent?.floatingNotificationDurationMs === "number";
+          markMailboxPreferencesReady(hasCompleteLayoutPrefs ? latestEvent : undefined);
+        }
       }
     }
 
@@ -689,21 +806,51 @@ export function FloatingNotificationWindowRoot() {
         floatingNotificationMaxVisible?: number;
       }>("desktop-ui-prefs-updated", (event) => {
         if (!disposed) {
+          desktopUiPrefsEventVersionRef.current += 1;
+          const previousEvent = latestDesktopUiPrefsEventRef.current ?? {};
+          latestDesktopUiPrefsEventRef.current = {
+            ...previousEvent,
+            ...(event.payload.theme !== undefined ? { theme: event.payload.theme } : {}),
+            ...(typeof event.payload.floatingNotificationDurationMs === "number"
+              ? { floatingNotificationDurationMs: event.payload.floatingNotificationDurationMs }
+              : {}),
+            ...(event.payload.floatingNotificationDensity !== undefined
+              ? { floatingNotificationDensity: event.payload.floatingNotificationDensity }
+              : {}),
+            ...(typeof event.payload.floatingNotificationMaxVisible === "number"
+              ? { floatingNotificationMaxVisible: event.payload.floatingNotificationMaxVisible }
+              : {})
+          };
           if (event.payload.theme) {
             setTheme(normalizeThemeId(event.payload.theme));
           }
           if (typeof event.payload.floatingNotificationDurationMs === "number") {
+            notificationDurationRef.current = event.payload.floatingNotificationDurationMs;
             setNotificationDurationMs(event.payload.floatingNotificationDurationMs);
           }
           if (event.payload.floatingNotificationDensity) {
-            setNotificationDensity(
-              normalizeFloatingNotificationDensity(event.payload.floatingNotificationDensity)
+            const resolvedDensity = normalizeFloatingNotificationDensity(
+              event.payload.floatingNotificationDensity
             );
+            notificationDensityRef.current = resolvedDensity;
+            setNotificationDensity(resolvedDensity);
           }
           if (typeof event.payload.floatingNotificationMaxVisible === "number") {
-            setNotificationMaxVisible(
-              normalizeFloatingNotificationMaxVisible(event.payload.floatingNotificationMaxVisible)
+            const resolvedMaxVisible = normalizeFloatingNotificationMaxVisible(
+              event.payload.floatingNotificationMaxVisible
             );
+            notificationMaxVisibleRef.current = resolvedMaxVisible;
+            setNotificationMaxVisible(resolvedMaxVisible);
+          }
+          const latestEvent = latestDesktopUiPrefsEventRef.current;
+          if (
+            !mailboxPreferencesReadyRef.current &&
+            latestEvent !== null &&
+            typeof latestEvent.floatingNotificationDensity === "string" &&
+            typeof latestEvent.floatingNotificationMaxVisible === "number" &&
+            typeof latestEvent.floatingNotificationDurationMs === "number"
+          ) {
+            markMailboxPreferencesReady(latestEvent);
           }
         }
       });
@@ -720,7 +867,7 @@ export function FloatingNotificationWindowRoot() {
       disposed = true;
       unlisten?.();
     };
-  }, []);
+  }, [markMailboxPreferencesReady]);
 
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -735,7 +882,8 @@ export function FloatingNotificationWindowRoot() {
         "floating-notification-sync",
         (event) => {
           if (!disposed) {
-            applyMailboxSnapshot(event.payload);
+            mailboxPresentationEventVersionRef.current += 1;
+            bufferMailboxSnapshot(event.payload, mailboxPresentationEventVersionRef.current);
           }
         }
       );
@@ -745,12 +893,13 @@ export function FloatingNotificationWindowRoot() {
       }
       unlisten = cleanup;
 
+      const hydrationEventVersion = mailboxPresentationEventVersionRef.current;
       try {
         const next = await invoke<FloatingNotificationMailboxSnapshot>(
           "get_floating_notification_snapshot"
         );
         if (!disposed) {
-          applyMailboxSnapshot(next);
+          bufferMailboxSnapshot(next, hydrationEventVersion);
         }
       } catch {
         // 读取失败不能等价为原生 mailbox 为空，否则会留下已显示窗口的前端空壳。
@@ -762,7 +911,7 @@ export function FloatingNotificationWindowRoot() {
       disposed = true;
       unlisten?.();
     };
-  }, [applyMailboxSnapshot]);
+  }, [bufferMailboxSnapshot]);
 
   useEffect(() => {
     commitQueue((current) =>
@@ -971,7 +1120,13 @@ export function FloatingNotificationWindowRoot() {
       void invoke("settle_floating_notification_motion").catch(() => undefined);
     }, FLOATING_NOTIFICATION_REGION_SETTLE_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [notificationDensity, notificationDock, notificationGeometryEpoch, queue]);
+  }, [
+    notificationDensity,
+    notificationDock,
+    notificationGeometryEpoch,
+    notificationPlacement,
+    queue
+  ]);
 
   useEffect(() => {
     if (!queue.detailNotificationId) {
@@ -1024,23 +1179,27 @@ export function FloatingNotificationWindowRoot() {
       )?.notification
     : undefined;
   const layout = getFloatingNotificationLayout(notificationDensity);
-  const notificationSlots = new Map<string, { height: number; offset: number }>();
-  let notificationOffset = layout.verticalPadding / 2;
-  for (let index = queue.visible.length - 1; index >= 0; index -= 1) {
-    const notification = queue.visible[index]?.notification;
-    if (!notification) {
-      continue;
-    }
-    const height = getFloatingNotificationItemHeight(Boolean(notification.usage), notificationDensity);
-    notificationSlots.set(notification.id, { height, offset: notificationOffset });
-    notificationOffset += height + layout.gap;
-  }
+  const notificationSlots = new Map(
+    resolveFloatingNotificationSlots(
+      queue.visible.map(({ notification }) => ({
+        id: notification.id,
+        height: getFloatingNotificationItemHeight(
+          Boolean(notification.usage),
+          notificationDensity
+        )
+      })),
+      layout.gap,
+      layout.verticalPadding,
+      notificationPlacement
+    ).map((slot) => [slot.id, slot] as const)
+  );
 
   return (
     <main
       className={`floating-notification-window${detail ? " detail-open" : ""}`}
       data-density={notificationDensity}
       data-dock={notificationDock}
+      data-placement={notificationPlacement}
       data-lifecycle-paused={notificationLifecyclePaused ? "true" : "false"}
       style={
         {
@@ -1123,12 +1282,14 @@ export function FloatingNotificationWindowRoot() {
             const { notification } = entry;
             const slot = notificationSlots.get(notification.id) ?? {
               height: getFloatingNotificationItemHeight(Boolean(notification.usage), notificationDensity),
-              offset: layout.verticalPadding / 2
+              offset: layout.verticalPadding / 2,
+              anchor: notificationPlacement === "below" ? "top" : "bottom"
             };
             return (
               <li
                 className={`floating-notification-slot is-${entry.lifecycle} level-${notification.level}`}
                 key={notification.id}
+                data-anchor={slot.anchor}
                 style={
                   {
                     "--notification-height": `${slot.height}px`,

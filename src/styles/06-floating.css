@@ -2080,12 +2080,23 @@ html.verdant-core .floating-switch-field select {
 .floating-notification-slot {
   position: absolute;
   inset-inline: 4px;
-  bottom: var(--notification-offset, 4px);
   box-sizing: border-box;
   height: var(--notification-height, 64px);
-  transition: bottom 360ms cubic-bezier(0.22, 1, 0.36, 1);
   pointer-events: none;
+}
+
+.floating-notification-slot[data-anchor="bottom"] {
+  top: auto;
+  bottom: var(--notification-offset, 4px);
+  transition: bottom 360ms cubic-bezier(0.22, 1, 0.36, 1);
   will-change: bottom, transform, opacity;
+}
+
+.floating-notification-slot[data-anchor="top"] {
+  top: var(--notification-offset, 4px);
+  bottom: auto;
+  transition: top 360ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: top, transform, opacity;
 }
 
 .floating-notification-pill {
@@ -2123,6 +2134,26 @@ html.verdant-core .floating-switch-field select {
 
 .floating-notification-slot.is-exiting {
   pointer-events: none;
+}
+
+.floating-notification-window[data-dock="left"] {
+  --notification-enter-x: -24px;
+  --notification-exit-x: -24px;
+}
+
+.floating-notification-window[data-dock="right"] {
+  --notification-enter-x: 24px;
+  --notification-exit-x: 24px;
+}
+
+.floating-notification-window[data-placement="above"] {
+  --notification-enter-y: 18px;
+  --notification-exit-y: -18px;
+}
+
+.floating-notification-window[data-placement="below"] {
+  --notification-enter-y: -18px;
+  --notification-exit-y: 18px;
 }
 
 .floating-notification-window[data-dock="left"] .floating-notification-slot.is-exiting {
@@ -2680,8 +2711,12 @@ html.verdant-core .floating-switch-field select {
 
 @media (prefers-reduced-motion: reduce) {
   /* 消息窗口按产品约定保留完整顺序动效，不继承全局减弱动画。 */
-  .floating-notification-window .floating-notification-slot {
+  .floating-notification-window .floating-notification-slot[data-anchor="bottom"] {
     transition: bottom 360ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+  }
+
+  .floating-notification-window .floating-notification-slot[data-anchor="top"] {
+    transition: top 360ms cubic-bezier(0.22, 1, 0.36, 1) !important;
   }
 
   .floating-notification-window[data-dock="left"] .floating-notification-slot.is-entering {
