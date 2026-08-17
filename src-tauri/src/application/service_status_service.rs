@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -24,6 +25,7 @@ use crate::infrastructure::upstream_http_client::upstream_http_client_builder;
 use super::{desktop_ui_service, AppContext};
 
 const STATUS_ENDPOINT: &str = "https://status.input.im/api/status";
+const STATUS_ENDPOINT_ENV: &str = "SUB2API_SERVICE_STATUS_URL";
 const MONITOR_STATE_KEY: &str = "service_status_monitor_state";
 const MONITOR_STATE_VERSION: i64 = 1;
 const DISABLED_RECHECK_SECONDS: u64 = 60;
@@ -106,14 +108,16 @@ pub async fn get_service_status(ctx: &AppContext) -> Result<ServiceStatusPayload
         .timeout(Duration::from_secs(10))
         .build()
         .context("初始化服务状态请求客户端失败")?;
+    let status_endpoint =
+        resolve_status_endpoint(std::env::var_os(STATUS_ENDPOINT_ENV).as_deref())?;
 
     let fetch = || async {
         let response = client
-            .get(STATUS_ENDPOINT)
+            .get(status_endpoint.clone())
             .header(reqwest::header::ACCEPT, "application/json")
             .send()
             .await
-            .context("请求 status.input.im 服务状态失败")?
+            .context("请求服务状态失败")?
             .error_for_status()
             .context("服务状态接口返回失败状态")?;
 
@@ -132,6 +136,29 @@ pub async fn get_service_status(ctx: &AppContext) -> Result<ServiceStatusPayload
                 .map_err(|retry_error| anyhow::anyhow!("{error}; 重试后: {retry_error}"))
         }
     }
+}
+
+/// 解析服务状态端点；默认使用正式地址，显式覆盖仅接受无凭据的 HTTP(S) URL。
+fn resolve_status_endpoint(configured: Option<&OsStr>) -> Result<reqwest::Url> {
+    let Some(configured) = configured else {
+        return reqwest::Url::parse(STATUS_ENDPOINT).context("解析默认服务状态地址失败");
+    };
+    let configured = configured
+        .to_str()
+        .context("服务状态地址必须是有效的 Unicode 文本")?
+        .trim();
+    anyhow::ensure!(!configured.is_empty(), "服务状态地址不能为空");
+
+    let endpoint = reqwest::Url::parse(configured).context("服务状态地址格式无效")?;
+    anyhow::ensure!(
+        matches!(endpoint.scheme(), "http" | "https"),
+        "服务状态地址仅支持 http 或 https"
+    );
+    anyhow::ensure!(
+        endpoint.username().is_empty() && endpoint.password().is_none(),
+        "服务状态地址不得包含凭据"
+    );
+    Ok(endpoint)
 }
 
 async fn run_monitor_loop(
@@ -559,7 +586,7 @@ fn current_event_timestamp() -> String {
 mod tests {
     use super::{
         is_monitor_enabled, reduce_request_failure, reduce_successful_snapshot,
-        ServiceStatusMonitorState,
+        resolve_status_endpoint, ServiceStatusMonitorState, STATUS_ENDPOINT,
     };
     use crate::contracts::{
         DesktopUiPrefs, ServiceStatusMonitorNotificationKind, ServiceStatusPayload,
@@ -744,5 +771,34 @@ mod tests {
             auto_refresh_service_status_enabled: false,
             ..defaults
         }));
+    }
+
+    #[test]
+    fn service_status_endpoint_defaults_to_the_public_service() {
+        let endpoint = resolve_status_endpoint(None).expect("resolve default status endpoint");
+        assert_eq!(endpoint.as_str(), STATUS_ENDPOINT);
+    }
+
+    #[test]
+    fn service_status_endpoint_accepts_an_isolated_http_override() {
+        let endpoint = resolve_status_endpoint(Some(std::ffi::OsStr::new(
+            " http://127.0.0.1:5561/api/status ",
+        )))
+        .expect("resolve isolated status endpoint");
+        assert_eq!(endpoint.as_str(), "http://127.0.0.1:5561/api/status");
+    }
+
+    #[test]
+    fn service_status_endpoint_rejects_unsupported_or_credentialed_urls() {
+        let unsupported =
+            resolve_status_endpoint(Some(std::ffi::OsStr::new("file:///tmp/status.json")))
+                .expect_err("reject unsupported scheme");
+        assert!(unsupported.to_string().contains("仅支持 http 或 https"));
+
+        let credentialed = resolve_status_endpoint(Some(std::ffi::OsStr::new(
+            "https://user:secret@example.invalid/api/status",
+        )))
+        .expect_err("reject URL credentials");
+        assert!(credentialed.to_string().contains("不得包含凭据"));
     }
 }
