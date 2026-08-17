@@ -473,13 +473,20 @@ function loadKeyUsageSummary(
 export async function preloadKeyUsageSummaryRange(input: {
   cache: ScopedResourceCache<KeyUsageSummaryPayload>;
   accountId: string;
-  keys: ReadonlyArray<Pick<ManagedKeyRecord, "id">>;
+  keys: ReadonlyArray<Pick<ManagedKeyRecord, "id" | "rawKey">>;
   range: KeyUsageRangeQuery;
   concurrency?: number;
   fetchSummary?: KeyUsageSummaryFetch;
   shouldContinue?: () => boolean;
 }) {
-  const keyIds = [...new Set(input.keys.map((key) => key.id).filter(Boolean))];
+  const keyIds = [
+    ...new Set(
+      input.keys
+        .filter((key) => Boolean(key.rawKey?.trim()))
+        .map((key) => key.id)
+        .filter(Boolean)
+    )
+  ];
   const shouldContinue = input.shouldContinue ?? (() => true);
   const workerCount = Math.min(
     keyIds.length,
@@ -1079,7 +1086,8 @@ export function KeysPage({
   }, []);
 
   useEffect(() => {
-    if (!selectedAccountId || currentManagedKeys.length === 0) {
+    const warmupKeys = currentManagedKeys.filter((key) => Boolean(key.rawKey?.trim()));
+    if (!selectedAccountId || warmupKeys.length === 0) {
       return;
     }
 
@@ -1088,7 +1096,7 @@ export function KeysPage({
       accountId: selectedAccountId,
       startDate: range.startDate,
       endDate: range.endDate,
-      keyIds: currentManagedKeys.map((key) => key.id)
+      keyIds: warmupKeys.map((key) => key.id)
     });
     if (keyUsageWarmupScopeRef.current === warmupScope) {
       return;
@@ -1099,7 +1107,7 @@ export function KeysPage({
     void preloadKeyUsageSummaryRange({
       cache: keyUsageSummaryCache,
       accountId: selectedAccountId,
-      keys: currentManagedKeys,
+      keys: warmupKeys,
       range,
       shouldContinue: () => !cancelled
     });
