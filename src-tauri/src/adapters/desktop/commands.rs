@@ -148,8 +148,11 @@ pub fn send_service_status_system_notification(
 ) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        let result = crate::infrastructure::windows_notification::show_service_status_notification(
-            &app, &title, &body,
+        let result = desktop_ui_service::show_windows_notification_with_sound(
+            &app,
+            &title,
+            &body,
+            crate::infrastructure::windows_notification::NativeNotificationNavigation::ServiceStatus,
         );
         if let Err(error) = &result {
             log::warn!("[service-status-notification] 手动系统通知投递失败: {error:#}");
@@ -497,15 +500,6 @@ pub fn get_floating_notification_snapshot(
     app: AppHandle,
 ) -> Result<crate::FloatingNotificationSnapshot, String> {
     crate::get_floating_notification_snapshot_for_app(&app)
-}
-
-/// 前端卡片进入首帧后领取一次声音资格，窗口不可见时保持资格等待后续显示。
-#[tauri::command]
-pub fn request_floating_notification_sound(
-    app: AppHandle,
-    notification_id: String,
-) -> Result<bool, String> {
-    crate::request_floating_notification_sound(&app, &notification_id)
 }
 
 #[tauri::command]

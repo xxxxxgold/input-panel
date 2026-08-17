@@ -30,20 +30,6 @@ struct WindowsNotificationIdentity {
     icon_path: PathBuf,
 }
 
-/// 发送具备应用身份和点击导航能力的 Windows 服务状态通知。
-pub(crate) fn show_service_status_notification(
-    app: &AppHandle,
-    title: &str,
-    body: &str,
-) -> Result<()> {
-    show_windows_notification(
-        app,
-        title,
-        body,
-        NativeNotificationNavigation::ServiceStatus,
-    )
-}
-
 /// 发送使用统一应用身份并可导航到指定业务页面的 Windows 通知。
 pub(crate) fn show_windows_notification(
     app: &AppHandle,
@@ -55,7 +41,8 @@ pub(crate) fn show_windows_notification(
     register_notification_identity(&identity)?;
 
     let activation_app = app.clone();
-    // Windows Toast 仅承担视觉提示；提示音由右下角 floating-notification 卡片独占。
+    // Toast 本身保持静音，避免 Windows 系统音与应用配置的声音叠加。
+    // 应用层只会在 show() 成功后再异步播放配置的提示音。
     Toast::new(&identity.app_id)
         .sound(None)
         .title(title)

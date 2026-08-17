@@ -154,7 +154,7 @@ fn dispatch_windows(app: &AppHandle, claim: &ClaimedSubscriptionQuotaAlertChanne
     let body = format_event_content(&event);
     #[cfg(target_os = "windows")]
     {
-        crate::infrastructure::windows_notification::show_windows_notification(
+        super::desktop_ui_service::show_windows_notification_with_sound(
             app,
             &title,
             &body,

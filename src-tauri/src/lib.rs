@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
         Arc, Mutex, OnceLock,
@@ -233,7 +232,6 @@ pub struct FloatingNotificationSnapshot {
 pub(crate) struct FloatingNotificationMailbox {
     revision: u64,
     items: Vec<FloatingNotificationPayload>,
-    sound_eligible_notification_ids: HashSet<String>,
 }
 
 impl FloatingNotificationMailbox {
@@ -245,6 +243,7 @@ impl FloatingNotificationMailbox {
         }
     }
 
+    #[cfg(test)]
     #[cfg(test)]
     pub(crate) fn enqueue(
         &mut self,
@@ -268,23 +267,14 @@ impl FloatingNotificationMailbox {
             return (self.snapshot(), false);
         }
 
-        self.sound_eligible_notification_ids
-            .insert(payload.id.clone());
         self.items.push(payload);
         self.revision = self.revision.wrapping_add(1);
         (self.snapshot(), true)
     }
 
-    /// 仅在消息仍在 mailbox 且确实来自本会话 live 入队时，领取一次播放资格。
-    fn take_sound_eligibility(&mut self, notification_id: &str) -> bool {
-        self.items.iter().any(|item| item.id == notification_id)
-            && self.sound_eligible_notification_ids.remove(notification_id)
-    }
-
     fn dismiss(&mut self, notification_id: &str) -> FloatingNotificationSnapshot {
         let previous_len = self.items.len();
         self.items.retain(|item| item.id != notification_id);
-        self.sound_eligible_notification_ids.remove(notification_id);
         if self.items.len() != previous_len {
             self.revision = self.revision.wrapping_add(1);
         }
@@ -4406,36 +4396,11 @@ pub(crate) fn get_floating_notification_snapshot_for_app(
     Ok(snapshot)
 }
 
-/// 只有通知窗口实际可见且前端卡片已进入首帧时，才消费一次声音资格。
-pub(crate) fn request_floating_notification_sound(
-    app: &AppHandle,
-    notification_id: &str,
-) -> Result<bool, String> {
-    let should_play = {
-        let _mutation_guard = floating_notification_mutation_lock()
-            .lock()
-            .map_err(|_| "floating notification mutation unavailable".to_string())?;
-        if !FLOATING_NOTIFICATION_PRESENTATION_ALLOWED.load(Ordering::Relaxed)
-            || !is_window_visible(app, FLOATING_NOTIFICATION_WINDOW_LABEL)
-        {
-            return Ok(false);
-        }
-        let mut mailbox = floating_notification_mailbox()
-            .lock()
-            .map_err(|_| "floating notification mailbox unavailable".to_string())?;
-        mailbox.take_sound_eligibility(notification_id)
-    };
-    if should_play {
-        application::desktop_ui_service::schedule_floating_notification_sound(app);
-    }
-    Ok(should_play)
-}
-
 pub(crate) fn enqueue_floating_notification(
     app: &AppHandle,
     payload: FloatingNotificationPayload,
 ) -> Result<FloatingNotificationSnapshot, String> {
-    let _inserted = {
+    {
         let _mutation_guard = floating_notification_mutation_lock()
             .lock()
             .map_err(|_| "floating notification mutation unavailable".to_string())?;
@@ -4460,8 +4425,8 @@ pub(crate) fn enqueue_floating_notification(
         let mut mailbox = floating_notification_mailbox()
             .lock()
             .map_err(|_| "floating notification mailbox unavailable".to_string())?;
-        mailbox.enqueue_with_inserted(payload).1
-    };
+        mailbox.enqueue_with_inserted(payload);
+    }
     sync_floating_notification_window(app)
 }
 
@@ -5068,7 +5033,6 @@ pub fn run() {
             adapters::desktop::commands::position_floating_panel,
             adapters::desktop::commands::enqueue_floating_notification,
             adapters::desktop::commands::get_floating_notification_snapshot,
-            adapters::desktop::commands::request_floating_notification_sound,
             adapters::desktop::commands::dismiss_floating_notification,
             adapters::desktop::commands::set_floating_notification_detail_open,
             adapters::desktop::commands::settle_floating_notification_motion,
@@ -5979,7 +5943,7 @@ mod tests {
     }
 
     #[test]
-    fn floating_notification_mailbox_reports_only_new_inserts_for_sound_triggers() {
+    fn floating_notification_mailbox_keeps_business_and_usage_delivery_audio_free() {
         let mut mailbox = FloatingNotificationMailbox::default();
 
         let (first, first_inserted) = mailbox.enqueue_with_inserted(floating_notification_payload(
@@ -5989,23 +5953,25 @@ mod tests {
         let (duplicate, duplicate_inserted) = mailbox.enqueue_with_inserted(
             floating_notification_payload("notification-2", "service:down:model-a"),
         );
-        assert!(mailbox.take_sound_eligibility("notification-1"));
-        assert!(!mailbox.take_sound_eligibility("notification-1"));
-        assert!(!mailbox.take_sound_eligibility("notification-2"));
         let dismissed = mailbox.dismiss("notification-1");
         let (rearmed, rearmed_inserted) = mailbox.enqueue_with_inserted(
             floating_notification_payload("notification-3", "service:down:model-a"),
         );
+        let (usage, usage_inserted) = mailbox.enqueue_with_inserted(usage_notification_payload(
+            "usage-1",
+            "usage-sync:account-1:row-1",
+        ));
 
         assert!(first_inserted);
         assert!(!duplicate_inserted);
         assert!(rearmed_inserted);
-        assert!(mailbox.take_sound_eligibility("notification-3"));
-        assert!(!mailbox.take_sound_eligibility("notification-3"));
-        assert!(!mailbox.take_sound_eligibility("notification-2"));
+        assert!(usage_inserted);
+        assert_eq!(rearmed.items[0].id, "notification-3");
+        assert_eq!(usage.items[1].id, "usage-1");
         assert_eq!(duplicate.revision, first.revision);
         assert_eq!(dismissed.revision, first.revision + 1);
         assert_eq!(rearmed.revision, dismissed.revision + 1);
+        assert_eq!(usage.revision, rearmed.revision + 1);
     }
 
     #[test]
@@ -6025,7 +5991,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["usage-1", "usage-2"]
         );
-        assert!(!restarted_mailbox.take_sound_eligibility("usage-1"));
         let acknowledged = restarted_mailbox.dismiss("usage-1");
         assert_eq!(
             acknowledged

@@ -491,10 +491,11 @@ fn dispatch_monitor_event(app: &AppHandle, event: ServiceStatusMonitorNotificati
 
     #[cfg(target_os = "windows")]
     let system_notification_result =
-        crate::infrastructure::windows_notification::show_service_status_notification(
+        crate::application::desktop_ui_service::show_windows_notification_with_sound(
             app,
             &event.title,
             &event.detail,
+            crate::infrastructure::windows_notification::NativeNotificationNavigation::ServiceStatus,
         );
     #[cfg(not(target_os = "windows"))]
     let system_notification_result = app
