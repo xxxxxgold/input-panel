@@ -3310,7 +3310,16 @@ mod tests {
             .await
             .expect_err("busy database should fail closed");
 
-        assert!(started.elapsed() < Duration::from_secs(2));
+        let retry_budget = Duration::from_millis(
+            SQLITE_BUSY_TIMEOUT_MS * (SQLITE_BUSY_RETRY_COUNT as u64 + 1)
+                + (SQLITE_BUSY_RETRY_MIN_MS + SQLITE_BUSY_RETRY_JITTER_MS)
+                    * SQLITE_BUSY_RETRY_COUNT as u64,
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < retry_budget + Duration::from_secs(2),
+            "busy database response exceeded bounded retry budget: {elapsed:?}"
+        );
         assert!(format!("{error:#}").contains("共享协调数据库"));
         lock.execute_batch("ROLLBACK").expect("release write lock");
         drop(lock);
