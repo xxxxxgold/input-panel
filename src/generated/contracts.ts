@@ -852,7 +852,7 @@ export interface AccountAlert {
 }
 
 export interface AccountRuntime extends AccountRecord {
-  site?: SiteRecord;
+  site?: SiteRecord | null;
   cacheView?: AccountCacheView | null;
   sessionState: "ready" | "missing" | "expired";
   lastError?: string | null;
@@ -975,18 +975,21 @@ export interface SyncAccountDataInput {
 
 export interface OverviewUsageRow extends UsageRow {
   accountId: string;
+  accountLabel: string;
   siteId: string;
   siteName: string;
 }
 
 export interface OverviewSubscriptionRecord extends SubscriptionRecord {
   accountId: string;
+  accountLabel: string;
   siteId: string;
   siteName: string;
 }
 
 export interface OverviewKeyRecord extends KeyRecord {
   accountId: string;
+  accountLabel: string;
   siteId: string;
   siteName: string;
 }
