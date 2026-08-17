@@ -159,6 +159,40 @@ export function findSiteFailoverAddressStatus(
   }
 }
 
+/** 确认运行状态快照仍对应当前保存的主备地址拓扑，避免展示已替换的旧地址。 */
+export function isSiteFailoverStatusForSite(
+  status: SiteFailoverStatusPayload | null,
+  site: SiteRecord | null
+) {
+  if (!status || !site || status.siteId !== site.id) {
+    return false;
+  }
+
+  const expectedAddresses = [
+    { baseUrl: site.baseUrl, kind: "primary" as const },
+    ...site.fallbackBaseUrls.map((baseUrl) => ({
+      baseUrl,
+      kind: "fallback" as const
+    }))
+  ];
+  if (status.addresses.length !== expectedAddresses.length) {
+    return false;
+  }
+
+  return expectedAddresses.every((expectedAddress, index) => {
+    const actualAddress = status.addresses[index];
+    if (!actualAddress || actualAddress.kind !== expectedAddress.kind) {
+      return false;
+    }
+    try {
+      return canonicalizeSiteBaseUrlDraft(actualAddress.baseUrl)
+        === canonicalizeSiteBaseUrlDraft(expectedAddress.baseUrl);
+    } catch {
+      return false;
+    }
+  });
+}
+
 export function getSiteCooldownRemainingSeconds(
   address: SiteFailoverAddressStatus | null,
   serverNowMs: number

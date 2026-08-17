@@ -287,6 +287,21 @@
   .settings-site-management .site-detail-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .settings-site-management .table-list.wide .site-account-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-site-management .site-account-row > * {
+    min-width: 0;
+  }
+
+  .settings-site-management .site-account-row .row-actions {
+    width: 100%;
+    min-width: 0;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
 }
 
 @media (max-width: 840px) {
@@ -316,6 +331,34 @@
 }
 
 @media (max-width: 640px) {
+  .site-failover-address-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .site-failover-status-pill {
+    justify-self: start;
+  }
+
+  .site-failover-address-url {
+    white-space: normal;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+  }
+
+  .site-failover-clear-button {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+
+  .site-failover-status-error {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .settings-site-management .site-detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .settings-account-identity {
     grid-template-columns: 38px minmax(0, 1fr);
     align-items: start;
@@ -660,21 +703,6 @@
   .site-account-row,
   .account-detail-grid {
     grid-template-columns: 1fr;
-  }
-
-  .settings-site-management .table-list.wide .site-account-row {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .settings-site-management .site-account-row > * {
-    min-width: 0;
-  }
-
-  .settings-site-management .site-account-row .row-actions {
-    width: 100%;
-    min-width: 0;
-    justify-content: flex-start;
-    flex-wrap: wrap;
   }
 
   .profile-modal-footer {
