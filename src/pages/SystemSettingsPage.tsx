@@ -22,7 +22,8 @@ import type {
   DesktopUiPrefs,
   FloatingNotificationDensity,
   RuntimeCoordinationConfigPayload,
-  SchedulerConfigPayload
+  SchedulerConfigPayload,
+  UpstreamNetworkConfigPayload
 } from "../types";
 
 const MIN_OVERVIEW_ACCOUNT_RUNTIME_TIMEOUT_MS = 1000;
@@ -228,6 +229,11 @@ export function SystemSettingsPage({
   runtimeCoordinationLoadError,
   onRetryRuntimeCoordinationConfigLoad,
   onRuntimeCoordinationConfigChange,
+  upstreamNetworkConfig,
+  upstreamNetworkConfigLoading,
+  upstreamNetworkLoadError,
+  onRetryUpstreamNetworkConfigLoad,
+  onUpstreamNetworkConfigChange,
   databaseStorageStatus,
   databaseStorageTargetDirectory,
   databaseStorageLoading,
@@ -283,6 +289,11 @@ export function SystemSettingsPage({
     value: RuntimeCoordinationConfigPayload,
     options?: { debounce?: boolean }
   ) => void;
+  upstreamNetworkConfig: UpstreamNetworkConfigPayload;
+  upstreamNetworkConfigLoading: boolean;
+  upstreamNetworkLoadError: string | null;
+  onRetryUpstreamNetworkConfigLoad: () => void;
+  onUpstreamNetworkConfigChange: (value: UpstreamNetworkConfigPayload) => void;
   databaseStorageStatus: DatabaseStorageStatus | null;
   databaseStorageTargetDirectory: string;
   databaseStorageLoading: boolean;
@@ -305,6 +316,8 @@ export function SystemSettingsPage({
   const schedulerControlsDisabled = schedulerConfigLoading || Boolean(schedulerLoadError);
   const runtimeCoordinationControlsDisabled =
     runtimeCoordinationConfigLoading || Boolean(runtimeCoordinationLoadError);
+  const upstreamNetworkControlsDisabled =
+    upstreamNetworkConfigLoading || Boolean(upstreamNetworkLoadError);
   const databaseStorageStatusMigrationActive = Boolean(
     databaseStorageStatus
     && databaseMigrationPhaseIsActive(databaseStorageStatus.migrationPhase)
@@ -1051,6 +1064,59 @@ export function SystemSettingsPage({
     );
   }
 
+  function renderUpstreamNetworkCard(extraClassName = "") {
+    return (
+      <section
+        className={`section-card system-settings-card system-settings-card--upstream-network ${extraClassName}`.trim()}
+      >
+        <header className="section-card-header">
+          <div className="title-with-hint">
+            <h3>上游网络</h3>
+            <TitleHint
+              content="控制应用新发起的上游请求是否使用 Windows 与环境代理。"
+              label="查看上游网络说明"
+            />
+          </div>
+        </header>
+        <div className="stack-list">
+          {upstreamNetworkLoadError && (
+            <div className="auto-refresh-group-note" role="alert">
+              <span>上游网络设置读取失败: {upstreamNetworkLoadError}。当前未读取到可确认的配置，未尝试保存。</span>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={onRetryUpstreamNetworkConfigLoad}
+                disabled={upstreamNetworkConfigLoading}
+              >
+                重新读取
+              </button>
+            </div>
+          )}
+          <label className="toggle-field motion-surface-card">
+            <div>
+              <strong>使用系统代理</strong>
+              <p>关闭后，应用会绕过系统和环境代理，直接请求上游。切换只影响新发起的请求。</p>
+            </div>
+            <input
+              type="checkbox"
+              checked={upstreamNetworkConfig.useSystemProxy}
+              onChange={(event) =>
+                onUpstreamNetworkConfigChange({
+                  useSystemProxy: event.target.checked
+                })
+              }
+              disabled={upstreamNetworkControlsDisabled}
+              data-testid="use-system-proxy"
+            />
+          </label>
+          {upstreamNetworkConfigLoading && !upstreamNetworkLoadError && (
+            <p className="auto-refresh-group-note" role="status">正在读取上游网络设置。</p>
+          )}
+        </div>
+      </section>
+    );
+  }
+
   function renderStorageCard(extraClassName = "") {
     return (
       <section
@@ -1279,6 +1345,7 @@ export function SystemSettingsPage({
         <div className="system-settings-column">
           {renderWindowCard()}
           {renderSchedulerCard()}
+          {renderUpstreamNetworkCard()}
           {renderDangerCard()}
         </div>
       </section>
@@ -1286,6 +1353,7 @@ export function SystemSettingsPage({
         {renderWindowCard("system-settings-card--mobile")}
         {renderRefreshCard("system-settings-card--mobile")}
         {renderSchedulerCard("system-settings-card--mobile")}
+        {renderUpstreamNetworkCard("system-settings-card--mobile")}
         {renderDangerCard("system-settings-card--mobile")}
         {renderStorageCard("system-settings-card--mobile")}
       </section>

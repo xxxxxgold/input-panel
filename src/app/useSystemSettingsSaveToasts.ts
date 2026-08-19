@@ -51,7 +51,10 @@ export function useSystemSettingsSaveToasts({
   retrySchedulerConfigSave,
   runtimeCoordinationConfigSaving,
   runtimeCoordinationSaveError,
-  retryRuntimeCoordinationConfigSave
+  retryRuntimeCoordinationConfigSave,
+  upstreamNetworkConfigSaving,
+  upstreamNetworkSaveError,
+  retryUpstreamNetworkConfigSave
 }: {
   desktopUiSaveState: DesktopUiPrefsSaveState;
   retryDesktopUiPrefs: () => void;
@@ -61,6 +64,9 @@ export function useSystemSettingsSaveToasts({
   runtimeCoordinationConfigSaving: boolean;
   runtimeCoordinationSaveError: string | null;
   retryRuntimeCoordinationConfigSave: () => void;
+  upstreamNetworkConfigSaving: boolean;
+  upstreamNetworkSaveError: string | null;
+  retryUpstreamNetworkConfigSave: () => void;
 }) {
   const pushToast = useMonitorStore((state) => state.pushToast);
   const previousDesktopSaveStateRef = useRef(desktopUiSaveState);
@@ -72,12 +78,18 @@ export function useSystemSettingsSaveToasts({
     saving: runtimeCoordinationConfigSaving,
     error: runtimeCoordinationSaveError
   });
+  const previousUpstreamNetworkSaveRef = useRef({
+    saving: upstreamNetworkConfigSaving,
+    error: upstreamNetworkSaveError
+  });
   const retryDesktopUiPrefsRef = useRef(retryDesktopUiPrefs);
   const retrySchedulerConfigSaveRef = useRef(retrySchedulerConfigSave);
   const retryRuntimeCoordinationConfigSaveRef = useRef(retryRuntimeCoordinationConfigSave);
+  const retryUpstreamNetworkConfigSaveRef = useRef(retryUpstreamNetworkConfigSave);
   retryDesktopUiPrefsRef.current = retryDesktopUiPrefs;
   retrySchedulerConfigSaveRef.current = retrySchedulerConfigSave;
   retryRuntimeCoordinationConfigSaveRef.current = retryRuntimeCoordinationConfigSave;
+  retryUpstreamNetworkConfigSaveRef.current = retryUpstreamNetworkConfigSave;
 
   useEffect(() => {
     const previous = previousDesktopSaveStateRef.current;
@@ -174,4 +186,37 @@ export function useSystemSettingsSaveToasts({
       pushToast(SETTINGS_SAVED_TOAST);
     }
   }, [pushToast, runtimeCoordinationConfigSaving, runtimeCoordinationSaveError]);
+
+  useEffect(() => {
+    const previous = previousUpstreamNetworkSaveRef.current;
+    previousUpstreamNetworkSaveRef.current = {
+      saving: upstreamNetworkConfigSaving,
+      error: upstreamNetworkSaveError
+    };
+
+    if (
+      !upstreamNetworkConfigSaving &&
+      upstreamNetworkSaveError &&
+      (previous.saving || previous.error !== upstreamNetworkSaveError)
+    ) {
+      pushToast({
+        tone: "error",
+        title: "保存失败",
+        message: `上游网络设置保存失败: ${formatAppErrorMessage(upstreamNetworkSaveError)}`,
+        action: {
+          label: "重试保存",
+          onClick: () => retryUpstreamNetworkConfigSaveRef.current()
+        }
+      });
+      return;
+    }
+
+    if (
+      previous.saving &&
+      !upstreamNetworkConfigSaving &&
+      !upstreamNetworkSaveError
+    ) {
+      pushToast(SETTINGS_SAVED_TOAST);
+    }
+  }, [pushToast, upstreamNetworkConfigSaving, upstreamNetworkSaveError]);
 }
