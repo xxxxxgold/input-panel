@@ -1,0 +1,27 @@
+{
+  "maxVisible": {
+    "default": 3,
+    "min": 1,
+    "max": 5
+  },
+  "densities": {
+    "compact": {
+      "compactHeight": 58,
+      "usageHeight": 99,
+      "gap": 4,
+      "verticalPadding": 8
+    },
+    "standard": {
+      "compactHeight": 64,
+      "usageHeight": 105,
+      "gap": 6,
+      "verticalPadding": 8
+    },
+    "relaxed": {
+      "compactHeight": 72,
+      "usageHeight": 117,
+      "gap": 8,
+      "verticalPadding": 10
+    }
+  }
+}
