@@ -59,13 +59,6 @@ export function setSavedFloatingNotificationCustomSound() {
   );
 }
 
-/** 仅由悬浮通知窗口在卡片进入首帧后领取一次原生播放资格。 */
-export function requestFloatingNotificationSound(notificationId: string) {
-  return requireNativeDesktopCapability<boolean>("request_floating_notification_sound", {
-    notificationId
-  });
-}
-
 export function switchAppMode(launchMode: DesktopUiPrefs["launchMode"]) {
   return requireNativeDesktopCapability<DesktopUiPrefs>("switch_app_mode", { launchMode });
 }

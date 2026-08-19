@@ -630,7 +630,7 @@ export function SystemSettingsPage({
               <small>可同时显示 1 到 5 条消息。超出的消息会按顺序等待显示。</small>
             </div>
             <div className="field" aria-busy={floatingNotificationSoundAction !== null}>
-              <span>提示音</span>
+              <span>Windows Toast 提示音</span>
               <strong>
                 {desktopUiPrefs.floatingNotificationSoundSource === "custom"
                   ? "自定义提示音"

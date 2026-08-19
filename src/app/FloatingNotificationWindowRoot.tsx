@@ -11,8 +11,7 @@ import { AlertTriangle, CircleAlert, CircleCheck, Info, X } from "lucide-react";
 
 import {
   getDesktopUiPrefs,
-  getFloatingPanelVisible,
-  requestFloatingNotificationSound
+  getFloatingPanelVisible
 } from "../features/desktop-ui/client";
 import {
   acknowledgeBusinessNotificationDismissal,
@@ -107,8 +106,6 @@ export const FLOATING_NOTIFICATION_REGION_SETTLE_DELAY_MS =
   360 + FLOATING_NOTIFICATION_ANIMATION_FALLBACK_BUFFER_MS;
 const NATIVE_DISMISS_SYNC_PAUSE_REASON = "native-dismiss-sync";
 const NATIVE_DISMISS_SNAPSHOT_RETRY_DELAY_MS = 500;
-const MAX_FLOATING_NOTIFICATION_SOUND_DISPLAY_ATTEMPTS = 90;
-
 export type FloatingNotificationAnimationLifecycle = "enter" | "exit";
 
 export interface FloatingNotificationAnimationFallback {
@@ -471,11 +468,6 @@ export function FloatingNotificationWindowRoot() {
   const nativeLifecyclePauseReasonsRef = useRef(new Set<string>());
   const nativeDismissPendingIdsRef = useRef(new Set<string>());
   const nativeDismissRetryTimersRef = useRef(new Map<string, number>());
-  const notificationSoundCompletedIdsRef = useRef(new Set<string>());
-  const notificationSoundPendingIdsRef = useRef(new Set<string>());
-  const notificationSoundFrameIdsRef = useRef(new Map<string, number>());
-  const notificationSoundAttemptCountsRef = useRef(new Map<string, number>());
-  const notificationWindowWasHiddenRef = useRef(false);
   const animationFallbackTimersRef = useRef(
     new Map<string, FloatingNotificationAnimationFallbackTimer>()
   );
@@ -495,7 +487,6 @@ export function FloatingNotificationWindowRoot() {
   notificationDurationRef.current = notificationDurationMs;
   notificationMaxVisibleRef.current = notificationMaxVisible;
   const notificationLifecyclePaused = isFloatingNotificationAnimationPaused(queue.pauseReasons);
-  const notificationWindowHidden = queue.pauseReasons.includes("notification-window-hidden");
 
   const commitQueue = useCallback(
     (update: (current: BusinessNotificationQueueState) => BusinessNotificationQueueState) => {
@@ -874,106 +865,6 @@ export function FloatingNotificationWindowRoot() {
   }, [commitQueue]);
 
   useEffect(() => {
-    if (!isTauriRuntime()) {
-      return;
-    }
-
-    const activeNotificationIds = new Set(
-      [...queue.visible, ...queue.pending, ...queue.awaitingAcknowledgement].map(
-        (entry) => entry.notification.id
-      )
-    );
-    for (const notificationId of notificationSoundCompletedIdsRef.current) {
-      if (!activeNotificationIds.has(notificationId)) {
-        notificationSoundCompletedIdsRef.current.delete(notificationId);
-        notificationSoundAttemptCountsRef.current.delete(notificationId);
-      }
-    }
-    for (const [notificationId, frameId] of notificationSoundFrameIdsRef.current) {
-      if (!activeNotificationIds.has(notificationId)) {
-        window.cancelAnimationFrame(frameId);
-        notificationSoundFrameIdsRef.current.delete(notificationId);
-        notificationSoundPendingIdsRef.current.delete(notificationId);
-        notificationSoundAttemptCountsRef.current.delete(notificationId);
-      }
-    }
-
-    const wasNotificationWindowHidden = notificationWindowWasHiddenRef.current;
-    notificationWindowWasHiddenRef.current = notificationWindowHidden;
-    if (notificationWindowHidden) {
-      return;
-    }
-    if (wasNotificationWindowHidden) {
-      for (const entry of queue.visible) {
-        if (entry.lifecycle === "entering") {
-          notificationSoundAttemptCountsRef.current.delete(entry.notification.id);
-        }
-      }
-    }
-
-    const isNotificationWindowHidden = () =>
-      queueRef.current.pauseReasons.includes("notification-window-hidden");
-    const isStillEntering = (notificationId: string) =>
-      queueRef.current.visible.some(
-        (entry) =>
-          entry.notification.id === notificationId && entry.lifecycle === "entering"
-      );
-
-    function requestDisplayStartedSound(notificationId: string) {
-      if (
-        notificationSoundCompletedIdsRef.current.has(notificationId) ||
-        notificationSoundPendingIdsRef.current.has(notificationId) ||
-        isNotificationWindowHidden() ||
-        !isStillEntering(notificationId)
-      ) {
-        return;
-      }
-      const attemptCount = notificationSoundAttemptCountsRef.current.get(notificationId) ?? 0;
-      if (attemptCount >= MAX_FLOATING_NOTIFICATION_SOUND_DISPLAY_ATTEMPTS) {
-        return;
-      }
-      notificationSoundAttemptCountsRef.current.set(notificationId, attemptCount + 1);
-      notificationSoundPendingIdsRef.current.add(notificationId);
-      const frameId = window.requestAnimationFrame(() => {
-        if (notificationSoundFrameIdsRef.current.get(notificationId) !== frameId) {
-          return;
-        }
-        notificationSoundFrameIdsRef.current.delete(notificationId);
-        if (isNotificationWindowHidden() || !isStillEntering(notificationId)) {
-          notificationSoundPendingIdsRef.current.delete(notificationId);
-          return;
-        }
-        void requestFloatingNotificationSound(notificationId)
-          .then((accepted) => {
-            notificationSoundPendingIdsRef.current.delete(notificationId);
-            if (accepted) {
-              if (isStillEntering(notificationId)) {
-                notificationSoundCompletedIdsRef.current.add(notificationId);
-              }
-              return;
-            }
-            if (
-              !isNotificationWindowHidden() &&
-              isStillEntering(notificationId)
-            ) {
-              requestDisplayStartedSound(notificationId);
-            }
-          })
-          .catch(() => {
-            notificationSoundPendingIdsRef.current.delete(notificationId);
-          });
-      });
-      notificationSoundFrameIdsRef.current.set(notificationId, frameId);
-    }
-
-    for (const entry of queue.visible) {
-      if (entry.lifecycle === "entering") {
-        requestDisplayStartedSound(entry.notification.id);
-      }
-    }
-  }, [notificationWindowHidden, queue]);
-
-  useEffect(() => {
     const activeFallbackKeys = new Set<string>();
     for (const entry of queue.visible) {
       if (entry.lifecycle !== "entering" && entry.lifecycle !== "exiting") {
@@ -1049,13 +940,6 @@ export function FloatingNotificationWindowRoot() {
         window.clearTimeout(timer);
       }
       nativeDismissRetryTimersRef.current.clear();
-      for (const frameId of notificationSoundFrameIdsRef.current.values()) {
-        window.cancelAnimationFrame(frameId);
-      }
-      notificationSoundFrameIdsRef.current.clear();
-      notificationSoundPendingIdsRef.current.clear();
-      notificationSoundCompletedIdsRef.current.clear();
-      notificationSoundAttemptCountsRef.current.clear();
     },
     []
   );

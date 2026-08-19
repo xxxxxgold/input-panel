@@ -417,6 +417,35 @@ pub(crate) enum FloatingNotificationSoundStart {
     Muted,
 }
 
+/// 仅在原生 Windows Toast 成功交给系统显示后安排应用侧声音。
+///
+/// `Toast::show()` 失败时直接返回错误，不能因为应用内悬浮消息、面板 Toast 或其他
+/// 视觉反馈而播放声音。
+fn schedule_sound_after_windows_notification(
+    toast_result: Result<()>,
+    schedule_sound: impl FnOnce(),
+) -> Result<()> {
+    toast_result?;
+    schedule_sound();
+    Ok(())
+}
+
+/// 显示可导航的 Windows Toast，并在成功后异步播放当前配置的提示音。
+#[cfg(target_os = "windows")]
+pub(crate) fn show_windows_notification_with_sound(
+    app: &AppHandle,
+    title: &str,
+    body: &str,
+    navigation: crate::infrastructure::windows_notification::NativeNotificationNavigation,
+) -> Result<()> {
+    schedule_sound_after_windows_notification(
+        crate::infrastructure::windows_notification::show_windows_notification(
+            app, title, body, navigation,
+        ),
+        || schedule_floating_notification_sound(app),
+    )
+}
+
 /// 仅切换不依赖文件路径的来源，保留受控自定义副本供用户之后继续使用。
 fn set_floating_notification_non_custom_sound_source(
     ctx: &AppContext,
@@ -516,12 +545,12 @@ fn play_floating_notification_sound(app: &AppHandle) -> Result<()> {
     Ok(())
 }
 
-/// 将新消息的声音准备与播放完全转入后台，不能阻塞 mailbox 或通知窗口同步。
+/// 将 Windows Toast 成功显示后的声音准备与播放完全转入后台，不能阻塞通知投递。
 pub fn schedule_floating_notification_sound(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         if let Err(error) = play_floating_notification_sound(&app) {
-            log::warn!("[notification-sound] 新悬浮消息提示音播放失败: {error}");
+            log::warn!("[notification-sound] Windows Toast 提示音播放失败: {error}");
         }
     });
 }
@@ -553,6 +582,7 @@ pub fn set_close_behavior(
 mod tests {
     use super::*;
     use std::{
+        cell::Cell,
         collections::HashMap,
         fs,
         sync::{Arc, Barrier},
@@ -586,6 +616,24 @@ mod tests {
             live_resources: ResourceCoordinator::default(),
             native_notifications_enabled: false,
         }
+    }
+
+    #[test]
+    fn windows_toast_sound_is_scheduled_only_after_toast_display_succeeds() {
+        let scheduled_after_success = Cell::new(false);
+        schedule_sound_after_windows_notification(Ok(()), || {
+            scheduled_after_success.set(true);
+        })
+        .expect("successful toast should schedule the configured sound");
+        assert!(scheduled_after_success.get());
+
+        let scheduled_after_failure = Cell::new(false);
+        let result = schedule_sound_after_windows_notification(
+            Err(anyhow::anyhow!("toast display failed")),
+            || scheduled_after_failure.set(true),
+        );
+        assert!(result.is_err());
+        assert!(!scheduled_after_failure.get());
     }
 
     #[test]
