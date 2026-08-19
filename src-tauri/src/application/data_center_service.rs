@@ -4759,6 +4759,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn usage_sync_failure_is_retained_and_reported_as_failed() {
+        let ctx = build_test_context();
+
+        let error = sync_account_data(
+            &ctx,
+            "missing-usage-account",
+            SyncAccountDataInput {
+                scope: DataSyncScope::Usage,
+                trigger_source: DataSyncTrigger::Manual,
+            },
+        )
+        .await
+        .expect_err("missing account usage sync must fail");
+        assert_eq!(error.to_string(), "账号数据同步失败，请稍后重试。");
+
+        let status = get_account_sync_status(&ctx, "missing-usage-account")
+            .await
+            .expect("failed usage terminal status");
+        assert_eq!(status.statuses.len(), 1);
+        assert_eq!(status.statuses[0].scope, DataSyncScope::Usage);
+        assert_eq!(status.statuses[0].state, AccountSyncState::Failed);
+        assert_eq!(status.statuses[0].item_count, 0);
+        assert!(status.statuses[0].run_id.is_some());
+        assert!(status.statuses[0].finished_at.is_some());
+        assert!(status.statuses[0].last_error.is_some());
+
+        let terminal = {
+            let tasks = ctx.sync_tasks.lock().await;
+            tasks
+                .get("missing-usage-account:usage")
+                .cloned()
+                .expect("failed usage task remains observable")
+        };
+        let terminal_state = terminal.state.lock().await;
+        assert!(terminal_state.completed);
+        assert_eq!(terminal_state.run.status, TaskRunStatus::Failed);
+    }
+
+    #[tokio::test]
     async fn earliest_usage_probe_uses_desc_tail_when_upstream_ignores_asc() {
         let requests = Arc::new(Mutex::new(Vec::<(String, i64)>::new()));
         let earliest_date = super::shanghai_today()
@@ -4978,6 +5017,7 @@ mod tests {
             super::EARLIEST_USAGE_PROBE_METADATA_CHANGED_ERROR
         );
         assert!(super::is_earliest_usage_probe_growth_exhausted(&error));
+        assert!(super::is_earliest_usage_probe_growth_exhausted(&error));
         let history = repositories::load_usage_history_state(&ctx.db, "account-probe-exhaustion")
             .expect("load history state")
             .expect("history state exists");
@@ -5158,6 +5198,192 @@ mod tests {
             super::EARLIEST_USAGE_PROBE_METADATA_CHANGED_ERROR
         );
         assert!(!super::is_earliest_usage_probe_growth_exhausted(&error));
+        assert!(!super::is_earliest_usage_probe_growth_exhausted(&error));
+        let history = repositories::load_usage_history_state(&ctx.db, "account-probe-regression")
+            .expect("load history state")
+            .expect("history state exists");
+        assert_eq!(history.state, repositories::UsageHistoryState::NeedsAudit);
+        assert_eq!(
+            history.earliest_date.as_deref(),
+            Some(earliest_date.to_string().as_str())
+        );
+        assert_eq!(
+            history.completed_through_date.as_deref(),
+            Some(earliest_date.to_string().as_str())
+        );
+        assert_eq!(request_count.load(Ordering::SeqCst), 2);
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn earliest_usage_probe_exhaustion_reuses_verified_earliest_checkpoint() {
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let closed_history_end = super::shanghai_today()
+            .checked_sub_days(Days::new(2))
+            .expect("closed history end");
+        let earliest_date = closed_history_end
+            .pred_opt()
+            .expect("history end has a preceding date");
+        let app = Router::new().route(
+            "/api/v1/usage",
+            get({
+                let request_count = Arc::clone(&request_count);
+                move |Query(query): Query<HashMap<String, String>>| {
+                    let request_count = Arc::clone(&request_count);
+                    async move {
+                        let page = query
+                            .get("page")
+                            .and_then(|value| value.parse::<i64>().ok())
+                            .unwrap_or(1);
+                        let page_size = query
+                            .get("page_size")
+                            .and_then(|value| value.parse::<i64>().ok())
+                            .unwrap_or(1_000);
+                        if query.get("start_date").is_none() && page_size == 1 {
+                            let request_index = request_count.fetch_add(1, Ordering::SeqCst) + 1;
+                            let total = i64::try_from(request_index + 1)
+                                .expect("request count fits i64");
+                            return Json(json!({
+                                "items": [{
+                                    "id": format!("probe-fallback-{request_index}"),
+                                    "created_at": format!("{earliest_date}T08:00:00+08:00"),
+                                    "model": "gpt-5.4",
+                                    "actual_cost": 0.5,
+                                    "total_cost": 0.5,
+                                    "input_tokens": 10,
+                                    "output_tokens": 5,
+                                    "total_tokens": 15
+                                }],
+                                "page": page,
+                                "page_size": 1,
+                                "total": total,
+                                "pages": total
+                            }));
+                        }
+                        Json(json!({
+                            "items": [],
+                            "page": page,
+                            "page_size": page_size,
+                            "total": 0,
+                            "pages": 0
+                        }))
+                    }
+                }
+            }),
+        );
+        let server = TestAxumServer::start(|_| app).await;
+        let ctx = build_test_context();
+        seed_account(
+            &ctx,
+            server.base_url(),
+            "account-probe-checkpoint",
+            "site-probe-checkpoint",
+            "探针检查点账号",
+        );
+        repositories::advance_usage_history_completed_through_date(
+            &ctx.db,
+            "account-probe-checkpoint",
+            Some(&earliest_date.to_string()),
+            &earliest_date.to_string(),
+            Some(&earliest_date.to_string()),
+            "2026-08-14T00:00:00+08:00",
+        )
+        .expect("seed verified earliest checkpoint");
+
+        let merged = sync_initial_usage_history_if_needed(&ctx, "account-probe-checkpoint")
+            .await
+            .expect("verified earliest checkpoint can recover after probe exhaustion");
+        assert_eq!(merged, 0);
+        let history = repositories::load_usage_history_state(&ctx.db, "account-probe-checkpoint")
+            .expect("load history state")
+            .expect("history state exists");
+        assert_eq!(
+            history.earliest_date.as_deref(),
+            Some(earliest_date.to_string().as_str())
+        );
+        assert_eq!(
+            history.completed_through_date.as_deref(),
+            Some(closed_history_end.to_string().as_str())
+        );
+        assert_eq!(request_count.load(Ordering::SeqCst), 6);
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn earliest_usage_probe_metadata_regression_keeps_verified_checkpoint_in_needs_audit() {
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let closed_history_end = super::shanghai_today()
+            .checked_sub_days(Days::new(2))
+            .expect("closed history end");
+        let earliest_date = closed_history_end
+            .pred_opt()
+            .expect("history end has a preceding date");
+        let app = Router::new().route(
+            "/api/v1/usage",
+            get({
+                let request_count = Arc::clone(&request_count);
+                move |Query(query): Query<HashMap<String, String>>| {
+                    let request_count = Arc::clone(&request_count);
+                    async move {
+                        let page = query
+                            .get("page")
+                            .and_then(|value| value.parse::<i64>().ok())
+                            .unwrap_or(1);
+                        let request_index = request_count.fetch_add(1, Ordering::SeqCst) + 1;
+                        let (total, pages, include_item) = if request_index == 1 {
+                            (1, 1, true)
+                        } else {
+                            (0, 1, false)
+                        };
+                        let items = include_item.then(|| {
+                            json!({
+                                "id": format!("probe-regression-{request_index}"),
+                                "created_at": format!("{earliest_date}T08:00:00+08:00"),
+                                "model": "gpt-5.4",
+                                "actual_cost": 0.5,
+                                "total_cost": 0.5,
+                                "input_tokens": 10,
+                                "output_tokens": 5,
+                                "total_tokens": 15
+                            })
+                        });
+                        Json(json!({
+                            "items": items.into_iter().collect::<Vec<_>>(),
+                            "page": page,
+                            "page_size": 1,
+                            "total": total,
+                            "pages": pages
+                        }))
+                    }
+                }
+            }),
+        );
+        let server = TestAxumServer::start(|_| app).await;
+        let ctx = build_test_context();
+        seed_account(
+            &ctx,
+            server.base_url(),
+            "account-probe-regression",
+            "site-probe-regression",
+            "探针元数据倒退账号",
+        );
+        repositories::advance_usage_history_completed_through_date(
+            &ctx.db,
+            "account-probe-regression",
+            Some(&earliest_date.to_string()),
+            &earliest_date.to_string(),
+            Some(&earliest_date.to_string()),
+            "2026-08-14T00:00:00+08:00",
+        )
+        .expect("seed verified earliest checkpoint");
+
+        let error = sync_initial_usage_history_if_needed(&ctx, "account-probe-regression")
+            .await
+            .expect_err("metadata regression must not use the verified checkpoint fallback");
+        assert_eq!(
+            error.to_string(),
+            super::EARLIEST_USAGE_PROBE_METADATA_CHANGED_ERROR
+        );
         let history = repositories::load_usage_history_state(&ctx.db, "account-probe-regression")
             .expect("load history state")
             .expect("history state exists");
