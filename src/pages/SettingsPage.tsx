@@ -23,6 +23,8 @@ import { EmptyState } from "../shared/ui/EmptyState";
 import { SectionCard } from "../shared/ui/SectionCard";
 import { StatusBadge } from "../shared/ui/StatusBadge";
 import { SubscriptionList } from "../features/subscriptions/components/SubscriptionList";
+import { SiteFailoverStatusPanel } from "../features/accounts/components/SiteFailoverStatusPanel";
+import { useSiteFailoverStatus } from "../features/accounts/useSiteFailoverStatus";
 
 export function runSiteCardAction({
   site,
@@ -118,6 +120,7 @@ export function SettingsPage({
   const currentAccountSiteName = currentAccount?.site?.name ?? selectedSite?.name ?? "未关联站点";
   const currentAccountSyncSummary = buildCurrentAccountSyncSummary(currentAccountSyncStatusPresentation);
   const siteSearchActive = siteSearch.trim().length > 0;
+  const siteFailoverStatus = useSiteFailoverStatus(selectedSite);
 
   return (
     <div className="settings-workbench">
@@ -251,6 +254,16 @@ export function SettingsPage({
                       value={selectedSiteAccounts.length > 0 ? "下方账号详情会跟随当前站点切换" : "先为当前站点添加账号"}
                     />
                   </div>
+                  <SiteFailoverStatusPanel
+                    site={selectedSite}
+                    status={siteFailoverStatus.status}
+                    loading={siteFailoverStatus.loading}
+                    error={siteFailoverStatus.error}
+                    nowMs={siteFailoverStatus.nowMs}
+                    addressActions={siteFailoverStatus.addressActions}
+                    onRefresh={siteFailoverStatus.refresh}
+                    onClearCooldown={siteFailoverStatus.clearCooldown}
+                  />
                   <div className="site-account-list">
                     <div className="section-mini-title">当前站点账号</div>
                     <div className="table-list wide">

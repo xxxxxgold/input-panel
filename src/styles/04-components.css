@@ -2093,6 +2093,189 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.site-failover-status-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 14px 0 4px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.site-failover-status-head,
+.site-failover-status-title,
+.site-failover-status-placeholder,
+.site-failover-status-error,
+.site-failover-all-cooling {
+  display: flex;
+  align-items: center;
+}
+
+.site-failover-status-head {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.site-failover-status-title {
+  min-width: 0;
+  gap: 9px;
+}
+
+.site-failover-status-icon {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-soft));
+}
+
+.site-failover-status-title h3,
+.site-failover-status-title p {
+  margin: 0;
+}
+
+.site-failover-status-title h3 {
+  color: var(--text-strong);
+  font-size: 13px;
+}
+
+.site-failover-status-title p {
+  margin-top: 2px;
+  color: var(--text-subtle);
+  font-size: 11px;
+}
+
+.site-failover-address-list {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  border-radius: var(--radius-sm);
+}
+
+.site-failover-address-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(82px, auto) auto;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 10px 11px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+}
+
+.site-failover-address-row:last-child {
+  border-bottom: 0;
+}
+
+.site-failover-address-identity {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.site-failover-address-kind {
+  color: var(--text-normal);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.site-failover-address-url {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-subtle);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.site-failover-status-pill {
+  display: inline-flex;
+  min-width: 82px;
+  max-width: 156px;
+  min-height: 24px;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-subtle);
+  background: var(--bg-soft);
+  font-size: 11px;
+  line-height: 1.25;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.site-failover-status-pill.is-active {
+  border-color: color-mix(in srgb, var(--status-success-fg) 38%, var(--border));
+  color: var(--status-success-fg);
+  background: color-mix(in srgb, var(--status-success-fg) 10%, var(--bg-card));
+}
+
+.site-failover-status-pill.is-cooling {
+  border-color: color-mix(in srgb, var(--status-warning-fg) 42%, var(--border));
+  color: var(--status-warning-fg);
+  background: color-mix(in srgb, var(--status-warning-fg) 11%, var(--bg-card));
+}
+
+.site-failover-clear-button {
+  min-width: 104px;
+  gap: 5px;
+}
+
+.site-failover-address-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--status-danger-fg);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.site-failover-status-placeholder {
+  min-height: 42px;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-subtle);
+  font-size: 12px;
+}
+
+.site-failover-status-error {
+  gap: 7px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--status-danger-fg) 28%, var(--border));
+  border-radius: var(--radius-sm);
+  color: var(--status-danger-fg);
+  background: color-mix(in srgb, var(--status-danger-fg) 7%, var(--bg-card));
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.site-failover-all-cooling {
+  gap: 7px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--status-warning-fg) 32%, var(--border));
+  border-radius: var(--radius-sm);
+  color: var(--status-warning-fg);
+  background: color-mix(in srgb, var(--status-warning-fg) 8%, var(--bg-card));
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.site-failover-status-error > span {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.site-failover-all-cooling > span {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.site-failover-status-error .inline-text-button {
+  flex: 0 0 auto;
+}
+
 .site-account-list {
   display: flex;
   flex-direction: column;

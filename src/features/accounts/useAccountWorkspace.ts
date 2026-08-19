@@ -40,6 +40,7 @@ import {
   siteInputFromDraft,
   type SiteConfigDraft
 } from "./site-config-draft";
+import { publishSiteFailoverStatus } from "./useSiteFailoverStatus";
 
 export interface SiteAddressActionState {
   testing: boolean;
@@ -245,6 +246,7 @@ export function useAccountWorkspace({
     setSiteStatusNowMs(Date.now() + serverOffsetMs);
     setSiteFailoverStatus(status);
     setSiteFailoverStatusError(null);
+    publishSiteFailoverStatus(status);
   }
 
   async function loadSiteFailoverStatus(siteId: string, generation: number) {
