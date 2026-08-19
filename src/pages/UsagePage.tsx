@@ -8,13 +8,20 @@ import {
   LayoutDashboard,
   MonitorDot,
   RefreshCcw,
+  RotateCcw,
+  Search,
+  SlidersHorizontal,
   Timer
 } from "lucide-react";
-import type { MutableRefObject, ReactNode } from "react";
+import type { Dispatch, MutableRefObject, ReactNode, SetStateAction } from "react";
 
 import type {
   DashboardModelsPayload,
   PaginatedResult,
+  UsageCursorPage,
+  UsageExtremesPayload,
+  UsageFacetField,
+  UsageFacetPage,
   UsageRow,
   UsageStatsRecord,
   UsageTrendPayload,
@@ -25,9 +32,9 @@ import {
   formatBillingMode,
   formatDateTimeFull,
   formatDurationSeconds,
-  formatMilliseconds,
   formatUsd,
-  formatUsdPerMillion
+  formatUsdPerMillion,
+  formatUsageServiceTier
 } from "../shared/lib/formatters";
 import { DetailItem } from "../shared/ui/DetailItem";
 import { EmptyState } from "../shared/ui/EmptyState";
@@ -40,6 +47,12 @@ import {
   UsageTokenMetricDetails
 } from "../features/usage/components/UsageMetricDetails";
 import { summarizeUsageRowsByModel, type UsageModelSummary } from "../features/usage/model-summary";
+import type {
+  UsageBooleanDraft,
+  UsageFilterDraft,
+  UsageRangeDraft,
+  UsageTextFilterDraft
+} from "../features/usage/usage-filter-draft";
 
 const USAGE_RANGE_PRESETS = [
   { key: "today", label: "今天" },
@@ -89,33 +102,6 @@ function buildUsageModelHint(prefix: string, model?: string | null) {
   return model ? `${prefix}: ${model}` : "当前没有模型数据";
 }
 
-function findTopUsageRow(
-  rows: UsageRow[],
-  valueSelector: (row: UsageRow) => number | null | undefined
-) {
-  return rows.reduce<UsageRow | null>((best, row) => {
-    if (!best) {
-      return row;
-    }
-    const nextValue = Number(valueSelector(row) ?? 0);
-    const bestValue = Number(valueSelector(best) ?? 0);
-    if (nextValue !== bestValue) {
-      return nextValue > bestValue ? row : best;
-    }
-    const nextCost = Number(row.actualCost ?? 0);
-    const bestCost = Number(best.actualCost ?? 0);
-    if (nextCost !== bestCost) {
-      return nextCost > bestCost ? row : best;
-    }
-    const nextTokens = Number(row.totalTokens ?? 0);
-    const bestTokens = Number(best.totalTokens ?? 0);
-    if (nextTokens !== bestTokens) {
-      return nextTokens > bestTokens ? row : best;
-    }
-    return row.createdAt > best.createdAt ? row : best;
-  }, null);
-}
-
 function formatUsageExtremeContext(row: UsageRow) {
   const keyLabel = row.apiKeyName ?? (row.apiKeyId ? `#${row.apiKeyId}` : "未知 Key");
   return `${keyLabel} / ${row.model}`;
@@ -123,6 +109,13 @@ function formatUsageExtremeContext(row: UsageRow) {
 
 function formatUsageApiKeyLabel(row: UsageRow) {
   return row.apiKeyName ?? (row.apiKeyId ? `#${row.apiKeyId}` : "未知 Key");
+}
+
+function formatLongContextBillingState(value?: boolean | null) {
+  if (value === null || value === undefined) {
+    return "未知";
+  }
+  return value ? "已应用" : "未应用";
 }
 
 function normalizeReasoningEffort(value?: string | null) {
@@ -135,6 +128,23 @@ function normalizeUsageBillingMode(value?: string | null) {
 
 function normalizeUsageImageSize(value?: string | null) {
   return value?.trim().toUpperCase() ?? "";
+}
+
+function normalizeUsageRequestTypeValue(value?: string | null, stream?: boolean | null) {
+  const requestType = value?.trim().toLowerCase() ?? "";
+  if (stream || requestType === "stream") {
+    return "stream";
+  }
+  if (requestType === "sync") {
+    return "sync";
+  }
+  if (!requestType || requestType === "standard" || requestType === "default") {
+    return "standard";
+  }
+  if (requestType === "batch") {
+    return "batch";
+  }
+  return requestType;
 }
 
 function formatUsageReasoningLabel(value?: string | null) {
@@ -158,14 +168,14 @@ function getUsageReasoningTone(value?: string | null) {
 }
 
 function formatUsageRequestTypeLabel(row: UsageRow) {
-  const requestType = row.requestType?.trim().toLowerCase() ?? "";
-  if (row.stream || requestType === "stream") {
+  const requestType = normalizeUsageRequestTypeValue(row.requestType, row.stream);
+  if (requestType === "stream") {
     return "流式";
   }
   if (requestType === "sync") {
     return "同步";
   }
-  if (!requestType || requestType === "standard" || requestType === "default") {
+  if (requestType === "standard") {
     return "标准";
   }
   if (requestType === "batch") {
@@ -175,8 +185,8 @@ function formatUsageRequestTypeLabel(row: UsageRow) {
 }
 
 function getUsageRequestTypeTone(row: UsageRow) {
-  const requestType = row.requestType?.trim().toLowerCase() ?? "";
-  if (row.stream || requestType === "stream") {
+  const requestType = normalizeUsageRequestTypeValue(row.requestType, row.stream);
+  if (requestType === "stream") {
     return "usage-pill-stream";
   }
   if (requestType === "batch") {
@@ -268,45 +278,6 @@ function buildUsageBillingPresentation(row: UsageRow) {
   };
 }
 
-function buildUsagePaginationItems(currentPage: number, totalPages: number) {
-  if (totalPages <= 1) {
-    return [1];
-  }
-
-  const pages = new Set<number>([
-    1,
-    2,
-    3,
-    totalPages - 2,
-    totalPages - 1,
-    totalPages,
-    currentPage - 1,
-    currentPage,
-    currentPage + 1
-  ]);
-  if (currentPage <= 3) {
-    pages.add(4);
-  }
-  if (currentPage >= totalPages - 2) {
-    pages.add(totalPages - 3);
-  }
-
-  const sorted = [...pages]
-    .filter((page) => page >= 1 && page <= totalPages)
-    .sort((left, right) => left - right);
-  const items: Array<number | "ellipsis"> = [];
-
-  for (const page of sorted) {
-    const previous = items[items.length - 1];
-    if (typeof previous === "number" && page - previous > 1) {
-      items.push("ellipsis");
-    }
-    items.push(page);
-  }
-
-  return items;
-}
-
 function UsageDetailSection({
   title,
   children
@@ -370,6 +341,15 @@ function UsageCostDetail({
   highlightValue?: string;
 }) {
   const imageBilling = inferUsageImageBilling(row);
+  const serviceTier = row.serviceTier?.trim();
+  const hasImageInputCost =
+    typeof row.imageInputCost === "number" &&
+    Number.isFinite(row.imageInputCost) &&
+    row.imageInputCost !== 0;
+  const hasCacheCreationCost =
+    typeof row.cacheCreationCost === "number" &&
+    Number.isFinite(row.cacheCreationCost) &&
+    row.cacheCreationCost !== 0;
   return (
     <>
       <UsageDetailSection title={title}>
@@ -377,6 +357,7 @@ function UsageCostDetail({
         <DetailItem label="API Key" value={formatUsageApiKeyLabel(row)} />
         <DetailItem label="模型" value={row.model} />
         <DetailItem label="时间" value={formatDateTimeFull(row.createdAt)} />
+        <DetailItem label="长上下文计费" value={formatLongContextBillingState(row.longContextBillingApplied)} />
       </UsageDetailSection>
       {imageBilling ? (
         <UsageDetailSection title="图片价格">
@@ -385,7 +366,9 @@ function UsageCostDetail({
           <DetailItem label="尺寸来源" value={imageBilling.sizeSourceLabel} />
           <DetailItem label="估算分辨率" value={imageBilling.resolution ?? "-"} />
           <DetailItem label="单张价格" value={formatUsd(imageBilling.unitPrice)} />
-          <DetailItem label="服务档位" value={row.groupName ?? row.subscriptionName ?? "-"} />
+          {serviceTier ? (
+            <DetailItem label="服务档位" value={formatUsageServiceTier(serviceTier)} />
+          ) : null}
         </UsageDetailSection>
       ) : (
         <UsageDetailSection title="模型价格">
@@ -393,7 +376,9 @@ function UsageCostDetail({
           <DetailItem label="输出单价" value={formatUsdPerMillion(row.outputCost, row.outputTokens)} />
           <DetailItem label="缓存写入单价" value={formatUsdPerMillion(row.cacheCreationCost, row.cacheCreationTokens)} />
           <DetailItem label="缓存读取单价" value={formatUsdPerMillion(row.cacheReadCost, row.cacheReadTokens)} />
-          <DetailItem label="服务档位" value={row.groupName ?? row.subscriptionName ?? "-"} />
+          {serviceTier ? (
+            <DetailItem label="服务档位" value={formatUsageServiceTier(serviceTier)} />
+          ) : null}
           <DetailItem label="倍率" value={`${Number(row.rateMultiplier ?? 1).toFixed(2)}x`} />
         </UsageDetailSection>
       )}
@@ -401,6 +386,9 @@ function UsageCostDetail({
         {imageBilling ? (
           <>
             <DetailItem label="图片总价" value={formatUsd(row.actualCost)} />
+            {hasImageInputCost ? (
+              <DetailItem label="图片输入费用" value={formatUsd(row.imageInputCost)} />
+            ) : null}
             <DetailItem label="图片输出 Token" value={compact(row.imageOutputTokens ?? row.outputTokens)} />
             <DetailItem label="原始" value={formatUsd(row.totalCost)} />
             <DetailItem label="计费" value={formatUsd(row.actualCost)} />
@@ -409,8 +397,13 @@ function UsageCostDetail({
         ) : (
           <>
             <DetailItem label="输入成本" value={formatUsd(row.inputCost)} />
+            {hasImageInputCost ? (
+              <DetailItem label="图片输入费用" value={formatUsd(row.imageInputCost)} />
+            ) : null}
             <DetailItem label="输出成本" value={formatUsd(row.outputCost)} />
-            <DetailItem label="缓存写入成本" value={formatUsd(row.cacheCreationCost)} />
+            {hasCacheCreationCost ? (
+              <DetailItem label="缓存写入成本" value={formatUsd(row.cacheCreationCost)} />
+            ) : null}
             <DetailItem label="缓存读取成本" value={formatUsd(row.cacheReadCost)} />
             <DetailItem label="原始" value={formatUsd(row.totalCost)} />
             <DetailItem label="计费" value={formatUsd(row.actualCost)} />
@@ -428,10 +421,328 @@ function UsageCostDetail({
   );
 }
 
+type UsageTextDraftField = {
+  [Key in keyof UsageFilterDraft]: UsageFilterDraft[Key] extends UsageTextFilterDraft ? Key : never;
+}[keyof UsageFilterDraft];
+
+type UsageRangeDraftField = {
+  [Key in keyof UsageFilterDraft]: UsageFilterDraft[Key] extends UsageRangeDraft ? Key : never;
+}[keyof UsageFilterDraft];
+
+function UsageTextFilterField({
+  id,
+  label,
+  value,
+  placeholder,
+  facetField,
+  facetPage,
+  facetLoading,
+  showMatchMode = false,
+  onChange,
+  onLoadFacet
+}: {
+  id: string;
+  label: string;
+  value: UsageTextFilterDraft;
+  placeholder?: string;
+  facetField?: UsageFacetField;
+  facetPage?: UsageFacetPage;
+  facetLoading?: boolean;
+  showMatchMode?: boolean;
+  onChange: (value: UsageTextFilterDraft) => void;
+  onLoadFacet?: (field: UsageFacetField, search?: string, force?: boolean) => void;
+}) {
+  const listId = facetField ? `${id}-options` : undefined;
+  return (
+    <label className="field usage-text-filter-field" htmlFor={id}>
+      <span>{label}{facetLoading ? " · 加载中" : ""}</span>
+      <div className="usage-filter-control-row">
+        <input
+          id={id}
+          list={listId}
+          value={value.value}
+          placeholder={placeholder}
+          onFocus={() => facetField && onLoadFacet?.(facetField)}
+          onChange={(event) => onChange({ ...value, value: event.target.value })}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && facetField) {
+              event.preventDefault();
+              onLoadFacet?.(facetField, value.value, true);
+            }
+          }}
+        />
+        {showMatchMode ? (
+          <select
+            value={value.mode}
+            aria-label={`${label}匹配方式`}
+            onChange={(event) => onChange({ ...value, mode: event.target.value as UsageTextFilterDraft["mode"] })}
+          >
+            <option value="exact">精确</option>
+            <option value="prefix">前缀</option>
+            </select>
+          ) : null}
+        {facetField ? (
+          <button
+            type="button"
+            className="icon-button usage-facet-search-button"
+            aria-label={`搜索${label}候选`}
+            title={`搜索${label}候选`}
+            onClick={(event) => {
+              event.preventDefault();
+              onLoadFacet?.(facetField, value.value, true);
+            }}
+          >
+            <Search size={15} aria-hidden="true" />
+          </button>
+        ) : null}
+      </div>
+      {listId ? (
+        <datalist id={listId}>
+          {(facetPage?.items ?? []).map((item) => (
+            <option key={item.value} value={item.label}>{item.count.toLocaleString()} 条</option>
+          ))}
+        </datalist>
+      ) : null}
+    </label>
+  );
+}
+
+function UsageScalarFilterField({
+  id,
+  label,
+  value,
+  placeholder,
+  facetField,
+  facetPage,
+  facetLoading,
+  fallbackOptions = [],
+  onChange,
+  onLoadFacet
+}: {
+  id: string;
+  label: string;
+  value: string;
+  placeholder?: string;
+  facetField?: UsageFacetField;
+  facetPage?: UsageFacetPage;
+  facetLoading?: boolean;
+  fallbackOptions?: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+  onLoadFacet?: (field: UsageFacetField, search?: string, force?: boolean) => void;
+}) {
+  const listId = facetField ? `${id}-options` : undefined;
+  const options = buildFacetSelectOptions(facetPage, fallbackOptions, value)
+    .filter((item) => /^\d+$/.test(item.value));
+  return (
+    <label className="field usage-scalar-filter-field" htmlFor={id}>
+      <span>{label}{facetLoading ? " · 加载中" : ""}</span>
+      <div className="usage-filter-control-row">
+        <input
+          id={id}
+          type="number"
+          min="0"
+          step="1"
+          inputMode="numeric"
+          list={listId}
+          value={value}
+          placeholder={placeholder}
+          onFocus={() => facetField && onLoadFacet?.(facetField)}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        {facetField ? (
+          <button
+            type="button"
+            className="icon-button usage-facet-search-button"
+            aria-label={`加载${label}候选`}
+            title={`加载${label}候选`}
+            onClick={(event) => {
+              event.preventDefault();
+              onLoadFacet?.(facetField, "", true);
+            }}
+          >
+            <Search size={15} aria-hidden="true" />
+          </button>
+        ) : null}
+      </div>
+      {listId ? (
+        <datalist id={listId}>
+          {options.map((item) => (
+            <option key={item.value} value={item.value}>{item.label}</option>
+          ))}
+        </datalist>
+      ) : null}
+    </label>
+  );
+}
+
+function UsageRangeFilterField({
+  label,
+  value,
+  step = "1",
+  onChange
+}: {
+  label: string;
+  value: UsageRangeDraft;
+  step?: string;
+  onChange: (value: UsageRangeDraft) => void;
+}) {
+  return (
+    <fieldset className="field usage-range-filter-field">
+      <legend>{label}</legend>
+      <div className="usage-filter-control-row usage-range-control-row">
+        <input
+          type="number"
+          min="0"
+          step={step}
+          inputMode="decimal"
+          value={value.min}
+          aria-label={`${label}下限`}
+          placeholder="最小"
+          onChange={(event) => onChange({ ...value, min: event.target.value })}
+        />
+        <span aria-hidden="true">至</span>
+        <input
+          type="number"
+          min="0"
+          step={step}
+          inputMode="decimal"
+          value={value.max}
+          aria-label={`${label}上限`}
+          placeholder="最大"
+          onChange={(event) => onChange({ ...value, max: event.target.value })}
+        />
+      </div>
+    </fieldset>
+  );
+}
+
+function UsageTriStateField({
+  label,
+  value,
+  onChange
+}: {
+  label: string;
+  value: UsageBooleanDraft;
+  onChange: (value: UsageBooleanDraft) => void;
+}) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <select value={value} onChange={(event) => onChange(event.target.value as UsageBooleanDraft)}>
+        <option value="">全部</option>
+        <option value="true">是</option>
+        <option value="false">否</option>
+      </select>
+    </label>
+  );
+}
+
+function UsageFilterGroup({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="usage-filter-group">
+      <h3>{title}</h3>
+      <div className="filter-grid usage-filter-grid">{children}</div>
+    </section>
+  );
+}
+
+function buildFacetSelectOptions(
+  page: UsageFacetPage | undefined,
+  fallback: Array<{ value: string; label: string }> = [],
+  selectedValue = ""
+) {
+  const options = new Map<string, string>();
+  fallback.forEach((item) => item.value && options.set(item.value, item.label));
+  page?.items.forEach((item) => options.set(item.value, `${item.label} (${item.count.toLocaleString()})`));
+  if (selectedValue && !options.has(selectedValue)) {
+    options.set(selectedValue, `#${selectedValue}`);
+  }
+  return [...options].map(([value, label]) => ({ value, label }));
+}
+
+type UsageTextFilterDefinition = {
+  field: UsageTextDraftField;
+  label: string;
+  placeholder?: string;
+  facetField?: UsageFacetField;
+};
+
+type UsageRangeFilterDefinition = {
+  field: UsageRangeDraftField;
+  label: string;
+  step?: string;
+};
+
+const USAGE_IDENTITY_TEXT_FILTERS: UsageTextFilterDefinition[] = [
+  { field: "usageId", label: "Usage ID", placeholder: "输入 Usage ID" },
+  { field: "requestId", label: "Request ID", placeholder: "输入 Request ID" },
+  { field: "apiKeyName", label: "API Key 名称", placeholder: "输入或搜索名称", facetField: "apiKey" }
+];
+
+const USAGE_ROUTING_TEXT_FILTERS: UsageTextFilterDefinition[] = [
+  { field: "model", label: "模型", placeholder: "输入或搜索模型", facetField: "model" },
+  { field: "platform", label: "平台", placeholder: "输入或搜索平台", facetField: "platform" },
+  { field: "endpoint", label: "端点", placeholder: "输入或搜索端点", facetField: "endpoint" },
+  { field: "upstreamEndpoint", label: "上游端点", placeholder: "输入或搜索上游端点", facetField: "upstreamEndpoint" },
+  { field: "groupName", label: "分组名称", placeholder: "输入或搜索分组", facetField: "group" },
+  { field: "subscriptionName", label: "订阅名称", placeholder: "输入或搜索订阅", facetField: "subscription" },
+  { field: "subscriptionType", label: "订阅类型", placeholder: "输入或搜索类型", facetField: "subscriptionType" },
+  { field: "serviceTier", label: "服务档位", placeholder: "输入或搜索档位", facetField: "serviceTier" }
+];
+
+const USAGE_REQUEST_TEXT_FILTERS: UsageTextFilterDefinition[] = [
+  { field: "reasoningEffort", label: "推理档位", placeholder: "例如 high", facetField: "reasoningEffort" },
+  { field: "requestType", label: "请求类型", placeholder: "例如 stream", facetField: "requestType" },
+  { field: "billingMode", label: "计费模式", placeholder: "例如 token", facetField: "billingMode" }
+];
+
+const USAGE_MEDIA_TEXT_FILTERS: UsageTextFilterDefinition[] = [
+  { field: "mediaType", label: "媒体类型", placeholder: "输入或搜索类型", facetField: "mediaType" },
+  { field: "imageSize", label: "图片尺寸", placeholder: "输入或搜索尺寸", facetField: "imageSize" },
+  { field: "imageInputSize", label: "图片输入尺寸", placeholder: "输入或搜索尺寸", facetField: "imageInputSize" },
+  { field: "imageOutputSize", label: "图片输出尺寸", placeholder: "输入或搜索尺寸", facetField: "imageOutputSize" },
+  { field: "imageSizeSource", label: "图片尺寸来源", placeholder: "输入或搜索来源", facetField: "imageSizeSource" },
+  { field: "imageSizeBreakdown", label: "图片尺寸明细", placeholder: "输入或搜索明细", facetField: "imageSizeBreakdown" },
+  { field: "ipAddress", label: "IP 地址", placeholder: "输入 IP 地址" }
+];
+
+const USAGE_TOKEN_RANGE_FILTERS: UsageRangeFilterDefinition[] = [
+  { field: "inputTokens", label: "输入 Token" },
+  { field: "outputTokens", label: "输出 Token" },
+  { field: "totalTokens", label: "总 Token" },
+  { field: "cacheCreationTokens", label: "缓存写入 Token" },
+  { field: "cacheReadTokens", label: "缓存读取 Token" },
+  { field: "cacheCreation5mTokens", label: "5 分钟缓存 Token" },
+  { field: "cacheCreation1hTokens", label: "1 小时缓存 Token" },
+  { field: "imageInputTokens", label: "图片输入 Token" },
+  { field: "imageOutputTokens", label: "图片输出 Token" }
+];
+
+const USAGE_COST_RANGE_FILTERS: UsageRangeFilterDefinition[] = [
+  { field: "actualCost", label: "实际成本", step: "0.000001" },
+  { field: "totalCost", label: "标准成本", step: "0.000001" },
+  { field: "inputCost", label: "输入成本", step: "0.000001" },
+  { field: "outputCost", label: "输出成本", step: "0.000001" },
+  { field: "cacheCreationCost", label: "缓存写入成本", step: "0.000001" },
+  { field: "cacheReadCost", label: "缓存读取成本", step: "0.000001" },
+  { field: "imageInputCost", label: "图片输入成本", step: "0.000001" },
+  { field: "imageOutputCost", label: "图片输出成本", step: "0.000001" },
+  { field: "rateMultiplier", label: "倍率", step: "0.01" }
+];
+
+const USAGE_PERFORMANCE_RANGE_FILTERS: UsageRangeFilterDefinition[] = [
+  { field: "durationMs", label: "总耗时 (ms)" },
+  { field: "firstTokenMs", label: "首 Token (ms)" },
+  { field: "imageCount", label: "图片数量" }
+];
+
 export function UsagePage({
   managedKeys,
-  usageApiKeyFilter,
-  setUsageApiKeyFilter,
+  usageFilterDraft,
+  setUsageFilterDraft,
+  usageFacetPages,
+  usageFacetLoadingFields,
+  loadUsageFacet,
   usageRangePickerRef,
   usageRangePickerOpen,
   toggleUsageRangePicker,
@@ -442,21 +753,27 @@ export function UsagePage({
   setUsageDraftRange,
   applyUsageRange,
   usageStats,
+  usageExtremes,
   usageModelSummaries,
   usageModelSummariesLoading,
   usageRecords,
   usagePageSize,
   usagePageSizeOptions,
-  usageScopeRows,
   handleUsageSearch,
-  handleUsagePageChange,
+  handleUsageFilterReset,
+  handleUsagePreviousPage,
+  handleUsageNextPage,
   handleUsagePageSizeChange,
+  usageCursorDepth,
   usageTrend,
   usageModels
 }: {
   managedKeys: PaginatedResult<ManagedKeyRecord> | null;
-  usageApiKeyFilter: string;
-  setUsageApiKeyFilter: (value: string) => void;
+  usageFilterDraft: UsageFilterDraft;
+  setUsageFilterDraft: Dispatch<SetStateAction<UsageFilterDraft>>;
+  usageFacetPages: Partial<Record<UsageFacetField, UsageFacetPage>>;
+  usageFacetLoadingFields: UsageFacetField[];
+  loadUsageFacet: (field: UsageFacetField, search?: string, force?: boolean) => Promise<UsageFacetPage | null>;
   usageRangePickerRef: MutableRefObject<HTMLDivElement | null>;
   usageRangePickerOpen: boolean;
   toggleUsageRangePicker: () => void;
@@ -467,128 +784,307 @@ export function UsagePage({
   setUsageDraftRange: (updater: (prev: { startDate: string; endDate: string }) => { startDate: string; endDate: string }) => void;
   applyUsageRange: () => Promise<void>;
   usageStats: UsageStatsRecord | null;
+  usageExtremes: UsageExtremesPayload | null;
   usageModelSummaries: UsageModelSummary[];
   usageModelSummariesLoading: boolean;
-  usageRecords: PaginatedResult<UsageRow> | null;
+  usageRecords: UsageCursorPage<UsageRow> | null;
   usagePageSize: number;
   usagePageSizeOptions: number[];
-  usageScopeRows: UsageRow[];
   handleUsageSearch: () => Promise<void>;
-  handleUsagePageChange: (page: number) => Promise<void>;
+  handleUsageFilterReset: () => Promise<void>;
+  handleUsagePreviousPage: () => Promise<void>;
+  handleUsageNextPage: () => Promise<void>;
   handleUsagePageSizeChange: (pageSize: number) => Promise<void>;
+  usageCursorDepth: number;
   usageTrend: UsageTrendPayload | null;
   usageModels: DashboardModelsPayload | null;
 }) {
-  const scopedModelSummaries = usageScopeRows.length > 0
-    ? summarizeUsageRowsByModel(usageScopeRows)
-    : (usageStats?.totalRequests ?? 0) > 0
-      ? usageModelSummaries
+  const currentPageRows = usageRecords?.items ?? [];
+  const currentPageModelSummaries = usageModelSummaries.length > 0
+    ? usageModelSummaries
+    : currentPageRows.length > 0
+      ? summarizeUsageRowsByModel(currentPageRows)
       : [];
-  const scopedUsageRows = usageScopeRows.length > 0 ? usageScopeRows : (usageRecords?.items ?? []);
-  const topRequestModel = findTopUsageModel(scopedModelSummaries, (summary) => summary.requests);
-  const topOutputModel = findTopUsageModel(scopedModelSummaries, (summary) => summary.outputTokens);
-  const longestFirstTokenRow = findTopUsageRow(scopedUsageRows, (row) => row.firstTokenMs);
-  const highestCostRow = findTopUsageRow(scopedUsageRows, (row) => row.actualCost);
-  const highestInputRow = findTopUsageRow(scopedUsageRows, (row) => row.inputTokens);
-  const highestOutputRow = findTopUsageRow(scopedUsageRows, (row) => row.outputTokens);
-  const usagePaginationItems = usageRecords
-    ? buildUsagePaginationItems(usageRecords.page, Math.max(usageRecords.pages, 1))
-    : [];
+  const topRequestModel = findTopUsageModel(currentPageModelSummaries, (summary) => summary.requests);
+  const topOutputModel = findTopUsageModel(currentPageModelSummaries, (summary) => summary.outputTokens);
+  const longestFirstTokenRow = usageExtremes?.longestFirstToken ?? null;
+  const highestCostRow = usageExtremes?.highestActualCost ?? null;
+  const highestInputRow = usageExtremes?.highestInputTokens ?? null;
+  const highestOutputRow = usageExtremes?.highestOutputTokens ?? null;
+  const hasUsageRows = (usageRecords?.items.length ?? 0) > 0;
   const totalCacheInputTokens = getCacheInputTokens(
     usageStats?.totalCacheTokens,
     usageStats?.totalCacheCreationTokens,
     usageStats?.totalCacheReadTokens
   );
+  const usageTableMeta = usageRecords ? (
+    <>
+      <span>本次加载 {usageRecords.items.length.toLocaleString()} 条</span>
+      {usageRecords.total !== null && usageRecords.total !== undefined ? (
+        <span>共 {usageRecords.total.toLocaleString()} 条</span>
+      ) : null}
+      <span>游标深度 {usageCursorDepth}</span>
+    </>
+  ) : (
+    <span>当前没有可展示的用量记录</span>
+  );
+  const usagePageSizeControl = usageRecords ? (
+    <label className="field usage-page-size-field">
+      <span>每页条数</span>
+      <select value={usagePageSize} onChange={(event) => void handleUsagePageSizeChange(Number(event.target.value))}>
+        {usagePageSizeOptions.map((option) => (
+          <option key={option} value={option}>
+            {option} 条
+          </option>
+        ))}
+      </select>
+    </label>
+  ) : null;
+  const apiKeyFallbackOptions = (managedKeys?.items ?? [])
+    .filter((key) => key.apiKeyId !== null && key.apiKeyId !== undefined)
+    .map((key) => ({ value: String(key.apiKeyId), label: key.name }));
+
+  const updateDraftField = <Key extends keyof UsageFilterDraft>(
+    field: Key,
+    value: UsageFilterDraft[Key]
+  ) => {
+    setUsageFilterDraft((draft) => ({ ...draft, [field]: value }));
+  };
+  const updateTextDraft = (field: UsageTextDraftField, value: UsageTextFilterDraft) => {
+    updateDraftField(field, value);
+  };
+  const updateRangeDraft = (field: UsageRangeDraftField, value: UsageRangeDraft) => {
+    updateDraftField(field, value);
+  };
+  const requestFacet = (field: UsageFacetField, search = "", force = false) => {
+    void loadUsageFacet(field, search, force);
+  };
+  const renderTextFilters = (definitions: UsageTextFilterDefinition[]) => definitions.map((definition) => (
+    <UsageTextFilterField
+      key={definition.field}
+      id={`usage-filter-${definition.field}`}
+      label={definition.label}
+      value={usageFilterDraft[definition.field]}
+      placeholder={definition.placeholder}
+      facetField={definition.facetField}
+      facetPage={definition.facetField ? usageFacetPages[definition.facetField] : undefined}
+      facetLoading={definition.facetField ? usageFacetLoadingFields.includes(definition.facetField) : false}
+      showMatchMode
+      onChange={(value) => updateTextDraft(definition.field, value)}
+      onLoadFacet={requestFacet}
+    />
+  ));
+  const renderRangeFilters = (definitions: UsageRangeFilterDefinition[]) => definitions.map((definition) => (
+    <UsageRangeFilterField
+      key={definition.field}
+      label={definition.label}
+      value={usageFilterDraft[definition.field]}
+      step={definition.step}
+      onChange={(value) => updateRangeDraft(definition.field, value)}
+    />
+  ));
 
   return (
     <section className="usage-view motion-shell-section">
       <SectionCard
         title="用量明细"
-        subtitle="按真实 usage 单条记录展示 API Key、模型、计费、耗时与 USER-AGENT"
+        subtitle="逐条查看用了什么、花了多少、耗时多久"
         actions={
-          <button className="ghost-button" onClick={() => void handleUsageSearch()}>
-            <RefreshCcw size={16} />
-            重新查询
-          </button>
+          <div className="usage-filter-actions">
+            <button className="ghost-button" onClick={() => void handleUsageFilterReset()}>
+              <RotateCcw size={16} />
+              重置筛选
+            </button>
+            <button className="primary-button" onClick={() => void handleUsageSearch()}>
+              <RefreshCcw size={16} />
+              查询
+            </button>
+          </div>
         }
         >
-        <div className="filter-grid">
-          <label className="field">
-            <span>API Key</span>
-            <select value={usageApiKeyFilter} onChange={(event) => setUsageApiKeyFilter(event.target.value)}>
-              <option value="">全部</option>
-              {(managedKeys?.items ?? []).map((key) => (
-                <option
-                  key={key.id || String(key.apiKeyId ?? key.name)}
-                  value={key.apiKeyId !== null && key.apiKeyId !== undefined ? String(key.apiKeyId) : ""}
-                  disabled={key.apiKeyId === null || key.apiKeyId === undefined}
-                >
-                  {key.apiKeyId === null || key.apiKeyId === undefined ? `${key.name} (无可筛选 ID)` : key.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="field range-field animated-range-field" ref={usageRangePickerRef}>
-            <span>时间范围</span>
-            <div className="range-picker-shell">
-              <button
-                type="button"
-                className={`range-trigger ${usageRangePickerOpen ? "open" : ""}`}
-                onClick={toggleUsageRangePicker}
-              >
-                <CalendarDays size={16} />
-                <span>{usageRangeLabel}</span>
-                <ChevronDown size={16} className={`range-trigger-chevron ${usageRangePickerOpen ? "open" : ""}`} />
-              </button>
-              {usageRangePickerOpen && (
-                <div className="range-popover range-popover-visible">
-                  <div className="range-presets">
-                    {USAGE_RANGE_PRESETS.map((preset) => (
-                      <button
-                        key={preset.key}
-                        type="button"
-                        className={`range-preset ${usageRangePreset === preset.key ? "active" : ""}`}
-                        onClick={() => applyUsagePreset(preset.key)}
-                      >
-                        {preset.label}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="range-custom-grid">
-                    <label className="field">
-                      <span>开始日期</span>
-                      <input
-                        type="date"
-                        value={usageDraftRange.startDate}
-                        onChange={(event) =>
-                          setUsageDraftRange((prev) => ({ ...prev, startDate: event.target.value }))
-                        }
-                      />
-                    </label>
-                    <div className="range-arrow">
-                      <ChevronRight size={16} />
+        <details className="usage-filter-drawer">
+          <summary className="usage-filter-drawer-toggle">
+            <span className="usage-filter-drawer-toggle-copy">
+              <SlidersHorizontal size={16} aria-hidden="true" />
+              筛选条件
+            </span>
+            <ChevronDown size={16} className="usage-filter-drawer-toggle-chevron" aria-hidden="true" />
+          </summary>
+          <div className="usage-filter-drawer-panel">
+            <UsageFilterGroup title="时间与身份">
+              <div className="field range-field animated-range-field" ref={usageRangePickerRef}>
+                <span>时间范围</span>
+                <div className="range-picker-shell">
+                  <button
+                    type="button"
+                    className={`range-trigger ${usageRangePickerOpen ? "open" : ""}`}
+                    onClick={toggleUsageRangePicker}
+                  >
+                    <CalendarDays size={16} />
+                    <span>{usageRangeLabel}</span>
+                    <ChevronDown size={16} className={`range-trigger-chevron ${usageRangePickerOpen ? "open" : ""}`} />
+                  </button>
+                  {usageRangePickerOpen && (
+                    <div className="range-popover range-popover-visible">
+                      <div className="range-presets">
+                        {USAGE_RANGE_PRESETS.map((preset) => (
+                          <button
+                            key={preset.key}
+                            type="button"
+                            className={`range-preset ${usageRangePreset === preset.key ? "active" : ""}`}
+                            onClick={() => applyUsagePreset(preset.key)}
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="range-custom-grid">
+                        <label className="field">
+                          <span>开始日期</span>
+                          <input
+                            type="date"
+                            value={usageDraftRange.startDate}
+                            onChange={(event) =>
+                              setUsageDraftRange((prev) => ({ ...prev, startDate: event.target.value }))
+                            }
+                          />
+                        </label>
+                        <div className="range-arrow">
+                          <ChevronRight size={16} />
+                        </div>
+                        <label className="field">
+                          <span>结束日期</span>
+                          <input
+                            type="date"
+                            value={usageDraftRange.endDate}
+                            onChange={(event) =>
+                              setUsageDraftRange((prev) => ({ ...prev, endDate: event.target.value }))
+                            }
+                          />
+                        </label>
+                      </div>
+                      <div className="range-popover-footer">
+                        <button type="button" className="primary-button" onClick={() => void applyUsageRange()}>
+                          应用
+                        </button>
+                      </div>
                     </div>
-                    <label className="field">
-                      <span>结束日期</span>
-                      <input
-                        type="date"
-                        value={usageDraftRange.endDate}
-                        onChange={(event) =>
-                          setUsageDraftRange((prev) => ({ ...prev, endDate: event.target.value }))
-                        }
-                      />
-                    </label>
-                  </div>
-                  <div className="range-popover-footer">
-                    <button type="button" className="primary-button" onClick={() => void applyUsageRange()}>
-                      应用
-                    </button>
-                  </div>
+                  )}
                 </div>
-              )}
-            </div>
+              </div>
+              <UsageScalarFilterField
+                id="usage-filter-apiKeyId"
+                label="API Key ID"
+                value={usageFilterDraft.apiKeyId}
+                placeholder="输入或选择 ID"
+                facetField="apiKey"
+                facetPage={usageFacetPages.apiKey}
+                facetLoading={usageFacetLoadingFields.includes("apiKey")}
+                fallbackOptions={apiKeyFallbackOptions}
+                onChange={(value) => updateDraftField("apiKeyId", value)}
+                onLoadFacet={requestFacet}
+              />
+              {renderTextFilters(USAGE_IDENTITY_TEXT_FILTERS)}
+              <UsageScalarFilterField
+                id="usage-filter-upstreamUserId"
+                label="上游用户 ID"
+                value={usageFilterDraft.upstreamUserId}
+                placeholder="输入用户 ID"
+                onChange={(value) => updateDraftField("upstreamUserId", value)}
+              />
+              <UsageScalarFilterField
+                id="usage-filter-upstreamAccountId"
+                label="上游账号 ID"
+                value={usageFilterDraft.upstreamAccountId}
+                placeholder="输入账号 ID"
+                onChange={(value) => updateDraftField("upstreamAccountId", value)}
+              />
+            </UsageFilterGroup>
+
+            <UsageFilterGroup title="路由与归属">
+              <UsageScalarFilterField
+                id="usage-filter-groupId"
+                label="分组 ID"
+                value={usageFilterDraft.groupId}
+                placeholder="输入或选择 ID"
+                facetField="group"
+                facetPage={usageFacetPages.group}
+                facetLoading={usageFacetLoadingFields.includes("group")}
+                onChange={(value) => updateDraftField("groupId", value)}
+                onLoadFacet={requestFacet}
+              />
+              <UsageScalarFilterField
+                id="usage-filter-subscriptionId"
+                label="订阅 ID"
+                value={usageFilterDraft.subscriptionId}
+                placeholder="输入或选择 ID"
+                facetField="subscription"
+                facetPage={usageFacetPages.subscription}
+                facetLoading={usageFacetLoadingFields.includes("subscription")}
+                onChange={(value) => updateDraftField("subscriptionId", value)}
+                onLoadFacet={requestFacet}
+              />
+              {renderTextFilters(USAGE_ROUTING_TEXT_FILTERS)}
+            </UsageFilterGroup>
+
+            <UsageFilterGroup title="请求与计费">
+              <UsageScalarFilterField
+                id="usage-filter-billingType"
+                label="计费类型"
+                value={usageFilterDraft.billingType}
+                placeholder="输入或选择类型"
+                facetField="billingType"
+                facetPage={usageFacetPages.billingType}
+                facetLoading={usageFacetLoadingFields.includes("billingType")}
+                onChange={(value) => updateDraftField("billingType", value)}
+                onLoadFacet={requestFacet}
+              />
+              {renderTextFilters(USAGE_REQUEST_TEXT_FILTERS)}
+              <UsageTriStateField
+                label="流式请求"
+                value={usageFilterDraft.stream}
+                onChange={(value) => updateDraftField("stream", value)}
+              />
+              <UsageTriStateField
+                label="WebSocket 模式"
+                value={usageFilterDraft.openaiWsMode}
+                onChange={(value) => updateDraftField("openaiWsMode", value)}
+              />
+              <UsageTriStateField
+                label="长上下文计费"
+                value={usageFilterDraft.longContextBillingApplied}
+                onChange={(value) => updateDraftField("longContextBillingApplied", value)}
+              />
+              <UsageTriStateField
+                label="缓存 TTL 覆盖"
+                value={usageFilterDraft.cacheTtlOverridden}
+                onChange={(value) => updateDraftField("cacheTtlOverridden", value)}
+              />
+            </UsageFilterGroup>
+
+            <UsageFilterGroup title="Token 范围">
+              {renderRangeFilters(USAGE_TOKEN_RANGE_FILTERS)}
+            </UsageFilterGroup>
+
+            <UsageFilterGroup title="成本与性能">
+              {renderRangeFilters(USAGE_COST_RANGE_FILTERS)}
+              {renderRangeFilters(USAGE_PERFORMANCE_RANGE_FILTERS)}
+            </UsageFilterGroup>
+
+            <UsageFilterGroup title="客户端与媒体">
+              {renderTextFilters(USAGE_MEDIA_TEXT_FILTERS)}
+              <label className="field" htmlFor="usage-filter-userAgentQuery">
+                <span>User-Agent</span>
+                <input
+                  id="usage-filter-userAgentQuery"
+                  value={usageFilterDraft.userAgentQuery}
+                  placeholder="输入 Token 或前缀"
+                  onChange={(event) => updateDraftField("userAgentQuery", event.target.value)}
+                />
+              </label>
+            </UsageFilterGroup>
           </div>
-        </div>
+        </details>
         {usageStats && (
           <div className="metric-grid compact-metrics motion-stagger-grid">
             <MetricCard
@@ -598,7 +1094,7 @@ export function UsagePage({
               accent="sky"
               icon={<LayoutDashboard size={18} />}
               detailTitle="模型请求次数"
-              detail={<UsageModelRequestDetails models={scopedModelSummaries} loading={usageModelSummariesLoading} />}
+              detail={<UsageModelRequestDetails models={currentPageModelSummaries} loading={usageModelSummariesLoading} />}
               className="motion-stagger-item"
               animationKey={`usage-total-requests:${usageStats.totalRequests}`}
               style={{ ["--motion-order" as string]: 0 }}
@@ -610,7 +1106,7 @@ export function UsagePage({
               accent="emerald"
               icon={<MonitorDot size={18} />}
               detailTitle="输入 Token 明细"
-              detail={<UsageTokenMetricDetails models={scopedModelSummaries} field="input" loading={usageModelSummariesLoading} />}
+              detail={<UsageTokenMetricDetails models={currentPageModelSummaries} field="input" loading={usageModelSummariesLoading} />}
               className="motion-stagger-item"
               animationKey={`usage-input-tokens:${usageStats.totalInputTokens}`}
               style={{ ["--motion-order" as string]: 1 }}
@@ -622,7 +1118,7 @@ export function UsagePage({
               accent="indigo"
               icon={<MonitorDot size={18} />}
               detailTitle="输出 Token 明细"
-              detail={<UsageTokenMetricDetails models={scopedModelSummaries} field="output" loading={usageModelSummariesLoading} />}
+              detail={<UsageTokenMetricDetails models={currentPageModelSummaries} field="output" loading={usageModelSummariesLoading} />}
               className="motion-stagger-item"
               animationKey={`usage-output-tokens:${usageStats.totalOutputTokens}`}
               style={{ ["--motion-order" as string]: 2 }}
@@ -658,7 +1154,7 @@ export function UsagePage({
             />
           </div>
         )}
-        {scopedUsageRows.length > 0 && (
+        {hasUsageRows && (
           <div className="metric-grid usage-extreme-grid motion-stagger-grid">
             <MetricCard
               label="最长首 Token"
@@ -743,238 +1239,180 @@ export function UsagePage({
             />
           </div>
         )}
-        <div className="usage-table-toolbar">
-          <div className="usage-table-meta">
-            {usageRecords ? (
-              <>
-                <span>共 {usageRecords.total.toLocaleString()} 条</span>
-                <span>第 {usageRecords.page} / {usageRecords.pages} 页</span>
-              </>
-            ) : (
-              <span>当前没有可展示的用量记录</span>
-            )}
-          </div>
-          {usageRecords && usageRecords.items.length > 0 && (
-            <label className="field usage-page-size-field">
-              <span>每页条数</span>
-              <select value={usagePageSize} onChange={(event) => void handleUsagePageSizeChange(Number(event.target.value))}>
-                {usagePageSizeOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {option} 条
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-        </div>
-        <div className="usage-table-wrap">
-          <table className="usage-table">
-            <colgroup>
-              <col style={{ width: "9%" }} />
-              <col style={{ width: "8%" }} />
-              <col style={{ width: "6%" }} />
-              <col style={{ width: "10%" }} />
-              <col style={{ width: "5%" }} />
-              <col style={{ width: "7%" }} />
-              <col style={{ width: "13%" }} />
-              <col style={{ width: "9%" }} />
-              <col style={{ width: "6%" }} />
-              <col style={{ width: "6%" }} />
-              <col style={{ width: "8%" }} />
-              <col style={{ width: "13%" }} />
-            </colgroup>
-            <thead>
-              <tr>
-                <th>API 密钥</th>
-                <th>模型</th>
-                <th>推理强度</th>
-                <th>端点</th>
-                <th>类型</th>
-                <th>计费模式</th>
-                <th>TOKEN</th>
-                <th>费用</th>
-                <th>首 Token</th>
-                <th>耗时</th>
-                <th>时间</th>
-                <th>USER-AGENT</th>
-              </tr>
-            </thead>
-            <tbody>
-              {usageRecords?.items.map((row, index) => {
-                const billingPresentation = buildUsageBillingPresentation(row);
-                return (
-                <tr key={row.id} className="usage-row-motion" style={{ ["--motion-order" as string]: index }}>
-                  <td>
-                    <div className="usage-cell usage-cell-primary">
-                      <strong>{row.apiKeyName ?? "未知 Key"}</strong>
-                      <span>{row.apiKeyId ? `#${row.apiKeyId}` : "未返回 Key ID"}</span>
-                    </div>
-                  </td>
-                  <td>
-                    <div className="usage-cell usage-cell-primary">
-                      <strong>{row.model}</strong>
-                      <span>{row.platform ?? row.subscriptionName ?? "unknown"}</span>
-                    </div>
-                  </td>
-                  <td>
-                    {row.reasoningEffort ? (
-                      <span className={`status-pill neutral usage-pill usage-pill-reasoning ${getUsageReasoningTone(row.reasoningEffort)}`}>
-                        {formatUsageReasoningLabel(row.reasoningEffort)}
-                      </span>
-                    ) : (
-                      "-"
-                    )}
-                  </td>
-                  <td>
-                    <div className="usage-cell">
-                      <strong>{row.endpoint ?? "-"}</strong>
-                      <span>{row.upstreamEndpoint ?? "-"}</span>
-                    </div>
-                  </td>
-                  <td>
-                    <span className={`status-pill neutral usage-pill usage-pill-request ${getUsageRequestTypeTone(row)}`}>
-                      {formatUsageRequestTypeLabel(row)}
-                    </span>
-                  </td>
-                  <td>
-                    <div className="usage-cell usage-cell-primary">
-                      <strong>{billingPresentation.primary}</strong>
-                      {billingPresentation.secondary ? <span>{billingPresentation.secondary}</span> : null}
-                    </div>
-                  </td>
-                  <td>
-                    <UsageDetailPopover
-                      trigger={(
-                        <div className="usage-cell usage-cell-number usage-token-summary">
-                          <div className="usage-token-lines">
-                            <span>输入 {compact(row.inputTokens)}</span>
-                            <span>输出 {compact(row.outputTokens)}</span>
-                          </div>
-                          <div className="usage-token-lines usage-token-lines-secondary">
-                            <span>缓存输入 {compact(getCacheInputTokens(undefined, row.cacheCreationTokens, row.cacheReadTokens))}</span>
-                          </div>
-                          <strong>总和 {compact(row.totalTokens)}</strong>
-                        </div>
-                      )}
-                      title="Token 明细"
-                    >
-                      <DetailItem label="输入 Token" value={compact(row.inputTokens)} />
-                      <DetailItem label="输出 Token" value={compact(row.outputTokens)} />
-                      <DetailItem label="缓存写入 Token" value={compact(row.cacheCreationTokens ?? 0)} />
-                      <DetailItem label="缓存读取 Token" value={compact(row.cacheReadTokens ?? 0)} />
-                      <DetailItem label="总 Token" value={compact(row.totalTokens)} />
-                    </UsageDetailPopover>
-                  </td>
-                  <td>
-                    <UsageDetailPopover
-                      trigger={(
-                        <div className="usage-cell usage-cell-number">
-                          <strong>{formatUsd(row.actualCost)}</strong>
-                          <span>标准 {formatUsd(row.totalCost)}</span>
-                        </div>
-                      )}
-                      title="成本明细"
-                    >
-                      <UsageCostDetail row={row} />
-                    </UsageDetailPopover>
-                  </td>
-                  <td>{formatDurationSeconds(row.firstTokenMs, 2, "秒")}</td>
-                  <td>{formatDurationSeconds(row.durationMs, 2, "秒")}</td>
-                  <td>{formatDateTimeFull(row.createdAt)}</td>
-                  <td className="usage-user-agent" title={row.userAgent ?? "-"}>
-                    {row.userAgent ?? "-"}
-                  </td>
+        {hasUsageRows ? (
+          <div className="usage-table-wrap">
+            <table className="usage-table">
+              <colgroup>
+                <col style={{ width: "9%" }} />
+                <col style={{ width: "8%" }} />
+                <col style={{ width: "6%" }} />
+                <col style={{ width: "10%" }} />
+                <col style={{ width: "5%" }} />
+                <col style={{ width: "7%" }} />
+                <col style={{ width: "13%" }} />
+                <col style={{ width: "9%" }} />
+                <col style={{ width: "6%" }} />
+                <col style={{ width: "6%" }} />
+                <col style={{ width: "8%" }} />
+                <col style={{ width: "10%" }} />
+                <col style={{ width: "11%" }} />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>API 密钥</th>
+                  <th>模型</th>
+                  <th>推理强度</th>
+                  <th>端点</th>
+                  <th>类型</th>
+                  <th>计费模式</th>
+                  <th>TOKEN</th>
+                  <th>费用</th>
+                  <th>首 Token</th>
+                  <th>耗时</th>
+                  <th>时间</th>
+                  <th>IP</th>
+                  <th>USER-AGENT</th>
                 </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          {(!usageRecords || usageRecords.items.length === 0) && (
-            <EmptyState title="当前没有用量明细" detail="修改筛选后重新查询，或先刷新账号数据。" compact />
-          )}
-        </div>
-        {usageRecords && usageRecords.items.length > 0 && (
+              </thead>
+              <tbody>
+                {usageRecords?.items.map((row, index) => {
+                  const billingPresentation = buildUsageBillingPresentation(row);
+                  return (
+                    <tr key={row.id} className="usage-row-motion" style={{ ["--motion-order" as string]: index }}>
+                      <td>
+                        <div className="usage-cell usage-cell-primary">
+                          <strong>{row.apiKeyName ?? "未知 Key"}</strong>
+                          <span>{row.apiKeyId ? `#${row.apiKeyId}` : "未返回 Key ID"}</span>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="usage-cell usage-cell-primary">
+                          <strong>{row.model}</strong>
+                          <span>{row.platform ?? row.subscriptionName ?? "unknown"}</span>
+                        </div>
+                      </td>
+                      <td>
+                        {row.reasoningEffort ? (
+                          <span className={`status-pill neutral usage-pill usage-pill-reasoning ${getUsageReasoningTone(row.reasoningEffort)}`}>
+                            {formatUsageReasoningLabel(row.reasoningEffort)}
+                          </span>
+                        ) : (
+                          "-"
+                        )}
+                      </td>
+                      <td>
+                        <div className="usage-cell">
+                          <strong>{row.endpoint ?? "-"}</strong>
+                          <span>{row.upstreamEndpoint ?? "-"}</span>
+                        </div>
+                      </td>
+                      <td>
+                        <span className={`status-pill neutral usage-pill usage-pill-request ${getUsageRequestTypeTone(row)}`}>
+                          {formatUsageRequestTypeLabel(row)}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="usage-cell usage-cell-primary">
+                          <strong>{billingPresentation.primary}</strong>
+                          {billingPresentation.secondary ? <span>{billingPresentation.secondary}</span> : null}
+                        </div>
+                      </td>
+                      <td>
+                        <UsageDetailPopover
+                          trigger={(
+                            <div className="usage-cell usage-cell-number usage-token-summary">
+                              <div className="usage-token-lines">
+                                <span>输入 {compact(row.inputTokens)}</span>
+                                <span>输出 {compact(row.outputTokens)}</span>
+                              </div>
+                              <div className="usage-token-lines usage-token-lines-secondary">
+                                <span>缓存输入 {compact(getCacheInputTokens(undefined, row.cacheCreationTokens, row.cacheReadTokens))}</span>
+                              </div>
+                              <strong>总和 {compact(row.totalTokens)}</strong>
+                            </div>
+                          )}
+                          title="Token 明细"
+                        >
+                          <DetailItem label="输入 Token" value={compact(row.inputTokens)} />
+                          <DetailItem
+                            label="图片输入 Token"
+                            value={row.imageInputTokens === null || row.imageInputTokens === undefined
+                              ? "-"
+                              : compact(row.imageInputTokens)}
+                          />
+                          <DetailItem label="输出 Token" value={compact(row.outputTokens)} />
+                          <DetailItem label="缓存写入 Token" value={compact(row.cacheCreationTokens ?? 0)} />
+                          <DetailItem label="缓存读取 Token" value={compact(row.cacheReadTokens ?? 0)} />
+                          <DetailItem label="总 Token" value={compact(row.totalTokens)} />
+                        </UsageDetailPopover>
+                      </td>
+                      <td>
+                        <UsageDetailPopover
+                          trigger={(
+                            <div className="usage-cell usage-cell-number">
+                              <strong>{formatUsd(row.actualCost)}</strong>
+                              <span>标准 {formatUsd(row.totalCost)}</span>
+                            </div>
+                          )}
+                          title="成本明细"
+                        >
+                          <UsageCostDetail row={row} />
+                        </UsageDetailPopover>
+                      </td>
+                      <td>{formatDurationSeconds(row.firstTokenMs, 2, "秒")}</td>
+                      <td>{formatDurationSeconds(row.durationMs, 2, "秒")}</td>
+                      <td>{formatDateTimeFull(row.createdAt)}</td>
+                      <td className="usage-user-agent" title={row.ipAddress?.trim() || "-"}>
+                        {row.ipAddress?.trim() || "-"}
+                      </td>
+                      <td className="usage-user-agent" title={row.userAgent ?? "-"}>
+                        {row.userAgent ?? "-"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState title="当前没有用量明细" detail="修改筛选后重新查询，或先刷新账号数据。" compact />
+        )}
+        {!usageRecords && (
+          <div className="usage-table-toolbar">
+            <div className="usage-table-meta">{usageTableMeta}</div>
+          </div>
+        )}
+        {usageRecords && (
           <div className="usage-pagination">
-            <div className="usage-pagination-actions">
-              <button
-                className="ghost-button"
-                disabled={usageRecords.page <= 1}
-                onClick={() => void handleUsagePageChange(usageRecords.page - 1)}
-              >
-                上一页
-              </button>
-              <button
-                className="ghost-button"
-                disabled={usageRecords.page >= usageRecords.pages}
-                onClick={() => void handleUsagePageChange(usageRecords.page + 1)}
-              >
-                下一页
-              </button>
-            </div>
-            <div className="usage-pagination-pages" aria-label="用量页码">
-              {usagePaginationItems.map((item, index) =>
-                item === "ellipsis" ? (
-                  <span key={`ellipsis-${index}`} className="usage-pagination-ellipsis" aria-hidden="true">
-                    ...
-                  </span>
-                ) : (
-                  <button
-                    key={item}
-                    type="button"
-                    className={`usage-pagination-page ${item === usageRecords.page ? "active" : ""}`}
-                    aria-current={item === usageRecords.page ? "page" : undefined}
-                    onClick={() => void handleUsagePageChange(item)}
-                  >
-                    {item}
-                  </button>
-                )
-              )}
-            </div>
-            <div className="usage-pagination-jump">
-              <label className="field usage-page-jump-field">
-                <span>跳转页码</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={usageRecords.pages}
-                  defaultValue={usageRecords.page}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter") {
-                      return;
-                    }
-                    const value = Number((event.currentTarget as HTMLInputElement).value);
-                    if (!Number.isFinite(value)) {
-                      return;
-                    }
-                    void handleUsagePageChange(value);
-                  }}
-                />
-              </label>
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={(event) => {
-                  const container = (event.currentTarget as HTMLButtonElement).closest(".usage-pagination-jump");
-                  const input = container?.querySelector("input");
-                  const value = Number((input as HTMLInputElement | null)?.value);
-                  if (!Number.isFinite(value)) {
-                    return;
-                  }
-                  void handleUsagePageChange(value);
-                }}
-              >
-                跳转
-              </button>
+            <div className="usage-pagination-compact">
+              <div className="usage-table-meta">{usageTableMeta}</div>
+              {usagePageSizeControl}
+              <div className="usage-pagination-actions">
+                <button
+                  className="ghost-button"
+                  disabled={!usageRecords.hasPrevious || usageCursorDepth <= 0}
+                  onClick={() => void handleUsagePreviousPage()}
+                >
+                  上一页
+                </button>
+                <button
+                  className="ghost-button"
+                  disabled={!usageRecords.hasNext}
+                  onClick={() => void handleUsageNextPage()}
+                >
+                  下一页
+                </button>
+              </div>
             </div>
           </div>
         )}
       </SectionCard>
       <div className="usage-insights-grid">
         <UsageTrendSection
-          subtitle="对齐 dashboard/trend 接口的成本、请求与缓存表现"
+          subtitle="查看最近一段时间的用量和花费变化"
           points={usageTrend?.trend ?? []}
         />
-        <SectionCard title="模型分布" subtitle="对齐 dashboard/models 接口">
+        <SectionCard title="模型分布" subtitle="看看不同模型的使用次数和花费">
           <div className="table-list">
             {usageModels?.models.map((model, index) => (
               <div

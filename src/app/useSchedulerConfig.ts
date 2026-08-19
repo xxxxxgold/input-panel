@@ -4,8 +4,16 @@ import { getSchedulerConfig, updateSchedulerConfig } from "../features/scheduler
 import type { SchedulerConfigPayload } from "../types";
 
 const SCHEDULER_CONFIG_SAVE_DEBOUNCE_MS = 180;
-const DEFAULT_SCHEDULER_CONFIG: SchedulerConfigPayload = { enabled: true, intervalSeconds: 15 };
-const MIN_SCHEDULER_INTERVAL_SECONDS = 15;
+const DEFAULT_SCHEDULER_CONFIG: SchedulerConfigPayload = {
+  enabled: true,
+  intervalSeconds: 6,
+  subscriptionIntervalSeconds: 30
+};
+const MIN_SCHEDULER_INTERVAL_SECONDS = 4;
+const MAX_SCHEDULER_INTERVAL_SECONDS = 10;
+const DEFAULT_SUBSCRIPTION_INTERVAL_SECONDS = 30;
+const MIN_SUBSCRIPTION_INTERVAL_SECONDS = 15;
+const MAX_SUBSCRIPTION_INTERVAL_SECONDS = 300;
 
 type SchedulerConfigPendingSave = {
   value: SchedulerConfigPayload;
@@ -39,7 +47,7 @@ export function useSchedulerConfig() {
     setSchedulerConfigLoading(true);
     setSchedulerLoadError(null);
     try {
-      const config = await getSchedulerConfig();
+      const config = normalizeSchedulerConfig(await getSchedulerConfig());
       if (schedulerLoadRevisionRef.current !== revision) {
         return;
       }
@@ -98,7 +106,7 @@ export function useSchedulerConfig() {
     schedulerSaveRunningRef.current = true;
     setSchedulerConfigSaving(true);
     try {
-      const confirmed = await updateSchedulerConfig(pending.value);
+      const confirmed = normalizeSchedulerConfig(await updateSchedulerConfig(pending.value));
       setSchedulerConfirmedConfig(confirmed);
       if (!schedulerPendingSaveRef.current) {
         setSchedulerConfig(confirmed);
@@ -128,10 +136,7 @@ export function useSchedulerConfig() {
     value: SchedulerConfigPayload,
     options: { debounce?: boolean } = {}
   ) {
-    const normalized: SchedulerConfigPayload = {
-      enabled: value.enabled,
-      intervalSeconds: Math.max(MIN_SCHEDULER_INTERVAL_SECONDS, Math.round(value.intervalSeconds))
-    };
+    const normalized = normalizeSchedulerConfig(value);
     schedulerLoadRevisionRef.current += 1;
     schedulerSaveRevisionRef.current += 1;
     schedulerPendingSaveRef.current = {
@@ -179,5 +184,20 @@ export function useSchedulerConfig() {
     handleSchedulerConfigChange,
     retrySchedulerConfigSave,
     retrySchedulerConfigLoad
+  };
+}
+
+function normalizeSchedulerConfig(value: SchedulerConfigPayload): SchedulerConfigPayload {
+  const subscriptionInterval = value.subscriptionIntervalSeconds ?? DEFAULT_SUBSCRIPTION_INTERVAL_SECONDS;
+  return {
+    enabled: value.enabled,
+    intervalSeconds: Math.min(
+      MAX_SCHEDULER_INTERVAL_SECONDS,
+      Math.max(MIN_SCHEDULER_INTERVAL_SECONDS, Math.round(value.intervalSeconds))
+    ),
+    subscriptionIntervalSeconds: Math.min(
+      MAX_SUBSCRIPTION_INTERVAL_SECONDS,
+      Math.max(MIN_SUBSCRIPTION_INTERVAL_SECONDS, Math.round(subscriptionInterval))
+    )
   };
 }

@@ -1,6 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
-import { emitTo } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import {
   Suspense,
   lazy,
@@ -13,6 +13,7 @@ import {
 } from "react";
 
 import { AppShell } from "./AppShell";
+import { MainWindowOverviewStatsBridge } from "./MainWindowOverviewStatsBridge";
 import { FloatingRailDrawer, type FloatingRailDrawerPanelKey } from "./FloatingRailDrawer";
 import {
   MainWindowAlertInbox,
@@ -34,10 +35,19 @@ import {
 } from "./page-preload";
 import { buildWorkspaceSummaryTexts } from "./workspace-summary";
 import {
+  beginAccountSyncStatusLoad,
+  createAccountSyncStatusPresentation,
+  failAccountSyncStatusLoad,
+  replaceAccountSyncStatusSnapshot,
+  resolveAccountSyncStatusPresentation
+} from "./account-sync-status-presentation";
+import {
+  createWindowSelectionEventTracker,
   createWindowSelectionSyncQueue,
   readWindowSelection,
   resolveSelectedSiteAccountFallback,
   writeWindowSelection,
+  type WindowSelectionSyncPayload,
   type WindowSelectionState
 } from "./window-selection-sync";
 import {
@@ -52,6 +62,7 @@ import { createBoundedExecutor } from "../shared/lib/bounded-map";
 import { useStableCallback } from "../shared/hooks/useStableCallback";
 import { ScopedResourceCache } from "../shared/state/scoped-resource-cache";
 import {
+  AccountDataRefreshError,
   useAccountDataWorkspace,
   type AccountDataResourceKey,
   type AccountDataResourcePresentationByKey,
@@ -60,21 +71,31 @@ import {
 import { getAccountSyncStatus, syncAccountData } from "../features/accounts/client";
 import { listManagedKeys } from "../api";
 import { useSchedulerConfig } from "./useSchedulerConfig";
+import { useRuntimeCoordinationConfig } from "./useRuntimeCoordinationConfig";
+import { useSiteFailoverTransitionObserver } from "./useSiteFailoverTransitionObserver";
+import { useSystemSettingsSaveToasts } from "./useSystemSettingsSaveToasts";
+import { mergeAccountSyncStatusesIntoTasks } from "./sync-task-records";
 import { useAccountWorkspace } from "../features/accounts/useAccountWorkspace";
 import { clearRuntimeData } from "../features/maintenance/client";
 import { getOverviewDashboardStats, syncAllAccounts } from "../features/overview/client";
 import { useCodexRadarFastWorkspace } from "../features/overview/useCodexRadarFastWorkspace";
+import { useCodexRadarInsightsWorkspace } from "../features/overview/useCodexRadarInsightsWorkspace";
 import { useCodexRadarIntelligenceWorkspace } from "../features/overview/useCodexRadarIntelligenceWorkspace";
+import { buildCodexRadarTopFiveFromIntelligence } from "../features/overview/codex-radar-presentation";
 import { useCodexRadarWorkspace } from "../features/overview/useCodexRadarWorkspace";
 import {
+  buildOverviewAllAccountBalancesScopeKey,
   buildOverviewAllAccountKeysScopeKey,
   buildOverviewRealtimeScopeKey,
-  overviewScopeReferencesAccount
+  overviewScopeReferencesAccount,
+  type OverviewAccountBalanceRecord
 } from "../features/overview/overview-realtime-scope";
+import { getProfileRecord } from "../features/profile/client";
 import { useProfileWorkspace } from "../features/profile/useProfileWorkspace";
 import { usePublicEndpointsWorkspace } from "../features/public-endpoints/usePublicEndpointsWorkspace";
 import { useServiceStatusWorkspace } from "../features/service-status/useServiceStatusWorkspace";
 import {
+  buildNativeServiceStatusNotificationRecord,
   buildServiceStatusNotificationRecord,
   sendAppNotification
 } from "../features/service-status/notifications";
@@ -122,6 +143,8 @@ import type {
   OverviewPayload,
   OverviewModelPoint,
   PlatformPoint,
+  ServiceStatusMonitorNotificationEvent,
+  ServiceStatusMonitorSnapshotEvent,
   UsageInsightsPayload,
   UsageStatsRecord
 } from "../types";
@@ -145,9 +168,6 @@ const AnalyticsLab = lazyComponent(async () => ({
 }));
 const DesktopModeCloseDialog = lazyComponent(async () => ({
   default: (await import("./DesktopModeCloseDialog")).DesktopModeCloseDialog
-}));
-const KeyUsagePage = lazyComponent(async () => ({
-  default: (await import("../pages/KeyUsagePage")).KeyUsagePage
 }));
 const ProfileWorkspaceModal = lazyComponent(async () => ({
   default: (await import("../features/profile/components/ProfileWorkspaceModal")).ProfileWorkspaceModal
@@ -189,10 +209,12 @@ async function loadUsagePage() {
 type OverviewUsageStatsMode = "selected-account" | "all-accounts";
 const OVERVIEW_USAGE_STATS_MODE_KEY = "input-panel.overview-usage-stats-mode";
 const OVERVIEW_REALTIME_REFRESH_MIN_INTERVAL_MS = 30_000;
+const OVERVIEW_ALL_ACCOUNT_BALANCES_REFRESH_MIN_INTERVAL_MS = 30_000;
 const OVERVIEW_ALL_ACCOUNT_KEYS_REFRESH_MIN_INTERVAL_MS = 30_000;
 const OVERVIEW_UPSTREAM_REQUEST_CONCURRENCY = 3;
 const OVERVIEW_MANAGED_KEYS_PAGE_SIZE = 100;
 const OVERVIEW_REALTIME_CACHE_MAX_ENTRIES = 64;
+const OVERVIEW_ALL_ACCOUNT_BALANCES_CACHE_MAX_ENTRIES = 32;
 const OVERVIEW_ALL_ACCOUNT_KEYS_CACHE_MAX_ENTRIES = 32;
 
 type OverviewUsageStatsRow = {
@@ -330,8 +352,42 @@ const KEYS_PAGE_RESOURCES: readonly AccountDataResourceKey[] = [
 const SUBSCRIPTIONS_PAGE_RESOURCES: readonly AccountDataResourceKey[] = [
   "managedKeys",
   "subscriptions",
-  "subscriptionSummary"
+  "subscriptionSummary",
+  "subscriptionQuotaAlerts"
 ];
+
+type TargetedManualAccountRefreshPlan = {
+  reusedResources: AccountDataResources;
+  forcedResources: AccountDataResources;
+};
+
+type ManualReloadResource = WarmupResourceKey | "codexRadar" | null;
+
+const TARGETED_MANUAL_ACCOUNT_REFRESH_PLANS: Record<
+  "subscriptions" | "settings",
+  TargetedManualAccountRefreshPlan
+> = {
+  subscriptions: {
+    reusedResources: {
+      subscriptions: true,
+      subscriptionSummary: true,
+      subscriptionQuotaAlerts: true
+    },
+    forcedResources: {
+      managedKeys: true
+    }
+  },
+  settings: {
+    reusedResources: {
+      subscriptions: true,
+      subscriptionSummary: true
+    },
+    forcedResources: {
+      profileRecord: true,
+      managedKeys: true
+    }
+  }
+};
 
 type PagePreloadNavigator = Navigator & {
   connection?: {
@@ -351,13 +407,15 @@ function shouldRenderColdPageState(state: PageDataState, expectsSnapshot = false
 
 function resolveAccountPageDataState(
   resourcePresentation: AccountDataResourcePresentationByKey,
-  resources: readonly AccountDataResourceKey[]
+  primaryResources: readonly AccountDataResourceKey[],
+  diagnosticResources: readonly AccountDataResourceKey[] = primaryResources
 ): PageDataState {
-  const entries = resources.map((resource) => resourcePresentation[resource]);
+  const primaryEntries = primaryResources.map((resource) => resourcePresentation[resource]);
+  const diagnosticEntries = diagnosticResources.map((resource) => resourcePresentation[resource]);
   return {
-    hasSnapshot: entries.every((entry) => entry.hasSnapshot),
-    initialLoading: entries.some((entry) => entry.initialLoading),
-    lastError: entries.map((entry) => entry.lastError).find((error): error is string => error !== null) ?? null
+    hasSnapshot: primaryEntries.every((entry) => entry.hasSnapshot),
+    initialLoading: primaryEntries.some((entry) => entry.initialLoading),
+    lastError: diagnosticEntries.map((entry) => entry.lastError).find((error): error is string => error !== null) ?? null
   };
 }
 
@@ -368,7 +426,6 @@ function resolveWorkspaceHasRetainedSnapshot(input: {
   keys: PageDataState;
   subscriptions: PageDataState;
   usage: PageDataState;
-  keyUsage: PageDataState;
   serviceStatus: PageDataState;
 }) {
   if (input.nav === "codexRadar") {
@@ -385,9 +442,6 @@ function resolveWorkspaceHasRetainedSnapshot(input: {
   }
   if (input.nav === "usage" || input.nav === "modelStats") {
     return input.usage.hasSnapshot;
-  }
-  if (input.nav === "keyUsage") {
-    return input.keyUsage.hasSnapshot;
   }
   if (input.nav === "settings" || input.nav === "trends") {
     return input.account.hasSnapshot;
@@ -462,10 +516,37 @@ async function ignoreWindowMutation(task: Promise<unknown>) {
   }
 }
 
+const STARTUP_SPLASH_LEAVE_CLASS = "is-leaving";
+const STARTUP_SPLASH_LEAVE_MS = 220;
+const STARTUP_SPLASH_NATIVE_REVEAL_SETTLE_MS = 240;
+
+// React 主壳已完成可见交接后，幂等移除 HTML 阶段的启动遮罩。
+function dismissStartupSplash() {
+  if (typeof document === "undefined") {
+    return;
+  }
+
+  const splash = document.getElementById("startup-splash");
+  if (!splash || splash.dataset.dismissed === "true") {
+    return;
+  }
+
+  splash.dataset.dismissed = "true";
+  const removeSplash = () => {
+    splash.removeEventListener("transitionend", removeSplash);
+    splash.remove();
+  };
+  splash.addEventListener("transitionend", removeSplash);
+  splash.classList.add(STARTUP_SPLASH_LEAVE_CLASS);
+  window.setTimeout(removeSplash, STARTUP_SPLASH_LEAVE_MS);
+}
+
 export function MainWindowApp() {
   const [alertInboxOpen, setAlertInboxOpen] = useState(false);
   const [profileWorkspaceRequested, setProfileWorkspaceRequested] = useState(false);
-  const [accountSyncStatuses, setAccountSyncStatuses] = useState<AccountSyncStatusRecord[]>([]);
+  const [accountSyncStatusPresentation, setAccountSyncStatusPresentation] = useState(() =>
+    createAccountSyncStatusPresentation(null)
+  );
   const [syncTaskCenterOpen, setSyncTaskCenterOpen] = useState(false);
   const [syncTaskRecords, setSyncTaskRecords] = useState<SyncTaskCenterTask[]>([]);
   const [topbarReloadRefreshing, setTopbarReloadRefreshing] = useState(false);
@@ -495,6 +576,7 @@ export function MainWindowApp() {
   // 桌面窗口首帧可能在焦点事件抵达前完成总览快照，允许该快照水合一次。
   const overviewInitialHydrationPendingRef = useRef(true);
   const overviewRealtimeCacheRef = useRef<ScopedResourceCache<OverviewRealtimeSnapshot> | null>(null);
+  const overviewAllAccountBalancesCacheRef = useRef<ScopedResourceCache<OverviewAccountBalanceRecord[]> | null>(null);
   const overviewAllAccountKeysCacheRef = useRef<ScopedResourceCache<OverviewManagedKeyRecord[]> | null>(null);
   const [, setOverviewScopeCacheRevision] = useState(0);
   if (!overviewRealtimeCacheRef.current) {
@@ -507,7 +589,13 @@ export function MainWindowApp() {
       maxEntries: OVERVIEW_ALL_ACCOUNT_KEYS_CACHE_MAX_ENTRIES
     });
   }
+  if (!overviewAllAccountBalancesCacheRef.current) {
+    overviewAllAccountBalancesCacheRef.current = new ScopedResourceCache<OverviewAccountBalanceRecord[]>({
+      maxEntries: OVERVIEW_ALL_ACCOUNT_BALANCES_CACHE_MAX_ENTRIES
+    });
+  }
   const overviewRealtimeCache = overviewRealtimeCacheRef.current;
+  const overviewAllAccountBalancesCache = overviewAllAccountBalancesCacheRef.current;
   const overviewAllAccountKeysCache = overviewAllAccountKeysCacheRef.current;
   const overviewUpstreamRequestExecutor = useMemo(
     () => createBoundedExecutor(OVERVIEW_UPSTREAM_REQUEST_CONCURRENCY),
@@ -516,6 +604,7 @@ export function MainWindowApp() {
   const invalidatePublicEndpointsSiteRef = useRef<(siteId: string) => void>(() => {});
   const invalidateUsageAccountRef = useRef<(accountId: string) => void>(() => {});
   const topbarReloadRunningRef = useRef(false);
+  const startupRevealCompletedRef = useRef(false);
   const pagePreloadCoordinatorRef = useRef<Promise<PagePreloadCoordinator> | null>(null);
   const pagePreloadNavRef = useRef<NavKey | null>(null);
   const pagePreloadIntentTimerRef = useRef<number | null>(null);
@@ -528,6 +617,11 @@ export function MainWindowApp() {
   const selectedSiteId = useMonitorStore(selectSelectedSiteId);
   const selectedAccountId = useMonitorStore(selectSelectedAccountId);
   const selectionSyncNonce = useMonitorStore(selectSelectionSyncNonce);
+  const currentAccountSyncStatusPresentation = resolveAccountSyncStatusPresentation(
+    accountSyncStatusPresentation,
+    selectedAccountId
+  );
+  const accountSyncStatuses = currentAccountSyncStatusPresentation.statuses;
   const {
     setNav,
     setTheme,
@@ -542,31 +636,46 @@ export function MainWindowApp() {
     replaceOverview,
     evictOverviewEntities
   } = useMonitorStore.getState();
+  useSiteFailoverTransitionObserver({
+    pageVisible,
+    windowFocused,
+    pushToast
+  });
   const [clearRuntimeDataLoading, setClearRuntimeDataLoading] = useState(false);
+  const [floatingNotificationSoundAction, setFloatingNotificationSoundAction] = useState<
+    "select" | "preview" | "restore" | null
+  >(null);
   const [selectionBootstrapDone, setSelectionBootstrapDone] = useState(false);
+  const [mainWindowChromeReady, setMainWindowChromeReady] = useState(false);
   const lastPersistedSelectionKeyRef = useRef<string | null>(null);
   const lastQueuedSelectionKeyRef = useRef<string | null>(null);
   const selectionSyncQueueRef = useRef<ReturnType<typeof createWindowSelectionSyncQueue> | null>(null);
+  const selectionEventTrackerRef = useRef<ReturnType<typeof createWindowSelectionEventTracker> | null>(null);
+  selectionEventTrackerRef.current ??= createWindowSelectionEventTracker();
   useEffect(() => {
     selectedAccountIdRef.current = selectedAccountId;
   }, [selectedAccountId]);
   useEffect(() => {
     if (!isTauriRuntime()) {
+      setMainWindowChromeReady(true);
       return;
     }
 
     document.documentElement.classList.add("desktop-main-root");
     document.body.classList.add("desktop-main-window-body");
     document.getElementById("root")?.classList.add("desktop-main-window-root");
+    let disposed = false;
 
     void (async () => {
       const appWindow = getCurrentWindow();
       await ignoreWindowMutation(appWindow.setDecorations(false));
       await ignoreWindowMutation(appWindow.setShadow(false));
-      // 首帧就绪信号：Rust 侧据此显示主窗口（超时 3s 有兜底，失败可忽略）。
-      await invoke("frontend_ready").catch(() => undefined);
+      if (!disposed) {
+        setMainWindowChromeReady(true);
+      }
     })();
     return () => {
+      disposed = true;
       document.documentElement.classList.remove("desktop-main-root");
       document.body.classList.remove("desktop-main-window-body");
       document.getElementById("root")?.classList.remove("desktop-main-window-root");
@@ -580,7 +689,6 @@ export function MainWindowApp() {
   prefsRef.current = desktopUi.prefs;
   const {
     schedulerConfig,
-    schedulerConfirmedConfig,
     schedulerConfigLoading,
     schedulerConfigSaving,
     schedulerLoadError,
@@ -589,10 +697,31 @@ export function MainWindowApp() {
     retrySchedulerConfigSave,
     retrySchedulerConfigLoad
   } = useSchedulerConfig();
+  const {
+    runtimeCoordinationConfig,
+    runtimeCoordinationConfigLoading,
+    runtimeCoordinationConfigSaving,
+    runtimeCoordinationLoadError,
+    runtimeCoordinationSaveError,
+    handleRuntimeCoordinationConfigChange,
+    retryRuntimeCoordinationConfigSave,
+    retryRuntimeCoordinationConfigLoad
+  } = useRuntimeCoordinationConfig();
+  useSystemSettingsSaveToasts({
+    desktopUiSaveState: desktopUi.saveState,
+    retryDesktopUiPrefs: desktopUi.retryFailedPrefs,
+    schedulerConfigSaving,
+    schedulerSaveError,
+    retrySchedulerConfigSave,
+    runtimeCoordinationConfigSaving,
+    runtimeCoordinationSaveError,
+    retryRuntimeCoordinationConfigSave
+  });
   const sites = overview?.sites ?? [];
   const accounts = overview?.accounts ?? [];
   const hasAnyAccount = accounts.length > 0;
   const serviceStatusAvailable = true;
+  const nativeServiceStatusMonitorAvailable = isTauriRuntime();
   const serviceStatusAutoRefreshPolicy = resolveServiceStatusAutoRefreshPolicy(desktopUi.prefs);
   const serviceStatusRefreshIntervalSeconds = normalizeAutoRefreshIntervalSeconds(
     desktopUi.prefs.autoRefreshIntervalSeconds
@@ -616,8 +745,8 @@ export function MainWindowApp() {
       || nav === "usage"
       || nav === "modelStats"
       || nav === "subscriptions"
-      || nav === "keyUsage"
       || nav === "trends"
+      || nav === "settings"
         ? true
         : overviewVisible
           ? true
@@ -634,7 +763,8 @@ export function MainWindowApp() {
           ? "deferred"
           : false,
     platformQuotas: profileWorkspaceRequested || nav === "trends",
-    subscriptionSwitchRules: nav === "keys"
+    subscriptionSwitchRules: nav === "keys",
+    subscriptionQuotaAlerts: nav === "subscriptions"
   };
   const keysEnabled = Object.values(keysResources).some(Boolean);
   const accountDataWorkspace = useAccountDataWorkspace({
@@ -652,6 +782,7 @@ export function MainWindowApp() {
       Array.from(removedAccountIds).some((accountId) => overviewScopeReferencesAccount(key, accountId))
     );
     overviewRealtimeCache.invalidateWhere(referencesRemovedAccount);
+    overviewAllAccountBalancesCache.invalidateWhere(referencesRemovedAccount);
     overviewAllAccountKeysCache.invalidateWhere(referencesRemovedAccount);
   };
   const accountWorkspace = useAccountWorkspace({
@@ -680,13 +811,19 @@ export function MainWindowApp() {
     },
     refreshSelectedAccountSync,
     loadOverview: async (options) => {
-      await loadOverview(options);
+      await loadOverview({
+        ...(options ?? {}),
+        source: "shell"
+      });
     },
     onSyncStatusChange: (accountId, statuses) => {
       if (selectedAccountIdRef.current === accountId) {
-        setAccountSyncStatuses(statuses);
+        setAccountSyncStatusPresentation((previous) =>
+          replaceAccountSyncStatusSnapshot(previous, accountId, statuses)
+        );
       }
     },
+    onSaveFeedback: pushToast,
     setBusyText,
     setError
   });
@@ -697,21 +834,23 @@ export function MainWindowApp() {
     loadOverview: async () => {
       await loadOverview();
     },
+    onSaveFeedback: pushToast,
     setBusyText,
     setError
   });
   const topbarServiceStatusWorkspace = useServiceStatusWorkspace({
     setError,
     enabled: serviceStatusAvailable,
-    autoRefresh: false,
-    notifyStatusTransition: (event) => {
+    autoRefresh: !nativeServiceStatusMonitorAvailable && serviceStatusAutoRefreshPolicy.enabled,
+    notifyInitialStatus: !nativeServiceStatusMonitorAvailable && serviceStatusAutoRefreshPolicy.enabled,
+    notifyStatusTransition: nativeServiceStatusMonitorAvailable ? undefined : (event) => {
       const record = buildServiceStatusNotificationRecord(event);
       pushAppNotification(record);
       void sendAppNotification(record);
       const toastPayload = {
-        tone: event.kind === "down" ? "error" : "success",
+        tone: event.severity === "critical" ? "error" : "success",
         message: event.detail,
-        durationMs: event.kind === "down" ? ERROR_TOAST_DURATION_MS : INFO_TOAST_DURATION_MS
+        durationMs: event.severity === "critical" ? ERROR_TOAST_DURATION_MS : INFO_TOAST_DURATION_MS
       } as const;
       pushToast(toastPayload);
       if (isTauriRuntime()) {
@@ -720,6 +859,48 @@ export function MainWindowApp() {
     },
     refreshIntervalMs: serviceStatusRefreshIntervalSeconds * 1000
   });
+  const topbarServiceStatusWorkspaceRef = useRef(topbarServiceStatusWorkspace);
+  topbarServiceStatusWorkspaceRef.current = topbarServiceStatusWorkspace;
+  useEffect(() => {
+    if (!nativeServiceStatusMonitorAvailable) {
+      return;
+    }
+
+    let disposed = false;
+    const unlistenCallbacks: Array<() => void> = [];
+    void Promise.all([
+      listen<ServiceStatusMonitorSnapshotEvent>("service-status-monitor-snapshot", ({ payload }) => {
+        topbarServiceStatusWorkspaceRef.current.acceptExternalSnapshot(
+          payload.status,
+          payload.syncedAtEpochMs
+        );
+      }),
+      listen<ServiceStatusMonitorNotificationEvent>("service-status-monitor-notification", ({ payload }) => {
+        const record = buildNativeServiceStatusNotificationRecord(payload);
+        pushAppNotification(record);
+        pushToast({
+          tone: payload.severity === "critical" ? "error" : "success",
+          message: payload.detail,
+          durationMs: payload.severity === "critical"
+            ? ERROR_TOAST_DURATION_MS
+            : INFO_TOAST_DURATION_MS
+        });
+      })
+    ]).then((callbacks) => {
+      if (disposed) {
+        callbacks.forEach((unlisten) => unlisten());
+        return;
+      }
+      unlistenCallbacks.push(...callbacks);
+    }).catch((cause) => {
+      console.error("注册原生模型状态监控事件失败", cause);
+    });
+
+    return () => {
+      disposed = true;
+      unlistenCallbacks.forEach((unlisten) => unlisten());
+    };
+  }, [nativeServiceStatusMonitorAvailable, pushAppNotification, pushToast]);
   const codexRadarWorkspace = useCodexRadarWorkspace();
   const codexRadarIntelligenceWorkspace = useCodexRadarIntelligenceWorkspace({
     enabled: nav === "codexRadar"
@@ -727,25 +908,44 @@ export function MainWindowApp() {
   const codexRadarFastWorkspace = useCodexRadarFastWorkspace({
     enabled: nav === "codexRadar"
   });
+  const codexRadarInsightsWorkspace = useCodexRadarInsightsWorkspace({
+    enabled: nav === "codexRadar"
+  });
+  const codexRadarUsesIntelligenceSnapshot = nav === "codexRadar";
+  const codexRadarIntelligenceTopFive = useMemo(
+    () =>
+      codexRadarIntelligenceWorkspace.payload
+        ? buildCodexRadarTopFiveFromIntelligence(codexRadarIntelligenceWorkspace.payload)
+        : null,
+    [codexRadarIntelligenceWorkspace.payload]
+  );
+  const codexRadarDisplayPayload = codexRadarUsesIntelligenceSnapshot
+    ? codexRadarIntelligenceTopFive
+    : codexRadarWorkspace.payload;
+  const codexRadarDisplayPresentation = codexRadarUsesIntelligenceSnapshot
+    ? codexRadarIntelligenceWorkspace.presentation
+    : codexRadarWorkspace.presentation;
+  const codexRadarDisplayLoading = codexRadarUsesIntelligenceSnapshot
+    ? codexRadarIntelligenceWorkspace.loading
+    : codexRadarWorkspace.loading;
+  const codexRadarDisplayLastError = codexRadarUsesIntelligenceSnapshot
+    ? codexRadarIntelligenceWorkspace.lastError
+    : codexRadarWorkspace.lastError;
+  const refreshCodexRadarDisplay = codexRadarUsesIntelligenceSnapshot
+    ? codexRadarIntelligenceWorkspace.refresh
+    : codexRadarWorkspace.refresh;
+  const refreshCodexRadarForManualReload = useStableCallback(async () => {
+    const refreshers = new Set([
+      refreshCodexRadarDisplay,
+      codexRadarIntelligenceWorkspace.refresh,
+      codexRadarInsightsWorkspace.refresh,
+      codexRadarFastWorkspace.refresh
+    ]);
+    await Promise.all([...refreshers].map((refresh) => refresh()));
+  });
   const {
     usageApiKeyFilter,
     setUsageApiKeyFilter,
-    usageModelFilter,
-    setUsageModelFilter,
-    usageGroupFilter,
-    setUsageGroupFilter,
-    usageSubscriptionFilter,
-    setUsageSubscriptionFilter,
-    usagePlatformFilter,
-    setUsagePlatformFilter,
-    usageReasoningEffortFilter,
-    setUsageReasoningEffortFilter,
-    usageRequestTypeFilter,
-    setUsageRequestTypeFilter,
-    usageBillingTypeFilter,
-    setUsageBillingTypeFilter,
-    usageBillingModeFilter,
-    setUsageBillingModeFilter,
     usageRangePickerRef,
     usageRangePickerOpen,
     toggleUsageRangePicker,
@@ -755,24 +955,30 @@ export function MainWindowApp() {
     usageDraftRange,
     setUsageDraftRange,
     applyUsageRange,
+    usageFilterDraft,
+    setUsageFilterDraft,
+    usageFacetPages,
+    usageFacetLoadingFields,
+    loadUsageFacet,
+    handleUsageFilterReset,
     usageStats,
     usageExtremes,
     usageModelSummaries,
     usageModelSummariesLoading,
+    usageModelSummariesInitialLoading,
     usageRecords,
-    usageScopeRows,
-    usageScopeMeta,
+    usageAnalytics,
     usagePageSize,
     usagePageSizeOptions,
     handleUsageSearch,
-    handleUsagePageChange,
+    handleUsagePreviousPage,
+    handleUsageNextPage,
     handleUsagePageSizeChange,
+    usageCursorDepth,
     usageTrend,
     usageModels,
     keyUsageRows,
     keyUsageKeyId,
-    keyUsagePresentation,
-    retryKeyUsage,
     invalidateAccount: invalidateUsageAccount,
     presentation,
     loadKeyUsage,
@@ -797,10 +1003,12 @@ export function MainWindowApp() {
   const accountPageDataState: PageDataState = accountDataWorkspace.presentation;
   const keysPageDataState = resolveAccountPageDataState(
     accountDataWorkspace.resourcePresentation,
+    ["managedKeys"],
     KEYS_PAGE_RESOURCES
   );
   const subscriptionsPageDataState = resolveAccountPageDataState(
     accountDataWorkspace.resourcePresentation,
+    ["subscriptions"],
     SUBSCRIPTIONS_PAGE_RESOURCES
   );
   const serviceStatusPageDataState: PageDataState = {
@@ -815,7 +1023,6 @@ export function MainWindowApp() {
     keys: keysPageDataState,
     subscriptions: subscriptionsPageDataState,
     usage: presentation,
-    keyUsage: keyUsagePresentation,
     serviceStatus: serviceStatusPageDataState
   });
   const workspaceFrameLoading = nav === "codexRadar"
@@ -836,8 +1043,68 @@ export function MainWindowApp() {
   }, [desktopUi.prefs.theme, setTheme, theme]);
 
   useEffect(() => {
+    if (desktopUi.loading) {
+      return;
+    }
     applyThemeToDocument(theme);
-  }, [theme]);
+  }, [desktopUi.loading, theme]);
+
+  useEffect(() => {
+    if (
+      desktopUi.loading
+      || !mainWindowChromeReady
+      || theme !== normalizeThemeId(desktopUi.prefs.theme)
+    ) {
+      return;
+    }
+    if (startupRevealCompletedRef.current) {
+      return;
+    }
+
+    let disposed = false;
+    let firstPaintFrame: number | null = null;
+    let secondPaintFrame: number | null = null;
+    let splashDismissTimer: number | null = null;
+
+    firstPaintFrame = window.requestAnimationFrame(() => {
+      secondPaintFrame = window.requestAnimationFrame(() => {
+        if (disposed) {
+          return;
+        }
+
+        startupRevealCompletedRef.current = true;
+        if (!isTauriRuntime()) {
+          dismissStartupSplash();
+          return;
+        }
+
+        // 等主壳完成连续两帧可见绘制后再显示原生窗口；Rust 侧仍保留 3s 兜底。
+        void invoke("frontend_ready")
+          .catch(() => undefined)
+          .finally(() => {
+            if (!disposed) {
+              splashDismissTimer = window.setTimeout(
+                dismissStartupSplash,
+                STARTUP_SPLASH_NATIVE_REVEAL_SETTLE_MS
+              );
+            }
+          });
+      });
+    });
+
+    return () => {
+      disposed = true;
+      if (firstPaintFrame !== null) {
+        window.cancelAnimationFrame(firstPaintFrame);
+      }
+      if (secondPaintFrame !== null) {
+        window.cancelAnimationFrame(secondPaintFrame);
+      }
+      if (splashDismissTimer !== null) {
+        window.clearTimeout(splashDismissTimer);
+      }
+    };
+  }, [desktopUi.loading, desktopUi.prefs.theme, mainWindowChromeReady, theme]);
 
   useEffect(() => {
     if (typeof document === "undefined") {
@@ -867,6 +1134,7 @@ export function MainWindowApp() {
     let cancelled = false;
 
     const hydrateSelectionAndLoadOverview = async () => {
+      const hydrationEventVersion = selectionEventTrackerRef.current?.captureVersion() ?? 0;
       const browserSelection = !isTauriRuntime() ? readWindowSelection() : {
         selectedSiteId: null,
         selectedAccountId: null
@@ -879,7 +1147,10 @@ export function MainWindowApp() {
 
       try {
         const persistedSelection = await getPersistedWindowSelection();
-        if (!cancelled) {
+        if (
+          !cancelled
+          && selectionEventTrackerRef.current?.isCurrent(hydrationEventVersion)
+        ) {
           const mergedSelection = {
             selectedSiteId: persistedSelection.selectedSiteId ?? browserSelection.selectedSiteId,
             selectedAccountId: persistedSelection.selectedAccountId ?? browserSelection.selectedAccountId
@@ -893,7 +1164,10 @@ export function MainWindowApp() {
         }
       } catch {
         // 恢复失败时继续使用浏览器本地缓存或后续总览默认选择。
-        if (!cancelled) {
+        if (
+          !cancelled
+          && selectionEventTrackerRef.current?.isCurrent(hydrationEventVersion)
+        ) {
           lastPersistedSelectionKeyRef.current = JSON.stringify({
             ...browserSelection,
             selectionSyncNonce: 0
@@ -944,6 +1218,37 @@ export function MainWindowApp() {
       unlisten?.();
     };
   }, [setNav]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void getCurrentWindow().listen<WindowSelectionSyncPayload>(
+      "floating-panel-selection-sync",
+      (event) => {
+        if (
+          disposed
+          || !selectionEventTrackerRef.current?.acceptRevision(event.payload.revision)
+        ) {
+          return;
+        }
+        setSelectedSiteId(event.payload.selectedSiteId);
+        setSelectedAccountId(event.payload.selectedAccountId);
+      }
+    ).then((cleanup) => {
+      if (disposed) {
+        cleanup();
+        return;
+      }
+      unlisten = cleanup;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [setSelectedAccountId, setSelectedSiteId]);
 
   useEffect(() => {
     if (!selectionBootstrapDone) {
@@ -1022,7 +1327,7 @@ export function MainWindowApp() {
       return;
     }
     setProfileWorkspaceRequested(false);
-    setAccountSyncStatuses([]);
+    setAccountSyncStatusPresentation(createAccountSyncStatusPresentation(null));
   }, [selectedAccountId]);
 
   const refreshedFullSyncRunRef = useRef<string | null>(null);
@@ -1035,13 +1340,19 @@ export function MainWindowApp() {
     let timerId: number | null = null;
     let retriedInitialIdle = false;
 
+    setAccountSyncStatusPresentation((previous) =>
+      beginAccountSyncStatusLoad(previous, selectedAccountId)
+    );
+
     const loadSyncStatus = async () => {
       try {
         const payload = await getAccountSyncStatus(selectedAccountId);
         if (cancelled) {
           return;
         }
-        setAccountSyncStatuses(payload.statuses);
+        setAccountSyncStatusPresentation((previous) =>
+          replaceAccountSyncStatusSnapshot(previous, selectedAccountId, payload.statuses)
+        );
         const isRunning = payload.statuses.some((item) => item.state === "running");
         if (isRunning) {
           timerId = window.setTimeout(() => {
@@ -1053,9 +1364,14 @@ export function MainWindowApp() {
             void loadSyncStatus();
           }, 350);
         }
-      } catch {
+      } catch (cause) {
         if (!cancelled) {
-          setAccountSyncStatuses([]);
+          const error = cause instanceof Error && cause.message.trim()
+            ? cause.message
+            : "读取同步状态失败，请稍后重试";
+          setAccountSyncStatusPresentation((previous) =>
+            failAccountSyncStatusLoad(previous, selectedAccountId, error)
+          );
         }
       }
     };
@@ -1092,10 +1408,17 @@ export function MainWindowApp() {
       return;
     }
     refreshedFullSyncRunRef.current = runKey;
-    invalidateUsageAccount(selectedAccountId);
+    const refreshAccountDataAfterSync = accountDataWorkspace.refreshAccountData({
+      force: false,
+      mode: "background"
+    }).catch((cause) => {
+      if (!(cause instanceof AccountDataRefreshError)) {
+        throw cause;
+      }
+    });
     void Promise.all([
       loadOverview({ source: "shell" }),
-      accountDataWorkspace.refreshAccountData({ force: true }),
+      refreshAccountDataAfterSync,
       refreshUsageWorkspaceSilently({ mode: "background" })
     ]).catch((cause) => {
       if (selectedAccountIdRef.current === selectedAccountId) {
@@ -1105,7 +1428,6 @@ export function MainWindowApp() {
   }, [
     accountDataWorkspace,
     accountSyncStatuses,
-    invalidateUsageAccount,
     loadOverview,
     nav,
     refreshUsageWorkspaceSilently,
@@ -1129,50 +1451,13 @@ export function MainWindowApp() {
     }
 
     const previousStatuses = previousAccountSyncStatusesRef.current;
-    const now = new Date().toISOString();
-    const upsertTask = (
-      tasks: SyncTaskCenterTask[],
-      task: SyncTaskCenterTask
-    ) => [
-      task,
-      ...tasks.filter((existing) => existing.id !== task.id)
-    ].slice(0, 12);
-
-    setSyncTaskRecords((previousTasks) => {
-      let nextTasks = previousTasks;
-      for (const status of accountSyncStatuses) {
-        if (status.accountId !== selectedAccount.id || status.state === "idle") {
-          continue;
-        }
-        const state = status.state === "running" || status.state === "failed"
-          ? status.state
-          : "succeeded";
-        const existing = previousTasks.find((task) => task.id === `${status.accountId}:${status.scope}`);
-        const wasRunning = previousStatuses.some(
-          (previousStatus) => previousStatus.accountId === status.accountId
-            && previousStatus.scope === status.scope
-            && previousStatus.state === "running"
-        );
-        const isCachedUsageSnapshot = accountSyncStatuses.length === 1 && status.scope === "usage";
-        if (state === "succeeded" && !existing && !wasRunning && isCachedUsageSnapshot) {
-          continue;
-        }
-        nextTasks = upsertTask(nextTasks, {
-          id: `${status.accountId}:${status.scope}`,
-          accountId: status.accountId,
-          accountLabel: selectedAccount.label || "未命名账号",
-          scope: status.scope,
-          state,
-          startedAt: status.lastAttemptAt ?? existing?.startedAt ?? now,
-          finishedAt: state === "running" ? null : status.lastSuccessAt ?? now,
-          itemCount: status.itemCount,
-          error: status.lastError,
-          progress: status.progress
-        });
-      }
-
-      return nextTasks;
-    });
+    setSyncTaskRecords((previousTasks) => mergeAccountSyncStatusesIntoTasks({
+      previousTasks,
+      previousStatuses,
+      statuses: accountSyncStatuses,
+      accountId: selectedAccount.id,
+      accountLabel: selectedAccount.label || "未命名账号"
+    }));
 
     if (accountSyncStatuses.some((status) => status.state === "running")) {
       setSyncTaskCenterOpen(true);
@@ -1200,7 +1485,7 @@ export function MainWindowApp() {
     accountDataWorkspace.profileRecord?.balance ?? currentAccountCache?.balance ?? null;
   const selectedAccountApiKeyStats = accountDataWorkspace.managedKeys
     ? {
-        totalApiKeys: accountDataWorkspace.managedKeys.items.length,
+        totalApiKeys: accountDataWorkspace.managedKeys.total,
         activeApiKeys: accountDataWorkspace.managedKeys.items.filter((item) => item.status === "active").length
       }
     : null;
@@ -1220,8 +1505,14 @@ export function MainWindowApp() {
   const overviewAllAccountKeysScopeKey = overviewUsageStatsMode === "all-accounts"
     ? buildOverviewAllAccountKeysScopeKey(readyOverviewAccountIds)
     : null;
+  const overviewAllAccountBalancesScopeKey = overviewUsageStatsMode === "all-accounts"
+    ? buildOverviewAllAccountBalancesScopeKey(readyOverviewAccountIds)
+    : null;
   const overviewRealtimeEntry = overviewRealtimeScopeKey
     ? overviewRealtimeCache.peek(overviewRealtimeScopeKey)
+    : null;
+  const overviewAllAccountBalancesEntry = overviewAllAccountBalancesScopeKey
+    ? overviewAllAccountBalancesCache.peek(overviewAllAccountBalancesScopeKey)
     : null;
   const overviewAllAccountKeysEntry = overviewAllAccountKeysScopeKey
     ? overviewAllAccountKeysCache.peek(overviewAllAccountKeysScopeKey)
@@ -1234,6 +1525,8 @@ export function MainWindowApp() {
   const overviewDashboardModelSeries = overviewRealtimeSnapshot.modelSeries;
   const overviewUsageInsights = overviewRealtimeSnapshot.usageInsights;
   const overviewUsageStatsRows = overviewRealtimeSnapshot.usageStatsRows;
+  const overviewAllAccountBalances = overviewAllAccountBalancesEntry?.data ?? null;
+  const overviewAllAccountBalancesLoading = overviewAllAccountBalancesEntry?.initialLoading ?? false;
   const overviewAllAccountKeys = overviewAllAccountKeysEntry?.data ?? null;
   const overviewAllAccountKeysLoading = overviewAllAccountKeysEntry?.initialLoading ?? false;
   const overviewRealtimeChartsLoading = overviewRealtimeEntry?.initialLoading ?? false;
@@ -1244,14 +1537,18 @@ export function MainWindowApp() {
     const unsubscribeRealtime = overviewRealtimeCache.subscribe(() => {
       setOverviewScopeCacheRevision((value) => value + 1);
     });
+    const unsubscribeAllBalances = overviewAllAccountBalancesCache.subscribe(() => {
+      setOverviewScopeCacheRevision((value) => value + 1);
+    });
     const unsubscribeAllKeys = overviewAllAccountKeysCache.subscribe(() => {
       setOverviewScopeCacheRevision((value) => value + 1);
     });
     return () => {
       unsubscribeRealtime();
+      unsubscribeAllBalances();
       unsubscribeAllKeys();
     };
-  }, [overviewAllAccountKeysCache, overviewRealtimeCache]);
+  }, [overviewAllAccountBalancesCache, overviewAllAccountKeysCache, overviewRealtimeCache]);
 
   const loadOverviewDirectUsageStats = useStableCallback(async (options?: {
     allowUnfocusedInitialHydration?: boolean;
@@ -1285,6 +1582,7 @@ export function MainWindowApp() {
     const range = { ...overviewUsageInsightRange };
     const account = selectedAccount;
     const readyAccounts = accounts.filter((item) => item.sessionState === "ready");
+    const forceUpstream = options?.force ?? false;
     await overviewRealtimeCache.load(
       scopeKey,
       async (): Promise<OverviewRealtimeSnapshot> => {
@@ -1293,10 +1591,10 @@ export function MainWindowApp() {
             throw new Error("当前没有可用账号可读取实时用量。");
           }
           const [payload, trendResult, modelResult, usageInsights] = await Promise.all([
-            overviewUpstreamRequestExecutor.run(() => getOverviewDashboardStats(account.id)),
-            overviewUpstreamRequestExecutor.run(() => getDashboardTrend(account.id, { days: 7, ...range })),
-            overviewUpstreamRequestExecutor.run(() => getDashboardModels(account.id, { days: 7, ...range })),
-            overviewUpstreamRequestExecutor.run(() => getUsageInsights(account.id, { days: 7, ...range }))
+            overviewUpstreamRequestExecutor.run(() => getOverviewDashboardStats(account.id, forceUpstream)),
+            overviewUpstreamRequestExecutor.run(() => getDashboardTrend(account.id, range)),
+            overviewUpstreamRequestExecutor.run(() => getDashboardModels(account.id, range)),
+            overviewUpstreamRequestExecutor.run(() => getUsageInsights(account.id, range))
           ]);
           return {
             usageStats: payload.todayStats,
@@ -1323,10 +1621,10 @@ export function MainWindowApp() {
         const rows = await overviewUpstreamRequestExecutor.map(
           readyAccounts,
           async (readyAccount) => {
-            const payload = await getOverviewDashboardStats(readyAccount.id);
-            const trendResult = await getDashboardTrend(readyAccount.id, { days: 7, ...range });
-            const modelResult = await getDashboardModels(readyAccount.id, { days: 7, ...range });
-            const usageInsights = await getUsageInsights(readyAccount.id, { days: 7, ...range });
+            const payload = await getOverviewDashboardStats(readyAccount.id, forceUpstream);
+            const trendResult = await getDashboardTrend(readyAccount.id, range);
+            const modelResult = await getDashboardModels(readyAccount.id, range);
+            const usageInsights = await getUsageInsights(readyAccount.id, range);
             return {
               accountId: readyAccount.id,
               label: readyAccount.label,
@@ -1389,6 +1687,54 @@ export function MainWindowApp() {
       { force: options?.force }
     );
   });
+  // shell 的余额是占位值；全账号视图按共享并发上限读取账户资料后再汇总。
+  const loadOverviewAllAccountBalances = useStableCallback(async (options?: {
+    allowUnfocusedInitialHydration?: boolean;
+    force?: boolean;
+    forceUpstream?: boolean;
+    bypassHydration?: boolean;
+  }) => {
+    if (!options?.bypassHydration && !shouldHydrateOverviewRealtime({
+      nav,
+      pageVisible,
+      windowFocused,
+      allowUnfocusedInitialHydration: options?.allowUnfocusedInitialHydration
+    })) {
+      return;
+    }
+    const scopeKey = overviewAllAccountBalancesScopeKey;
+    if (!scopeKey) {
+      return;
+    }
+    const existing = overviewAllAccountBalancesCache.peek(scopeKey);
+    if (
+      !options?.force
+      && existing.hasSnapshot
+      && existing.updatedAt !== null
+      && Date.now() - existing.updatedAt < OVERVIEW_ALL_ACCOUNT_BALANCES_REFRESH_MIN_INTERVAL_MS
+    ) {
+      return;
+    }
+    const readyAccounts = accounts.filter((item) => item.sessionState === "ready");
+    await overviewAllAccountBalancesCache.load(
+      scopeKey,
+      async () => overviewUpstreamRequestExecutor.map(
+        readyAccounts,
+        async (account) => {
+          const profile = await getProfileRecord(
+            account.id,
+            options?.forceUpstream ?? options?.force ?? false
+          );
+          return {
+            accountId: account.id,
+            balance: profile.balance,
+            fetchedAt: new Date().toISOString()
+          } satisfies OverviewAccountBalanceRecord;
+        }
+      ),
+      { force: options?.force }
+    );
+  });
   const loadOverviewForCurrentSurface = useStableCallback(async (options?: {
     busyText?: string;
     successMessage?: string;
@@ -1409,6 +1755,7 @@ export function MainWindowApp() {
       loadOverviewDirectUsageStats({ force: true, bypassHydration: true })
     ];
     if (overviewUsageStatsMode === "all-accounts") {
+      refreshes.push(loadOverviewAllAccountBalances({ force: true, bypassHydration: true }));
       refreshes.push(loadOverviewAllAccountKeys({ force: true, bypassHydration: true }));
     }
     await Promise.all(refreshes);
@@ -1546,7 +1893,8 @@ export function MainWindowApp() {
           return accountDataWorkspace.preloadResources({
             managedKeys: true,
             subscriptions: true,
-            subscriptionSummary: true
+            subscriptionSummary: true,
+            subscriptionQuotaAlerts: true
           });
         }
         return Promise.resolve();
@@ -1640,6 +1988,80 @@ export function MainWindowApp() {
     void desktopUi.patchPrefs({ theme: nextTheme });
   }
 
+  async function handleSelectFloatingNotificationSound() {
+    if (floatingNotificationSoundAction !== null) {
+      return;
+    }
+    setFloatingNotificationSoundAction("select");
+    try {
+      const prefs = await desktopUi.handleSelectFloatingNotificationSound();
+      if (prefs !== null) {
+        pushToast({
+          tone: "success",
+          message: "已使用自定义提示音。"
+        });
+      }
+    } catch (cause) {
+      pushToast({
+        tone: "error",
+        message:
+          cause instanceof Error && cause.message.trim()
+            ? cause.message
+            : "提示音文件导入失败，请重试。"
+      });
+    } finally {
+      setFloatingNotificationSoundAction(null);
+    }
+  }
+
+  async function handlePreviewFloatingNotificationSound() {
+    if (floatingNotificationSoundAction !== null) {
+      return;
+    }
+    setFloatingNotificationSoundAction("preview");
+    try {
+      await desktopUi.handlePreviewFloatingNotificationSound();
+      pushToast({
+        tone: "info",
+        message: "已按当前音量试听提示音。"
+      });
+    } catch (cause) {
+      pushToast({
+        tone: "error",
+        message:
+          cause instanceof Error && cause.message.trim()
+            ? cause.message
+            : "提示音试听失败，请重试。"
+      });
+    } finally {
+      setFloatingNotificationSoundAction(null);
+    }
+  }
+
+  async function handleRestoreDefaultFloatingNotificationSound() {
+    if (floatingNotificationSoundAction !== null) {
+      return;
+    }
+    setFloatingNotificationSoundAction("restore");
+    try {
+      await desktopUi.handleRestoreDefaultFloatingNotificationSound();
+      pushToast({
+        tone: "success",
+        message: "已恢复内置默认提示音。"
+      });
+    } catch (cause) {
+      pushToast({
+        tone: "error",
+        message:
+          cause instanceof Error && cause.message.trim()
+            ? cause.message
+            : "恢复默认提示音失败，请重试。"
+      });
+    } finally {
+      setFloatingNotificationSoundAction(null);
+    }
+  }
+
   async function handleClearRuntimeData(removeSitesAndAccounts: boolean) {
     setClearRuntimeDataLoading(true);
     setBusyText(removeSitesAndAccounts ? "正在清空本地数据、站点和账号..." : "正在清空本地运行数据...");
@@ -1648,9 +2070,10 @@ export function MainWindowApp() {
       await clearRuntimeData(removeSitesAndAccounts);
       setSelectedSiteId(null);
       setSelectedAccountId(null);
-      setAccountSyncStatuses([]);
+      setAccountSyncStatusPresentation(createAccountSyncStatusPresentation(null));
       setProfileWorkspaceRequested(false);
       overviewRealtimeCache.clear();
+      overviewAllAccountBalancesCache.clear();
       overviewAllAccountKeysCache.clear();
       if (removeSitesAndAccounts) {
         publicEndpointsWorkspace.invalidateAllSites();
@@ -1701,18 +2124,34 @@ export function MainWindowApp() {
   async function refreshSelectedAccountDataSilently(
     accountId: string,
     scope: DataSyncScope,
-    triggerSource: "manual" | "stale_auto"
+    triggerSource: "manual" | "stale_auto",
+    targetedRefreshPlan?: TargetedManualAccountRefreshPlan
   ) {
     const syncStatus = await syncAccountData(accountId, {
       scope,
       triggerSource
     });
     if (selectedAccountIdRef.current === accountId) {
-      setAccountSyncStatuses(syncStatus.statuses);
+      setAccountSyncStatusPresentation((previous) =>
+        replaceAccountSyncStatusSnapshot(previous, accountId, syncStatus.statuses)
+      );
     }
+    const refreshMode = triggerSource === "stale_auto" ? "background" : "foreground";
+    const refreshAccountDataAfterSync = targetedRefreshPlan
+      ? Promise.all([
+          accountDataWorkspace.refreshResources(targetedRefreshPlan.reusedResources, {
+            force: false,
+            mode: refreshMode
+          }),
+          accountDataWorkspace.refreshResources(targetedRefreshPlan.forcedResources, {
+            force: true,
+            mode: refreshMode
+          })
+        ])
+      : accountDataWorkspace.refreshAccountData({ force: false, mode: refreshMode });
     await Promise.all([
       loadOverviewForCurrentSurface(),
-      accountDataWorkspace.refreshAccountData()
+      refreshAccountDataAfterSync
     ]);
   }
 
@@ -1722,8 +2161,9 @@ export function MainWindowApp() {
       if (triggerSource === "stale_auto") {
         await Promise.all([
           loadOverviewForCurrentSurface(),
-          accountDataWorkspace.refreshAccountData(),
+          accountDataWorkspace.refreshAccountData({ mode: "background" }),
           loadOverviewDirectUsageStats({ force: forceRealtime, bypassHydration: true }),
+          loadOverviewAllAccountBalances({ force: forceRealtime, bypassHydration: true }),
           loadOverviewAllAccountKeys({ force: forceRealtime, bypassHydration: true })
         ]);
         return;
@@ -1731,8 +2171,13 @@ export function MainWindowApp() {
       await syncAllAccounts("core", triggerSource);
       await Promise.all([
         loadOverviewForCurrentSurface(),
-        accountDataWorkspace.refreshAccountData(),
+        accountDataWorkspace.refreshAccountData({ force: false }),
         loadOverviewDirectUsageStats({ force: true, bypassHydration: true }),
+        loadOverviewAllAccountBalances({
+          force: true,
+          forceUpstream: false,
+          bypassHydration: true
+        }),
         loadOverviewAllAccountKeys({ force: true, bypassHydration: true })
       ]);
       return;
@@ -1741,7 +2186,7 @@ export function MainWindowApp() {
       if (triggerSource === "stale_auto") {
         await Promise.all([
           loadOverviewForCurrentSurface(),
-          accountDataWorkspace.refreshAccountData(),
+          accountDataWorkspace.refreshAccountData({ mode: "background" }),
           loadOverviewDirectUsageStats({ force: forceRealtime, bypassHydration: true })
         ]);
         return;
@@ -1840,8 +2285,11 @@ export function MainWindowApp() {
     }
   });
 
-  const refreshCurrentPageForManualReload = useStableCallback(async (resource: WarmupResourceKey | null) => {
+  const refreshCurrentPageForManualReload = useStableCallback(async (resource: ManualReloadResource) => {
     switch (resource) {
+      case "codexRadar":
+        await refreshCodexRadarForManualReload();
+        return;
       case "overview":
         if (selectedAccount) {
           await refreshOverviewSilently("manual");
@@ -1849,9 +2297,24 @@ export function MainWindowApp() {
         }
         break;
       case "subscriptions":
+        if (selectedAccount) {
+          await refreshSelectedAccountDataSilently(
+            selectedAccount.id,
+            "subscriptions",
+            "manual",
+            TARGETED_MANUAL_ACCOUNT_REFRESH_PLANS.subscriptions
+          );
+          return;
+        }
+        break;
       case "settings":
         if (selectedAccount) {
-          await refreshSelectedAccountDataSilently(selectedAccount.id, "full", "manual");
+          await refreshSelectedAccountDataSilently(
+            selectedAccount.id,
+            "subscriptions",
+            "manual",
+            TARGETED_MANUAL_ACCOUNT_REFRESH_PLANS.settings
+          );
           return;
         }
         break;
@@ -1873,12 +2336,6 @@ export function MainWindowApp() {
           return;
         }
         break;
-      case "keyUsage":
-        if (selectedAccount) {
-          await refreshUsageSurfaceSilently("keyUsage", { mode: "foreground" });
-          return;
-        }
-        break;
       case "serviceStatus":
         await topbarServiceStatusWorkspace.refreshNow({
           mode: "foreground",
@@ -1894,7 +2351,7 @@ export function MainWindowApp() {
     await loadOverviewForCurrentSurface();
   });
 
-  const warmRemainingResourcesAfterManualReload = useStableCallback(async (resource: WarmupResourceKey | null) => {
+  const warmRemainingResourcesAfterManualReload = useStableCallback(async (resource: ManualReloadResource) => {
     const selectedAccountReady = Boolean(selectedAccount);
     const currentPageAlreadyReloadedOverview =
       resource === null
@@ -1960,15 +2417,19 @@ export function MainWindowApp() {
 
     topbarReloadRunningRef.current = true;
     setTopbarReloadRefreshing(true);
-    const currentResource = selectedAccount
-      ? nav === "trends"
-        ? "usage"
-        : getWarmupResourceForNav(nav)
-      : null;
+    const currentResource: ManualReloadResource = nav === "codexRadar"
+      ? "codexRadar"
+      : selectedAccount
+        ? nav === "trends"
+          ? "usage"
+          : getWarmupResourceForNav(nav)
+        : null;
 
     try {
       await refreshCurrentPageForManualReload(currentResource);
-      void warmRemainingResourcesAfterManualReload(currentResource);
+      if (currentResource !== "subscriptions" && currentResource !== "settings") {
+        void warmRemainingResourcesAfterManualReload(currentResource);
+      }
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
@@ -1989,7 +2450,10 @@ export function MainWindowApp() {
         keys: resolveAutoRefreshGroupPolicy(desktopUi.prefs, "keys"),
         usage: resolveAutoRefreshGroupPolicy(desktopUi.prefs, "usage")
       },
-      serviceStatusPolicy: serviceStatusAutoRefreshPolicy
+      serviceStatusPolicy: {
+        ...serviceStatusAutoRefreshPolicy,
+        enabled: false
+      }
     },
     tasks: {
       overview: {
@@ -2015,17 +2479,13 @@ export function MainWindowApp() {
       keyUsage: {
         key: "keyUsage",
         run: () => runWarmupTask("keyUsage")
-      },
-      serviceStatus: {
-        key: "serviceStatus",
-        run: () => runWarmupTask("serviceStatus")
       }
     },
     onForegroundRefresh: (resource) => refreshCurrentWarmPage(resource)
   });
 
   const workspaceSubtitle = nav === "codexRadar"
-    ? "授权数据源的最新模型 IQ 测评快照"
+    ? ""
     : nav === "serviceStatus"
     ? hasAnyAccount
       ? "这里会持续显示当前服务是否可用, 方便你随时查看变化"
@@ -2038,7 +2498,7 @@ export function MainWindowApp() {
     overview,
     accounts,
     usageStats: overviewDirectUsageStats,
-    syncStatuses: accountSyncStatuses
+    syncStatusPresentation: currentAccountSyncStatusPresentation
   });
   const workspaceSummary = (
     <>
@@ -2071,7 +2531,7 @@ export function MainWindowApp() {
         <OverviewPage
           overview={overview}
           currentAccount={selectedAccount}
-          currentAccountBalance={selectedAccountBalance}
+          currentAccountBalance={accountDataWorkspace.profileRecord?.balance ?? null}
           currentAccountStats={currentAccountCache?.stats ?? null}
           currentAccountSubscriptions={currentAccountSubscriptions}
           subscriptionSummary={accountDataWorkspace.subscriptionSummary}
@@ -2083,6 +2543,8 @@ export function MainWindowApp() {
           }
           allAccountKeys={overviewAllAccountKeys}
           allAccountKeysLoading={overviewAllAccountKeysLoading}
+          allAccountBalances={overviewAllAccountBalances}
+          allAccountBalancesLoading={overviewAllAccountBalancesLoading}
           currentAccountRecentUsage={currentAccountCache?.recentUsage ?? []}
           usageStats={overviewDirectUsageStats}
           totalUsageStats={overviewDashboardTotalStats}
@@ -2103,6 +2565,15 @@ export function MainWindowApp() {
         />
         </Suspense>
       )}
+      {nav === "overview" && !overview && !loading && overviewLastError && (
+        <WorkspaceLoadingState
+          page="overview"
+          error={overviewLastError}
+          onRetry={() => {
+            void retryOverviewForCurrentScope().catch(() => undefined);
+          }}
+        />
+      )}
       {nav === "serviceStatus" && (
         <RetryableLazyPage
           page="serviceStatus"
@@ -2117,12 +2588,15 @@ export function MainWindowApp() {
       {nav === "codexRadar" && (
         <Suspense fallback={renderDeferredPageFallback()}>
           <CodexRadarPage
-            payload={codexRadarWorkspace.payload}
-            presentation={codexRadarWorkspace.presentation}
-            onRefresh={codexRadarWorkspace.refresh}
+            payload={codexRadarDisplayPayload}
+            presentation={codexRadarDisplayPresentation}
+            onRefresh={refreshCodexRadarDisplay}
             intelligencePayload={codexRadarIntelligenceWorkspace.payload}
             intelligencePresentation={codexRadarIntelligenceWorkspace.presentation}
             onRefreshIntelligence={codexRadarIntelligenceWorkspace.refresh}
+            insightsPayload={codexRadarInsightsWorkspace.payload}
+            insightsPresentation={codexRadarInsightsWorkspace.presentation}
+            onRefreshInsights={codexRadarInsightsWorkspace.refresh}
             fastPayload={codexRadarFastWorkspace.payload}
             fastPresentation={codexRadarFastWorkspace.presentation}
             onRefreshFast={codexRadarFastWorkspace.refresh}
@@ -2142,7 +2616,7 @@ export function MainWindowApp() {
             currentAccountTotalKeys={selectedAccountApiKeyStats?.totalApiKeys ?? currentAccountCache?.stats.totalApiKeys ?? 0}
             currentAccountActiveKeys={selectedAccountApiKeyStats?.activeApiKeys ?? currentAccountCache?.stats.activeApiKeys ?? 0}
             currentAccountSubscriptions={currentAccountSubscriptions}
-            currentAccountSyncStatuses={accountSyncStatuses}
+            currentAccountSyncStatusPresentation={currentAccountSyncStatusPresentation}
             onOpenNewSite={accountWorkspace.openNewSite}
             onSelectSite={setSelectedSiteId}
             onOpenSiteAccountManager={accountWorkspace.openSiteAccountManager}
@@ -2187,6 +2661,7 @@ export function MainWindowApp() {
 
             return (
               <KeysPage
+                key={`keys-page:${selectedSite?.id ?? "none"}:${selectedAccountId ?? "none"}`}
                 managedKeys={accountDataWorkspace.managedKeys}
                 groups={accountDataWorkspace.groups}
                 subscriptions={currentAccountSubscriptions}
@@ -2204,6 +2679,7 @@ export function MainWindowApp() {
                 }}
                 onError={setError}
                 onBusy={setBusyText}
+                onSaveFeedback={pushToast}
                 onRefreshSubscriptionChain={async () => {
                   await accountDataWorkspace.refreshResources({
                     groups: true,
@@ -2238,24 +2714,11 @@ export function MainWindowApp() {
             return (
               <UsagePage
                 managedKeys={accountDataWorkspace.managedKeys}
-                usageApiKeyFilter={usageApiKeyFilter}
-                setUsageApiKeyFilter={setUsageApiKeyFilter}
-                usageModelFilter={usageModelFilter}
-                setUsageModelFilter={setUsageModelFilter}
-                usageGroupFilter={usageGroupFilter}
-                setUsageGroupFilter={setUsageGroupFilter}
-                usageSubscriptionFilter={usageSubscriptionFilter}
-                setUsageSubscriptionFilter={setUsageSubscriptionFilter}
-                usagePlatformFilter={usagePlatformFilter}
-                setUsagePlatformFilter={setUsagePlatformFilter}
-                usageReasoningEffortFilter={usageReasoningEffortFilter}
-                setUsageReasoningEffortFilter={setUsageReasoningEffortFilter}
-                usageRequestTypeFilter={usageRequestTypeFilter}
-                setUsageRequestTypeFilter={setUsageRequestTypeFilter}
-                usageBillingTypeFilter={usageBillingTypeFilter}
-                setUsageBillingTypeFilter={setUsageBillingTypeFilter}
-                usageBillingModeFilter={usageBillingModeFilter}
-                setUsageBillingModeFilter={setUsageBillingModeFilter}
+                usageFilterDraft={usageFilterDraft}
+                setUsageFilterDraft={setUsageFilterDraft}
+                usageFacetPages={usageFacetPages}
+                usageFacetLoadingFields={usageFacetLoadingFields}
+                loadUsageFacet={loadUsageFacet}
                 usageRangePickerRef={usageRangePickerRef}
                 usageRangePickerOpen={usageRangePickerOpen}
                 toggleUsageRangePicker={toggleUsageRangePicker}
@@ -2268,13 +2731,16 @@ export function MainWindowApp() {
                 usageStats={usageStats}
                 usageExtremes={usageExtremes}
                 usageModelSummaries={usageModelSummaries}
-                usageModelSummariesLoading={usageModelSummariesLoading}
+                usageModelSummariesLoading={usageModelSummariesInitialLoading}
                 usageRecords={usageRecords}
                 usagePageSize={usagePageSize}
                 usagePageSizeOptions={usagePageSizeOptions}
                 handleUsageSearch={handleUsageSearch}
-                handleUsagePageChange={handleUsagePageChange}
+                handleUsageFilterReset={handleUsageFilterReset}
+                handleUsagePreviousPage={handleUsagePreviousPage}
+                handleUsageNextPage={handleUsageNextPage}
                 handleUsagePageSizeChange={handleUsagePageSizeChange}
+                usageCursorDepth={usageCursorDepth}
                 usageTrend={usageTrend}
                 usageModels={usageModels}
               />
@@ -2314,7 +2780,7 @@ export function MainWindowApp() {
                 setUsageDraftRange={setUsageDraftRange}
                 applyUsageRange={applyUsageRange}
                 usageModels={usageModels}
-                loading={usageModelSummariesLoading}
+                loading={usageModelSummariesInitialLoading}
                 onRefresh={handleUsageSearch}
               />
             );
@@ -2336,7 +2802,8 @@ export function MainWindowApp() {
                       {
                         managedKeys: true,
                         subscriptions: true,
-                        subscriptionSummary: true
+                        subscriptionSummary: true,
+                        subscriptionQuotaAlerts: true
                       },
                       { force: true, mode: "background" }
                     ).catch(() => undefined);
@@ -2349,26 +2816,27 @@ export function MainWindowApp() {
               <SubscriptionsPage
                 subscriptions={currentAccountSubscriptions}
                 subscriptionSummary={accountDataWorkspace.subscriptionSummary}
+                subscriptionQuotaAlerts={accountDataWorkspace.subscriptionQuotaAlerts}
                 selectedAccountId={selectedAccountId}
                 managedKeys={accountDataWorkspace.managedKeys?.items ?? []}
+                onRefreshSubscriptionQuotaAlerts={async (saved, accountId) => {
+                  accountDataWorkspace.applySubscriptionQuotaAlertConfig(accountId, saved);
+                  const refreshResult = await accountDataWorkspace.refreshResources(
+                    { subscriptionQuotaAlerts: true },
+                    { force: true }
+                  );
+                  if (refreshResult.status !== "success") {
+                    const detail = refreshResult.failedResources
+                      .map((failure) => failure.message)
+                      .filter(Boolean)
+                      .join("; ");
+                    throw new Error(detail || "额度提醒配置刷新失败，请稍后重试。");
+                  }
+                }}
               />
             );
           }}
         />
-      )}
-      {nav === "keyUsage" && (
-        <Suspense fallback={renderDeferredPageFallback()}>
-          <KeyUsagePage
-            keyUsageRows={keyUsageRows}
-            keyUsageKeyId={keyUsageKeyId}
-            managedKeys={accountDataWorkspace.managedKeys}
-            loading={keyUsagePresentation.initialLoading}
-            refreshing={keyUsagePresentation.refreshing}
-            lastError={keyUsagePresentation.lastError}
-            onRetry={() => void retryKeyUsage()}
-            onLoadKeyUsage={(keyId) => void loadKeyUsage(keyId)}
-          />
-        </Suspense>
       )}
       {nav === "trends" && (
         <Suspense
@@ -2379,12 +2847,7 @@ export function MainWindowApp() {
             selectedAccount={selectedAccount}
             loading={usageModelSummariesLoading}
             managedKeys={accountDataWorkspace.managedKeys}
-            usageStats={usageStats}
-            usageTrend={usageTrend}
-            usageModels={usageModels}
-            usageRecords={usageRecords}
-            usageScopeRows={usageScopeRows}
-            usageScopeMeta={usageScopeMeta}
+            usageAnalytics={usageAnalytics}
             subscriptionSummary={accountDataWorkspace.subscriptionSummary}
             profileRecord={accountDataWorkspace.profileRecord}
             platformQuotas={accountDataWorkspace.platformQuotas}
@@ -2416,9 +2879,7 @@ export function MainWindowApp() {
               setTheme={handleThemeChange}
               desktopUiPrefs={desktopUi.prefs}
               desktopUiLoading={desktopUi.loading}
-              desktopUiSaveState={desktopUi.saveState}
               desktopUiLoadError={desktopUi.loadError}
-              onRetryDesktopUiPrefs={desktopUi.retryFailedPrefs}
               nativeWindowControlsAvailable={isTauriRuntime()}
               onLaunchModeChange={(value) => void desktopUi.handleSwitchMode(value)}
               onFloatingVisibleChange={(value) => void desktopUi.handleFloatingVisible(value)}
@@ -2442,6 +2903,17 @@ export function MainWindowApp() {
                 void desktopUi.patchPrefs({
                   floatingNotificationMaxVisible: value
                 }, { debounce: true })
+              }
+              onFloatingNotificationSoundVolumeChange={(value) =>
+                void desktopUi.patchPrefs({
+                  floatingNotificationSoundVolume: value
+                }, { debounce: true })
+              }
+              floatingNotificationSoundAction={floatingNotificationSoundAction}
+              onSelectFloatingNotificationSound={() => void handleSelectFloatingNotificationSound()}
+              onPreviewFloatingNotificationSound={() => void handlePreviewFloatingNotificationSound()}
+              onRestoreDefaultFloatingNotificationSound={() =>
+                void handleRestoreDefaultFloatingNotificationSound()
               }
               onCloseBehaviorChange={(value) => void desktopUi.handleRememberCloseBehavior(value)}
               onAutoRefreshEnabledChange={(value) => void desktopUi.patchPrefs({ autoRefreshEnabled: value })}
@@ -2483,14 +2955,14 @@ export function MainWindowApp() {
                 }, { debounce: true })
               }
               schedulerConfig={schedulerConfig}
-              schedulerConfirmedConfig={schedulerConfirmedConfig}
               schedulerConfigLoading={schedulerConfigLoading}
-              schedulerConfigSaving={schedulerConfigSaving}
-              schedulerConfigAvailable={isTauriRuntime()}
               schedulerLoadError={schedulerLoadError}
-              schedulerSaveError={schedulerSaveError}
               onRetrySchedulerConfigLoad={retrySchedulerConfigLoad}
-              onRetrySchedulerConfig={retrySchedulerConfigSave}
+              runtimeCoordinationConfig={runtimeCoordinationConfig}
+              runtimeCoordinationConfigLoading={runtimeCoordinationConfigLoading}
+              runtimeCoordinationLoadError={runtimeCoordinationLoadError}
+              onRetryRuntimeCoordinationConfigLoad={retryRuntimeCoordinationConfigLoad}
+              onRuntimeCoordinationConfigChange={handleRuntimeCoordinationConfigChange}
               databaseStorageStatus={databaseStorage.status}
               databaseStorageTargetDirectory={databaseStorage.targetDirectory}
               databaseStorageLoading={databaseStorage.loading}
@@ -2534,6 +3006,7 @@ export function MainWindowApp() {
     }
 
     void loadOverviewDirectUsageStats({ allowUnfocusedInitialHydration });
+    void loadOverviewAllAccountBalances({ allowUnfocusedInitialHydration });
     void loadOverviewAllAccountKeys({ allowUnfocusedInitialHydration });
   }, [
     nav,
@@ -2547,6 +3020,7 @@ export function MainWindowApp() {
     pageVisible,
     windowFocused,
     loadOverviewDirectUsageStats,
+    loadOverviewAllAccountBalances,
     loadOverviewAllAccountKeys
   ]);
 
@@ -2587,8 +3061,6 @@ export function MainWindowApp() {
           <MainWindowNotificationChrome
             title="Input面板"
             logoSrc={projectLogo}
-            onReload={handleTopbarReload}
-            reloadRefreshing={topbarReloadRefreshing}
             onOpenProfile={openProfileModal}
             onCloseTopbarPeekPanels={closeTopbarPeekPanels}
             onAlertInboxOpenChange={setAlertInboxOpen}
@@ -2628,11 +3100,11 @@ export function MainWindowApp() {
             serviceStatusRequestInFlight={topbarServiceStatusWorkspace.requestInFlight}
             serviceStatusLastError={topbarServiceStatusWorkspace.lastError}
             serviceStatusRefreshIntervalSeconds={serviceStatusRefreshIntervalSeconds}
-            codexRadarModelIq={codexRadarWorkspace.payload}
-            codexRadarModelIqLoading={codexRadarWorkspace.loading}
-            codexRadarModelIqRefreshing={codexRadarWorkspace.presentation.refreshing}
-            codexRadarModelIqIsStale={codexRadarWorkspace.presentation.isStale}
-            codexRadarModelIqLastError={codexRadarWorkspace.lastError}
+            codexRadarModelIq={codexRadarDisplayPayload}
+            codexRadarModelIqLoading={codexRadarDisplayLoading}
+            codexRadarModelIqRefreshing={codexRadarDisplayPresentation.refreshing}
+            codexRadarModelIqIsStale={codexRadarDisplayPresentation.isStale}
+            codexRadarModelIqLastError={codexRadarDisplayLastError}
             usageStatusLabel={usageStatusLabel}
             subscriptionCount={subscriptionCount}
             subscriptionPreviewRecords={mergedTopbarSubscriptions}
@@ -2640,7 +3112,7 @@ export function MainWindowApp() {
               source: "topbar",
               notifyTransition: true
             }).catch(() => undefined)}
-            onRefreshCodexRadarModelIq={() => void codexRadarWorkspace.refresh()}
+            onRefreshCodexRadarModelIq={() => void refreshCodexRadarDisplay()}
             onOpenServiceStatus={() => {
               setFloatingRailPanel(null);
               setNav("serviceStatus");
@@ -2652,7 +3124,11 @@ export function MainWindowApp() {
           />
           <WorkspaceFrame
             topbar={
-              <Topbar summary={workspaceSummary} />
+              <Topbar
+                summary={workspaceSummary}
+                onReload={handleTopbarReload}
+                reloadRefreshing={topbarReloadRefreshing}
+              />
             }
             title={workspaceNavTitle(nav)}
             subtitle={nav === "systemSettings" ? "" : workspaceSubtitle}
@@ -2666,7 +3142,6 @@ export function MainWindowApp() {
               overviewAllAccountKeysError: overviewAllAccountKeysLastError,
               accountError: accountDataWorkspace.presentation.lastError,
               usageError: presentation.lastError,
-              keyUsageError: keyUsagePresentation.lastError,
               serviceStatusError: topbarServiceStatusWorkspace.lastError
             }) : null}
             onRetry={() => void retryCurrentWorkspaceSurface({
@@ -2675,7 +3150,6 @@ export function MainWindowApp() {
               refreshAccountData: accountDataWorkspace.refreshAccountData,
               refreshUsage: refreshUsageWorkspaceSilently,
               refreshModelStats: refreshUsageSurfaceSilently,
-              retryKeyUsage,
               refreshServiceStatus: topbarServiceStatusWorkspace.refreshNow
             })}
             navKey={nav}
@@ -2685,6 +3159,16 @@ export function MainWindowApp() {
           </WorkspaceFrame>
         </div>
       </AppShell>
+
+      <MainWindowOverviewStatsBridge
+        accountId={overviewUsageStatsMode === "selected-account" ? selectedAccount?.id ?? null : null}
+        stats={
+          overviewUsageStatsMode === "selected-account" && overviewRealtimeEntry?.hasSnapshot
+            ? overviewDirectUsageStats
+            : null
+        }
+        updatedAt={overviewRealtimeEntry?.updatedAt ?? null}
+      />
 
       <MainWindowToastLayer />
 
@@ -2715,6 +3199,7 @@ export function MainWindowApp() {
               open={profileWorkspace.profileModalOpen}
               selectedAccount={selectedAccount}
               profileRecord={accountDataWorkspace.profileRecord}
+              profilePresentation={accountDataWorkspace.resourcePresentation.profileRecord}
               profileForm={profileWorkspace.profileForm}
               setProfileForm={profileWorkspace.setProfileForm}
               profilePassword={profileWorkspace.profilePassword}
@@ -2722,7 +3207,20 @@ export function MainWindowApp() {
               notifyEmailDraft={profileWorkspace.notifyEmailDraft}
               setNotifyEmailDraft={profileWorkspace.setNotifyEmailDraft}
               platformQuotas={accountDataWorkspace.platformQuotas}
+              platformQuotasPresentation={accountDataWorkspace.resourcePresentation.platformQuotas}
               onClose={closeProfileModal}
+              onRetryProfile={() => {
+                void accountDataWorkspace.refreshResources(
+                  { profileRecord: true },
+                  { force: true }
+                );
+              }}
+              onRetryPlatformQuotas={() => {
+                void accountDataWorkspace.refreshResources(
+                  { platformQuotas: true },
+                  { force: true }
+                );
+              }}
               onRefreshSelectedAccount={() => {
                 if (selectedAccount) {
                   if (nav === "overview") {
@@ -2999,7 +3497,6 @@ function resolveWorkspaceRefreshError(input: {
   overviewAllAccountKeysError: string | null;
   accountError: string | null;
   usageError: string | null;
-  keyUsageError: string | null;
   serviceStatusError: string | null;
 }) {
   if (input.nav === "serviceStatus") {
@@ -3014,9 +3511,6 @@ function resolveWorkspaceRefreshError(input: {
   if (input.nav === "keys" || input.nav === "subscriptions" || input.nav === "settings") {
     return input.accountError;
   }
-  if (input.nav === "keyUsage") {
-    return input.keyUsageError;
-  }
   if (input.nav === "usage" || input.nav === "modelStats") {
     return input.usageError;
   }
@@ -3029,10 +3523,9 @@ async function retryCurrentWorkspaceSurface(input: {
   refreshAccountData: () => Promise<unknown>;
   refreshUsage: (options?: { mode?: "foreground" | "background" }) => Promise<unknown>;
   refreshModelStats: (
-    surface: "usage" | "modelStats" | "keyUsage",
+    surface: "usage" | "modelStats",
     options?: { mode?: "foreground" | "background" }
   ) => Promise<unknown>;
-  retryKeyUsage: () => Promise<unknown>;
   refreshServiceStatus: (options?: { mode?: "foreground" | "background" }) => Promise<unknown>;
 }) {
   if (input.nav === "serviceStatus") {
@@ -3052,10 +3545,6 @@ async function retryCurrentWorkspaceSurface(input: {
   }
   if (input.nav === "modelStats") {
     await input.refreshModelStats("modelStats", { mode: "foreground" });
-    return;
-  }
-  if (input.nav === "keyUsage") {
-    await input.retryKeyUsage();
     return;
   }
   if (input.nav === "keys" || input.nav === "subscriptions" || input.nav === "settings") {

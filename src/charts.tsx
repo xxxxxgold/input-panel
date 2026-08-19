@@ -33,6 +33,13 @@ const FALLBACK_CHART_DATA_FONT_FAMILY =
 
 export function withChartDataTypography(option: ChartOption): ChartOption {
   const fontFamily = readChartDataFontFamily();
+  const visualMap = option.visualMap == null
+    ? undefined
+    : mapChartOptionParts(option.visualMap, (item) => ({
+        ...item,
+        textStyle: mergeChartTextStyle(item.textStyle, fontFamily)
+      }));
+
   return {
     ...option,
     tooltip: mapChartOptionParts(option.tooltip, (tooltip) => ({
@@ -45,10 +52,7 @@ export function withChartDataTypography(option: ChartOption): ChartOption {
     })),
     xAxis: mapChartOptionParts(option.xAxis, (axis) => withChartAxisTypography(axis, fontFamily)),
     yAxis: mapChartOptionParts(option.yAxis, (axis) => withChartAxisTypography(axis, fontFamily)),
-    visualMap: mapChartOptionParts(option.visualMap, (visualMap) => ({
-      ...visualMap,
-      textStyle: mergeChartTextStyle(visualMap.textStyle, fontFamily)
-    })),
+    ...(visualMap === undefined ? {} : { visualMap }),
     series: mapChartOptionParts(option.series, (series) => withChartSeriesTypography(series, fontFamily))
   };
 }

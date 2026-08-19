@@ -5,3 +5,8 @@ export * from "./features/usage/client";
 export * from "./features/profile/client";
 export * from "./features/service-status/client";
 export * from "./features/scheduler/client";
+export * from "./features/maintenance/client";
+export * from "./features/public-endpoints/client";
+export * from "./features/settings/client";
+export * from "./features/database-storage/client";
+export * from "./features/subscriptions/quota-alert-client";

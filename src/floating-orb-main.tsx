@@ -2,7 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 
 import { FloatingWindowRoot } from "./app/FloatingWindowRoot";
-import "./styles.css";
+import "./styles-floating.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

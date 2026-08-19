@@ -13,6 +13,20 @@ pub fn set_setting(db: &Database, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn set_settings(db: &Database, settings: &[(&str, String)]) -> Result<()> {
+    let mut conn = db.connect()?;
+    let transaction = conn.transaction()?;
+    for (key, value) in settings {
+        transaction.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
 pub fn get_setting(db: &Database, key: &str) -> Result<Option<String>> {
     let conn = db.connect()?;
     let value = conn
@@ -24,4 +38,3 @@ pub fn get_setting(db: &Database, key: &str) -> Result<Option<String>> {
         .optional()?;
     Ok(value)
 }
-

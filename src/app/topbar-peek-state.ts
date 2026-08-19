@@ -1,4 +1,4 @@
-export type TopbarPeekKey = "serviceStatus" | "alerts" | "subscriptions";
+export type TopbarPeekKey = "siteEndpoints" | "serviceStatus" | "alerts" | "subscriptions";
 
 export type TopbarPeekState = {
   pinned: TopbarPeekKey | null;

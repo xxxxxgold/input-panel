@@ -10,11 +10,12 @@ export function getAvailableGroups(accountId: string) {
   });
 }
 
-export function listManagedKeys(accountId: string, page = 1, pageSize = 20) {
+export function listManagedKeys(accountId: string, page = 1, pageSize = 20, force = false) {
+  const forceQuery = force ? "&force=true" : "";
   return desktopOrHttp<PaginatedResult<ManagedKeyRecord>>({
     command: "list_managed_keys",
-    args: { accountId, page, pageSize },
-    url: `/api/accounts/${accountId}/keys?page=${page}&page_size=${pageSize}`
+    args: { accountId, page, pageSize, force },
+    url: `/api/accounts/${accountId}/keys?page=${page}&page_size=${pageSize}${forceQuery}`
   });
 }
 

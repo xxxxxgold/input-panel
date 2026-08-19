@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 
 import {
   FloatingPanelWindow,
@@ -7,11 +7,18 @@ import {
   type FloatingQuickSwitchSubmissionResult
 } from "./FloatingPanelWindow";
 import { ToastHost } from "./ToastHost";
-import { getPersistedWindowSelection } from "./window-selection-client";
+import {
+  getPersistedWindowSelection,
+  updatePersistedWindowSelection
+} from "./window-selection-client";
+import { getFloatingPanelVisible } from "../features/desktop-ui/client";
 import {
   createFloatingPanelSelectionCoordinator,
+  createWindowSelectionSyncQueue,
   readWindowSelection,
   WINDOW_SELECTION_STORAGE_KEY,
+  writeWindowSelection,
+  type WindowSelectionResolution,
   type WindowSelectionSyncPayload
 } from "./window-selection-sync";
 import { useAccountDataWorkspace } from "../features/accounts/useAccountDataWorkspace";
@@ -23,8 +30,10 @@ import { resolveOverviewSelection, useMonitorStore } from "../store/monitor-stor
 import { isTauriRuntime } from "../shared/transport/runtime";
 import { THEME_IDS, normalizeThemeId } from "../shared/lib/theme";
 import { applyThemeToDocument } from "../shared/lib/apply-theme";
+import { maskEmail } from "../shared/lib/formatters";
 import { buildSubscriptionDetailRecords } from "../subscription-view";
-import type { OverviewDashboardStatsPayload, OverviewPayload } from "../types";
+import { requestMainWindowOverviewStats } from "./floating-overview-stats-request";
+import type { AccountRuntime, OverviewPayload, UsageStatsRecord } from "../types";
 
 const ALLOWED_THEMES = new Set<string>(THEME_IDS);
 const FLOATING_LIVE_REFRESH_INTERVAL_MS = 30_000;
@@ -49,6 +58,11 @@ async function readFloatingQuickSwitchSnapshot(
   };
 }
 
+interface FloatingPanelResourceIdentity {
+  siteId: string;
+  accountId: string;
+}
+
 export function resolveFloatingPanelCurrentAccount(input: {
   overview: OverviewPayload | null;
   selectedAccountId: string | null;
@@ -59,7 +73,10 @@ export function resolveFloatingPanelCurrentAccount(input: {
   }
 
   if (input.selectedAccountId) {
-    return input.overview.accounts.find((account) => account.id === input.selectedAccountId) ?? null;
+    return input.overview.accounts.find(
+      (account) => account.id === input.selectedAccountId
+        && (!input.selectedSiteId || account.siteId === input.selectedSiteId)
+    ) ?? null;
   }
 
   const selection = resolveOverviewSelection({
@@ -81,10 +98,12 @@ export function shouldActivateFloatingPanelData(input: {
 }
 
 export function isFloatingPanelResourceDataCurrent(input: {
-  resourceAccountId: string | null;
-  currentAccountId: string | null;
+  resourceOwner: FloatingPanelResourceIdentity | null;
+  currentIdentity: FloatingPanelResourceIdentity | null;
 }) {
-  return input.currentAccountId != null && input.resourceAccountId === input.currentAccountId;
+  return input.currentIdentity != null
+    && input.resourceOwner?.siteId === input.currentIdentity.siteId
+    && input.resourceOwner?.accountId === input.currentIdentity.accountId;
 }
 
 export function FloatingPanelWindowRoot() {
@@ -104,15 +123,21 @@ export function FloatingPanelWindowRoot() {
   const selectedAccountId = useMonitorStore((state) => state.selectedAccountId);
   const [browserSelection, setBrowserSelection] = useState(readWindowSelection);
   const [panelWindowVisible, setPanelWindowVisible] = useState(false);
-  const [dashboardStats, setDashboardStats] = useState<OverviewDashboardStatsPayload | null>(null);
+  const [dashboardStats, setDashboardStats] = useState<UsageStatsRecord | null>(null);
   const [dashboardStatsLoading, setDashboardStatsLoading] = useState(false);
   const [dashboardStatsError, setDashboardStatsError] = useState<string | null>(null);
   const [dashboardStatsUpdatedAt, setDashboardStatsUpdatedAt] = useState<string | null>(null);
-  const [selectionOverviewPending, setSelectionOverviewPending] = useState(false);
-  const [resourceAccountId, setResourceAccountId] = useState<string | null>(null);
+  const [selectionResolution, setSelectionResolution] = useState<WindowSelectionResolution>({
+    state: "resolving",
+    message: null
+  });
+  const [resourceOwner, setResourceOwner] = useState<FloatingPanelResourceIdentity | null>(null);
   const dashboardStatsRequestIdRef = useRef(0);
+  const dashboardStatsBridgeRequestIdRef = useRef(0);
   const resourceGenerationRef = useRef(0);
   const selectionGenerationRef = useRef(0);
+  const panelVisibilityEventVersionRef = useRef(0);
+  const outboundSelectionSyncQueueRef = useRef<ReturnType<typeof createWindowSelectionSyncQueue> | null>(null);
   const effectiveSelectedSiteId = tauriRuntime ? selectedSiteId : browserSelection.selectedSiteId ?? selectedSiteId;
   const effectiveSelectedAccountId = tauriRuntime ? selectedAccountId : browserSelection.selectedAccountId ?? selectedAccountId;
   const panelDataActive = shouldActivateFloatingPanelData({
@@ -123,20 +148,36 @@ export function FloatingPanelWindowRoot() {
   const panelDataActiveRef = useRef(panelDataActive);
   panelDataActiveRef.current = panelDataActive;
   const selectionCoordinatorRef = useRef<ReturnType<typeof createFloatingPanelSelectionCoordinator> | null>(null);
-  const currentAccount = selectionOverviewPending
-    ? null
-    : resolveFloatingPanelCurrentAccount({
-      overview,
-      selectedAccountId: effectiveSelectedAccountId,
-      selectedSiteId: effectiveSelectedSiteId
-    });
-  const currentAccountId = currentAccount?.id ?? null;
-  const currentResourceData = isFloatingPanelResourceDataCurrent({
-    resourceAccountId,
-    currentAccountId
+  const resolvedCurrentAccount = resolveFloatingPanelCurrentAccount({
+    overview,
+    selectedAccountId: effectiveSelectedAccountId,
+    selectedSiteId: effectiveSelectedSiteId
   });
-  const currentAccountIdRef = useRef(currentAccountId);
-  currentAccountIdRef.current = currentAccountId;
+  const selectionBlocksAccount =
+    selectionResolution.state === "resolving"
+    || selectionResolution.state === "retryable-error";
+  const currentAccount = selectionBlocksAccount ? null : resolvedCurrentAccount;
+  const renderedSelectionState = currentAccount
+    ? "resolved"
+    : effectiveSelectedAccountId
+      ? selectionResolution.state === "retryable-error"
+        ? "retryable-error"
+        : "resolving"
+      : selectionResolution.state === "resolving" || selectionResolution.state === "retryable-error"
+        ? selectionResolution.state
+        : "empty";
+  const currentResourceIdentity = currentAccount
+    ? { siteId: currentAccount.siteId, accountId: currentAccount.id }
+    : null;
+  const currentAccountLabel = currentAccount
+    ? currentAccount.label.trim() || maskEmail(currentAccount.email.trim()) || null
+    : null;
+  const currentResourceData = isFloatingPanelResourceDataCurrent({
+    resourceOwner,
+    currentIdentity: currentResourceIdentity
+  });
+  const currentResourceIdentityRef = useRef<FloatingPanelResourceIdentity | null>(currentResourceIdentity);
+  currentResourceIdentityRef.current = currentResourceIdentity;
   const currentCacheView = currentAccount?.cacheView ?? null;
   const accountDataWorkspace = useAccountDataWorkspace({
     selectedAccountId: effectiveSelectedAccountId,
@@ -151,25 +192,48 @@ export function FloatingPanelWindowRoot() {
     setError: () => {}
   });
 
+  const requestCurrentAccountOverviewStats = useCallback((accountId: string) => {
+    if (!tauriRuntime) {
+      return Promise.resolve(null);
+    }
+
+    return requestMainWindowOverviewStats({
+      accountId,
+      requestId: `floating-overview-${++dashboardStatsBridgeRequestIdRef.current}`
+    });
+  }, [tauriRuntime]);
+
   const refreshDashboardStats = useCallback(async (force = false) => {
     const accountId = currentAccount?.id ?? null;
     const requestId = ++dashboardStatsRequestIdRef.current;
-    if (!panelDataActive || !accountId) {
+    if (!accountId) {
       setDashboardStats(null);
       setDashboardStatsError(null);
       setDashboardStatsLoading(false);
       setDashboardStatsUpdatedAt(null);
       return;
     }
+    if (!panelDataActive) {
+      return;
+    }
 
     setDashboardStatsLoading(true);
     setDashboardStatsError(null);
     try {
+      const pageSnapshot = force ? null : await requestCurrentAccountOverviewStats(accountId);
+      if (pageSnapshot) {
+        if (requestId !== dashboardStatsRequestIdRef.current) {
+          return;
+        }
+        setDashboardStats(pageSnapshot.stats);
+        setDashboardStatsUpdatedAt(pageSnapshot.updatedAt);
+        return;
+      }
       const next = await getOverviewDashboardStats(accountId, force);
       if (requestId !== dashboardStatsRequestIdRef.current) {
         return;
       }
-      setDashboardStats(next);
+      setDashboardStats(next.todayStats);
       setDashboardStatsUpdatedAt(new Date().toISOString());
     } catch (cause) {
       if (requestId !== dashboardStatsRequestIdRef.current) {
@@ -181,17 +245,50 @@ export function FloatingPanelWindowRoot() {
         setDashboardStatsLoading(false);
       }
     }
-  }, [currentAccount?.id, panelDataActive]);
+  }, [currentAccount?.id, panelDataActive, requestCurrentAccountOverviewStats]);
 
   const invalidateFloatingResourceData = useCallback(() => {
     resourceGenerationRef.current += 1;
     dashboardStatsRequestIdRef.current += 1;
-    setResourceAccountId(null);
+    setResourceOwner(null);
     setDashboardStats(null);
     setDashboardStatsError(null);
     setDashboardStatsLoading(false);
     setDashboardStatsUpdatedAt(null);
   }, []);
+
+  const selectFloatingAccount = useCallback(async (account: AccountRuntime) => {
+    const selection = {
+      selectedSiteId: account.siteId,
+      selectedAccountId: account.id
+    };
+    invalidateFloatingResourceData();
+    selectionGenerationRef.current += 1;
+    setSelectionResolution({ state: "resolved", message: null });
+    setSelectedSiteId(account.siteId);
+    setSelectedAccountId(account.id);
+    if (!tauriRuntime) {
+      setBrowserSelection(selection);
+      writeWindowSelection(selection);
+    }
+
+    outboundSelectionSyncQueueRef.current ??= createWindowSelectionSyncQueue({
+      persist: updatePersistedWindowSelection,
+      broadcast: (payload) => tauriRuntime
+        ? emitTo("main", "floating-panel-selection-sync", payload)
+        : Promise.resolve(),
+      reportError: (stage, cause) => {
+        console.error(`${stage === "persist" ? "保存" : "同步"}悬浮面板账号选择失败`, cause);
+        pushToast({
+          tone: "error",
+          message: stage === "persist"
+            ? "账号已切换，但保存选择失败。"
+            : "账号已切换，但主窗口同步失败。"
+        });
+      }
+    });
+    await outboundSelectionSyncQueueRef.current.enqueue(selection);
+  }, [invalidateFloatingResourceData, pushToast, setSelectedAccountId, setSelectedSiteId, tauriRuntime]);
 
   const validateFloatingQuickSwitch = useCallback(async () => {
     const accountId = currentAccount?.id ?? null;
@@ -239,7 +336,7 @@ export function FloatingPanelWindowRoot() {
     ]);
   });
   const refreshCurrentAccountData = useEffectEvent(async () => {
-    await accountDataWorkspace.refreshAccountData({ force: false });
+    return accountDataWorkspace.refreshAccountData({ force: false });
   });
 
   useEffect(() => {
@@ -285,26 +382,58 @@ export function FloatingPanelWindowRoot() {
   ]);
 
   useEffect(() => {
-    if (!tauriRuntime) {
-      setSelectionOverviewPending(false);
+    if (effectiveSelectedAccountId && resolvedCurrentAccount?.id === effectiveSelectedAccountId) {
+      setSelectionResolution((current) => current.state === "resolved" && current.message === null
+        ? current
+        : { state: "resolved", message: null });
+      return;
     }
-  }, [overview?.generatedAt, tauriRuntime]);
+    if (tauriRuntime || !overview) {
+      return;
+    }
+    setSelectionResolution(
+      resolvedCurrentAccount
+        ? { state: "resolved", message: null }
+        : effectiveSelectedAccountId
+          ? {
+              state: "retryable-error",
+              message: "当前账号暂时无法确认，请点击刷新重试。"
+            }
+          : { state: "empty", message: null }
+    );
+  }, [
+    effectiveSelectedAccountId,
+    overview,
+    resolvedCurrentAccount,
+    tauriRuntime
+  ]);
 
   useEffect(() => {
-    if (!panelDataActive || !currentAccountId) {
+    if (!currentResourceIdentity) {
       invalidateFloatingResourceData();
+      return;
+    }
+    if (!panelDataActive) {
       return;
     }
 
     const generation = ++resourceGenerationRef.current;
-    setResourceAccountId((previous) => previous === currentAccountId ? previous : null);
-    void Promise.allSettled([refreshCurrentAccountData(), refreshDashboardStats()]).then(() => {
+    const resourceIdentity = currentResourceIdentity;
+    setResourceOwner((previous) => isFloatingPanelResourceDataCurrent({
+      resourceOwner: previous,
+      currentIdentity: resourceIdentity
+    }) ? previous : null);
+    void Promise.all([refreshCurrentAccountData(), refreshDashboardStats()]).then(([resourceRefresh]) => {
       if (
         resourceGenerationRef.current === generation
         && panelDataActiveRef.current
-        && currentAccountIdRef.current === currentAccountId
+        && resourceRefresh.status === "success"
+        && isFloatingPanelResourceDataCurrent({
+          resourceOwner: currentResourceIdentityRef.current,
+          currentIdentity: resourceIdentity
+        })
       ) {
-        setResourceAccountId(currentAccountId);
+        setResourceOwner(resourceIdentity);
       }
     });
     return () => {
@@ -314,7 +443,8 @@ export function FloatingPanelWindowRoot() {
       dashboardStatsRequestIdRef.current += 1;
     };
   }, [
-    currentAccountId,
+    currentResourceIdentity?.accountId,
+    currentResourceIdentity?.siteId,
     invalidateFloatingResourceData,
     overview?.generatedAt,
     panelDataActive,
@@ -370,6 +500,7 @@ export function FloatingPanelWindowRoot() {
     let unlistenToast: (() => void) | undefined;
     let unlistenPanelSync: (() => void) | undefined;
     let unlistenPanelHide: (() => void) | undefined;
+    let unlistenNativePanelVisibility: (() => void) | undefined;
     let disposed = false;
 
     void listen<{
@@ -386,6 +517,10 @@ export function FloatingPanelWindowRoot() {
         durationMs: event.payload.durationMs
       });
     }).then((cleanup) => {
+      if (disposed) {
+        cleanup();
+        return;
+      }
       unlistenToast = cleanup;
     });
 
@@ -398,22 +533,28 @@ export function FloatingPanelWindowRoot() {
       applySelection: (selection) => {
         invalidateFloatingResourceData();
         selectionGenerationRef.current += 1;
-        setSelectionOverviewPending(true);
         setSelectedSiteId(selection.selectedSiteId);
         setSelectedAccountId(selection.selectedAccountId);
       },
       isPanelDataActive: () => panelDataActiveRef.current,
-      refreshOverview: async () => {
+      refreshOverview: async (selection) => {
         const selectionGeneration = selectionGenerationRef.current;
         const refreshed = await loadOverview({ source: "shell" });
         if (!refreshed) {
           throw new Error(useMonitorStore.getState().error || "刷新悬浮面板总览失败。");
         }
-        if (!disposed && selectionGenerationRef.current === selectionGeneration) {
-          setSelectionOverviewPending(false);
+        if (disposed || selectionGenerationRef.current !== selectionGeneration) {
+          return false;
+        }
+        if (selection.selectedAccountId) {
+          const latestOverview = useMonitorStore.getState().overview;
+          return Boolean(
+            latestOverview?.accounts.some((account) => account.id === selection.selectedAccountId)
+          );
         }
         return true;
       },
+      updateResolution: setSelectionResolution,
       reportError: (stage, cause) => {
         console.error(`${stage === "hydrate" ? "读取" : "刷新"}悬浮面板选择失败`, cause);
       }
@@ -422,23 +563,62 @@ export function FloatingPanelWindowRoot() {
     const unlistenSelectionSync = () => selectionCoordinator.dispose();
     void selectionCoordinator.start();
 
-    void listen<{ menuVisible: boolean }>("floating-panel-sync", (event) => {
+    async function subscribePanelVisibility() {
+      const syncCleanup = await listen<{ menuVisible: boolean }>("floating-panel-sync", (event) => {
+        if (disposed) {
+          return;
+        }
+        panelVisibilityEventVersionRef.current += 1;
+        setPanelWindowVisible(event.payload.menuVisible);
+      });
       if (disposed) {
+        syncCleanup();
         return;
       }
-      setPanelWindowVisible(event.payload.menuVisible);
-    }).then((cleanup) => {
-      unlistenPanelSync = cleanup;
-    });
+      unlistenPanelSync = syncCleanup;
 
-    void listen("floating-panel-hide", () => {
+      const hideCleanup = await listen("floating-panel-hide", () => {
+        if (disposed) {
+          return;
+        }
+        panelVisibilityEventVersionRef.current += 1;
+        setPanelWindowVisible(false);
+      });
       if (disposed) {
+        hideCleanup();
         return;
       }
-      setPanelWindowVisible(false);
-    }).then((cleanup) => {
-      unlistenPanelHide = cleanup;
-    });
+      unlistenPanelHide = hideCleanup;
+
+      const nativeVisibilityCleanup = await listen<{ visible: boolean }>(
+        "floating-native-panel-visibility",
+        (event) => {
+          if (disposed) {
+            return;
+          }
+          panelVisibilityEventVersionRef.current += 1;
+          setPanelWindowVisible(event.payload.visible);
+        }
+      );
+      if (disposed) {
+        nativeVisibilityCleanup();
+        return;
+      }
+      unlistenNativePanelVisibility = nativeVisibilityCleanup;
+
+      // 监听就绪后回读原生状态，补偿启动阶段早于 WebView 监听的显隐事件。
+      const hydrationEventVersion = panelVisibilityEventVersionRef.current;
+      try {
+        const nativeVisible = await getFloatingPanelVisible();
+        if (!disposed && panelVisibilityEventVersionRef.current === hydrationEventVersion) {
+          setPanelWindowVisible(nativeVisible);
+        }
+      } catch {
+        // 读取失败时保持隐藏，避免在原生窗口状态未知时提前加载交互数据。
+      }
+    }
+
+    void subscribePanelVisibility().catch(() => undefined);
 
     return () => {
       disposed = true;
@@ -447,6 +627,7 @@ export function FloatingPanelWindowRoot() {
       unlistenSelectionSync();
       unlistenPanelSync?.();
       unlistenPanelHide?.();
+      unlistenNativePanelVisibility?.();
     };
   }, [invalidateFloatingResourceData, loadOverview, pushToast, setSelectedAccountId, setSelectedSiteId, tauriRuntime]);
 
@@ -461,8 +642,11 @@ export function FloatingPanelWindowRoot() {
     <>
       <FloatingPanelWindow
         currentAccountId={currentAccount?.id ?? null}
-        currentAccountLabel={currentAccount?.label ?? null}
-        selectionLoading={selectionOverviewPending}
+        currentSiteId={currentAccount?.siteId ?? null}
+        currentAccountLabel={currentAccountLabel}
+        accounts={overview?.accounts ?? []}
+        selectionState={renderedSelectionState}
+        selectionError={selectionResolution.message}
         dashboardStats={currentResourceData ? dashboardStats : null}
         dashboardStatsLoading={currentResourceData && dashboardStatsLoading}
         dashboardStatsError={currentResourceData ? dashboardStatsError : null}
@@ -475,12 +659,16 @@ export function FloatingPanelWindowRoot() {
         keepVisible={desktopUi.prefs.keepFloatingPanelVisible}
         floatingPanelOpacity={desktopUi.prefs.floatingPanelOpacity}
         onRefresh={() => {
+          const overviewRefresh = tauriRuntime && renderedSelectionState !== "resolved"
+            ? selectionCoordinatorRef.current?.refreshIfActive() ?? Promise.resolve(false)
+            : loadOverview({ source: "shell" });
           void Promise.all([
-            loadOverview({ source: "shell" }),
+            overviewRefresh,
             accountDataWorkspace.refreshAccountData(),
             refreshDashboardStats(true)
           ]);
         }}
+        onAccountSelect={selectFloatingAccount}
         onValidateQuickSwitch={validateFloatingQuickSwitch}
         onSubmitQuickSwitch={submitFloatingQuickSwitch}
         onReloadQuickSwitchData={reloadFloatingQuickSwitchData}

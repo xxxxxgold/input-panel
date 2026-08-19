@@ -21,7 +21,7 @@ export async function getServiceStatus() {
     });
   } catch (cause) {
     if (cause instanceof Error && cause.name === "AbortError") {
-      throw new Error("服务状态请求失败, 远端监控接口暂时不可用。");
+      throw new Error("服务状态请求失败, 远端监控接口暂时不可用。", { cause });
     }
     throw cause;
   } finally {

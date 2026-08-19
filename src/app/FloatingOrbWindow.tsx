@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 
-import projectLogo from "../assets/project-logo.webp";
+import floatingOrbAvatar from "../assets/floating-orb-avatar.png";
 import {
   openMainWindow,
   positionFloatingPanel,
@@ -113,6 +114,10 @@ export function FloatingOrbWindow({ keepPanelVisible = false }: { keepPanelVisib
   }, [dragging]);
 
   useEffect(() => {
+    if (nativeFloatingInput) {
+      return;
+    }
+
     if (keepPanelVisible) {
       clearHideTimer();
       setMenuOpenState(true);
@@ -124,7 +129,7 @@ export function FloatingOrbWindow({ keepPanelVisible = false }: { keepPanelVisib
       setMenuOpenState(false);
       void closePanelWindow();
     }
-  }, [keepPanelVisible]);
+  }, [keepPanelVisible, nativeFloatingInput]);
 
   function setMenuOpenState(next: boolean) {
     menuOpenRef.current = next;
@@ -137,17 +142,39 @@ export function FloatingOrbWindow({ keepPanelVisible = false }: { keepPanelVisib
   }
 
   function markDock(next: "left" | "right") {
+    if (dockRef.current === next) {
+      return;
+    }
     dockRef.current = next;
     setDock(next);
   }
 
   function markWorkArea(next: FloatingWorkArea) {
+    const current = workAreaRef.current;
+    if (
+      current.x === next.x &&
+      current.y === next.y &&
+      current.width === next.width &&
+      current.height === next.height
+    ) {
+      return;
+    }
     workAreaRef.current = next;
     setWorkArea(next);
   }
 
+  function beginNativePointerSession(event: React.PointerEvent<HTMLButtonElement>) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    // WebView2 owns the renderer HWND, so its pointerdown is the reliable edge for
+    // the native poller to start tracking a short click or a drag that exits the orb.
+    void invoke("begin_floating_native_pointer_session").catch(() => undefined);
+  }
+
   function handleHoverOpen() {
-    if (keepPanelVisible) {
+    if (nativeFloatingInput || keepPanelVisible) {
       return;
     }
     clearHideTimer();
@@ -180,7 +207,9 @@ export function FloatingOrbWindow({ keepPanelVisible = false }: { keepPanelVisib
 
     async function setup() {
       const appWindow = getCurrentWindow();
-      await ignoreWindowMutation(appWindow.setSize(new LogicalSize(FLOATING_ORB_SIZE, FLOATING_ORB_SIZE)));
+      if (!nativeFloatingInput) {
+        await ignoreWindowMutation(appWindow.setSize(new LogicalSize(FLOATING_ORB_SIZE, FLOATING_ORB_SIZE)));
+      }
       await ignoreWindowMutation(appWindow.setDecorations(false));
       await ignoreWindowMutation(appWindow.setResizable(false));
       await ignoreWindowMutation(appWindow.setAlwaysOnTop(true));
@@ -205,30 +234,34 @@ export function FloatingOrbWindow({ keepPanelVisible = false }: { keepPanelVisib
         markDock(nextDock);
       }
 
-      window.setTimeout(() => {
-        void ignoreWindowMutation(appWindow.setSize(new LogicalSize(FLOATING_ORB_SIZE, FLOATING_ORB_SIZE)));
-      }, 160);
+      if (!nativeFloatingInput) {
+        window.setTimeout(() => {
+          void ignoreWindowMutation(appWindow.setSize(new LogicalSize(FLOATING_ORB_SIZE, FLOATING_ORB_SIZE)));
+        }, 160);
+      }
 
       await ensurePanelWindow();
 
-      unlistenMoved = await appWindow.onMoved(async ({ payload }) => {
-        if (!active) {
-          return;
-        }
-        const monitor = await currentMonitor();
-        const nextWorkArea = monitor
-          ? {
-              x: monitor.workArea.position.x,
-              y: monitor.workArea.position.y,
-              width: monitor.workArea.size.width,
-              height: monitor.workArea.size.height
-            }
-          : workArea;
-        markWorkArea(nextWorkArea);
-        const ballCenterX = payload.x + FLOATING_ORB_SIZE / 2;
-        const nextDock = resolveFloatingDock(ballCenterX, nextWorkArea);
-        markDock(nextDock);
-      });
+      if (!nativeFloatingInput) {
+        unlistenMoved = await appWindow.onMoved(async ({ payload }) => {
+          if (!active) {
+            return;
+          }
+          const monitor = await currentMonitor();
+          const nextWorkArea = monitor
+            ? {
+                x: monitor.workArea.position.x,
+                y: monitor.workArea.position.y,
+                width: monitor.workArea.size.width,
+                height: monitor.workArea.size.height
+              }
+            : workAreaRef.current;
+          markWorkArea(nextWorkArea);
+          const ballCenterX = payload.x + FLOATING_ORB_SIZE / 2;
+          const nextDock = resolveFloatingDock(ballCenterX, nextWorkArea);
+          markDock(nextDock);
+        });
+      }
 
       unlistenPanelSelect = await listen<FloatingPanelSelectPayload>(
         "floating-panel-select",
@@ -242,22 +275,24 @@ export function FloatingOrbWindow({ keepPanelVisible = false }: { keepPanelVisib
         { target: { kind: "WebviewWindow", label: "floating" } }
       );
 
-      unlistenPanelHover = await listen<FloatingPanelHoverPayload>(
-        "floating-panel-hover",
-        ({ payload }) => {
-          if (!active) {
-            return;
-          }
-          panelHoveringRef.current = payload.hovering;
-          if (payload.hovering) {
-            clearHideTimer();
-            setMenuOpenState(true);
-          } else if (!draggingRef.current && !keepPanelVisible) {
-            scheduleHideMenu();
-          }
-        },
-        { target: { kind: "WebviewWindow", label: "floating" } }
-      );
+      if (!nativeFloatingInput) {
+        unlistenPanelHover = await listen<FloatingPanelHoverPayload>(
+          "floating-panel-hover",
+          ({ payload }) => {
+            if (!active) {
+              return;
+            }
+            panelHoveringRef.current = payload.hovering;
+            if (payload.hovering) {
+              clearHideTimer();
+              setMenuOpenState(true);
+            } else if (!draggingRef.current && !keepPanelVisible) {
+              scheduleHideMenu();
+            }
+          },
+          { target: { kind: "WebviewWindow", label: "floating" } }
+        );
+      }
 
       unlistenContextAction = await listen<FloatingContextActionPayload>(
         "floating-orb-context-action",
@@ -313,7 +348,7 @@ export function FloatingOrbWindow({ keepPanelVisible = false }: { keepPanelVisib
       unlistenContextAction?.();
       unlistenNativePanelVisibility?.();
     };
-  }, [keepPanelVisible, workArea]);
+  }, [keepPanelVisible, nativeFloatingInput]);
 
   useEffect(() => {
     if (nativeFloatingInput) {
@@ -323,22 +358,28 @@ export function FloatingOrbWindow({ keepPanelVisible = false }: { keepPanelVisib
   }, [activePanel, dock, menuOpen, nativeFloatingInput, workArea]);
 
   async function syncPanelWindow() {
+    if (nativeFloatingInput) {
+      return;
+    }
     const panelWindow = await ensurePanelWindow();
     const appWindow = getCurrentWindow();
     const orbPosition = await appWindow.outerPosition();
     const panelPosition = computePanelWindowPosition({
       dock: dockRef.current,
       orbX: orbPosition.x,
-      orbY: orbPosition.y
+      orbY: orbPosition.y,
+      workArea: workAreaRef.current
     });
 
-    await positionFloatingPanel({
-      x: panelPosition.x,
-      y: panelPosition.y
-    });
+    if (nativeFloatingInput) {
+      await positionFloatingPanel({
+        x: panelPosition.x,
+        y: panelPosition.y
+      });
 
-    if (menuOpen) {
-      await setFloatingPanelVisible(true);
+      if (menuOpen) {
+        await setFloatingPanelVisible(true);
+      }
     }
 
     await emitTo("floating-panel", "floating-panel-sync", {
@@ -355,20 +396,29 @@ export function FloatingOrbWindow({ keepPanelVisible = false }: { keepPanelVisib
   }
 
   async function closePanelWindow(existingPanelWindow?: WebviewWindow) {
+    if (nativeFloatingInput) {
+      return;
+    }
     const panelWindow = existingPanelWindow ?? (await ensurePanelWindow());
-    await setFloatingPanelVisible(false);
+    if (nativeFloatingInput) {
+      await setFloatingPanelVisible(false);
+    }
     await emitTo("floating-panel", "floating-panel-hide");
     await ignoreWindowMutation(panelWindow.hide());
   }
 
   async function openPanelWindow(nextPanel: FloatingPanelKey = activePanelRef.current) {
+    if (nativeFloatingInput) {
+      return;
+    }
     const panelWindow = await ensurePanelWindow();
     const appWindow = getCurrentWindow();
     const orbPosition = await appWindow.outerPosition();
     const panelPosition = computePanelWindowPosition({
       dock: dockRef.current,
       orbX: orbPosition.x,
-      orbY: orbPosition.y
+      orbY: orbPosition.y,
+      workArea: workAreaRef.current
     });
 
     const syncPayload = {
@@ -379,12 +429,16 @@ export function FloatingOrbWindow({ keepPanelVisible = false }: { keepPanelVisib
       activePanel: nextPanel
     };
 
-    await positionFloatingPanel({
-      x: panelPosition.x,
-      y: panelPosition.y
-    });
+    if (nativeFloatingInput) {
+      await positionFloatingPanel({
+        x: panelPosition.x,
+        y: panelPosition.y
+      });
+    }
     await panelWindow.show();
-    await setFloatingPanelVisible(true);
+    if (nativeFloatingInput) {
+      await setFloatingPanelVisible(true);
+    }
     await emitTo("floating-panel", "floating-panel-sync", syncPayload);
     window.setTimeout(() => {
       void emitTo("floating-panel", "floating-panel-sync", syncPayload);
@@ -399,7 +453,7 @@ export function FloatingOrbWindow({ keepPanelVisible = false }: { keepPanelVisib
   }
 
   function scheduleHideMenu() {
-    if (keepPanelVisible) {
+    if (nativeFloatingInput || keepPanelVisible) {
       return;
     }
     clearHideTimer();
@@ -446,7 +500,9 @@ export function FloatingOrbWindow({ keepPanelVisible = false }: { keepPanelVisib
   async function handleOpenMainFromContext() {
     setMenuOpenState(false);
     await closePanelWindow();
-    void openMainWindow("overview");
+    if (nativeFloatingInput) {
+      void openMainWindow("overview");
+    }
   }
 
   async function handlePointerDown(event: React.PointerEvent<HTMLButtonElement>) {
@@ -529,10 +585,12 @@ export function FloatingOrbWindow({ keepPanelVisible = false }: { keepPanelVisib
     clearHideTimer();
     setMenuOpenState(true);
     await openPanelWindow();
-    await showFloatingContextMenu({
-      x: event.screenX,
-      y: event.screenY
-    });
+    if (nativeFloatingInput) {
+      await showFloatingContextMenu({
+        x: event.screenX,
+        y: event.screenY
+      });
+    }
   }
 
   return (
@@ -555,7 +613,9 @@ export function FloatingOrbWindow({ keepPanelVisible = false }: { keepPanelVisib
         className={`floating-orb-button ${menuOpen ? "menu-open" : ""} ${dragging ? "dragging" : ""}`.trim()}
         draggable={false}
         onMouseEnter={nativeFloatingInput ? undefined : handleHoverOpen}
-        onPointerDown={nativeFloatingInput ? undefined : (event) => void handlePointerDown(event)}
+        onPointerDown={
+          nativeFloatingInput ? beginNativePointerSession : (event) => void handlePointerDown(event)
+        }
         onPointerMove={nativeFloatingInput ? undefined : (event) => void handlePointerMove(event)}
         onPointerUp={nativeFloatingInput ? undefined : (event) => void finishPointerSession(event, false)}
         onPointerCancel={nativeFloatingInput ? undefined : (event) => void finishPointerSession(event, true)}
@@ -564,11 +624,10 @@ export function FloatingOrbWindow({ keepPanelVisible = false }: { keepPanelVisib
           event.preventDefault();
         }}
         aria-label="打开悬浮快捷菜单"
-        title="打开悬浮快捷菜单"
       >
         <img
-          src={projectLogo}
-          alt="Input面板悬浮图标"
+          src={floatingOrbAvatar}
+          alt=""
           className="floating-orb-logo"
           draggable={false}
           onDragStart={(event) => {

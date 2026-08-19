@@ -1,4 +1,4 @@
-import { Bell } from "lucide-react";
+import { Check } from "lucide-react";
 
 import { formatTime } from "../../../shared/lib/formatters";
 import { EmptyState } from "../../../shared/ui/EmptyState";
@@ -51,20 +51,10 @@ export function AlertInboxModal({
       title="消息盒子"
       onClose={onClose}
       size="wide"
-      closeText={null}
+      hideCloseButton
       className="alert-inbox-modal"
       bodyClassName="alert-inbox-modal-body"
     >
-      <section className="alert-inbox-hero">
-        <div className="alert-inbox-hero-icon" aria-hidden="true">
-          <Bell size={18} />
-        </div>
-        <div className="alert-inbox-hero-copy">
-          <strong>{items.length === 0 ? "当前没有待处理消息" : `${items.length} 条待处理消息`}</strong>
-          <p>{items.length === 0 ? "所有已刷新账号都处于健康状态。" : "集中查看低余额、会话失效和服务状态变更提醒。"}</p>
-        </div>
-      </section>
-
       {items.length > 0 ? (
         <div className="alert-inbox-list motion-stagger-grid" role="list">
           {items.map((item, index) => (
@@ -74,35 +64,39 @@ export function AlertInboxModal({
               role="listitem"
               style={{ ["--motion-order" as string]: index }}
             >
-              <div className="alert-inbox-item-main">
-                <div className={`alert-inbox-severity ${resolveInboxTone(item)}`}>
-                  {resolveInboxLabel(item)}
-                </div>
-                <div className="alert-inbox-copy">
-                  <strong>{item.title}</strong>
-                  <p>{item.detail}</p>
-                  {item.models && item.models.length > 0 ? (
-                    <p className="alert-inbox-models">涉及模型: {item.models.join(", ")}</p>
-                  ) : null}
-                </div>
+              <div className={`alert-inbox-severity ${resolveInboxTone(item)}`}>
+                {resolveInboxLabel(item)}
               </div>
-              <div className="alert-inbox-meta">
-                <span>{item.source === "service-status" ? "服务状态监控" : item.siteName ?? "未知站点"}</span>
-                <span>{item.source === "service-status" ? "本地运行态" : item.accountLabel ?? "未知账号"}</span>
-                <time dateTime={item.createdAt}>{formatTime(item.createdAt)}</time>
+              <div className="alert-inbox-copy">
+                <strong>{item.title}</strong>
+                <p>{item.detail}</p>
+                {item.models && item.models.length > 0 ? (
+                  <p className="alert-inbox-models">涉及模型: {item.models.join(", ")}</p>
+                ) : null}
+              </div>
+              <time className="alert-inbox-time" dateTime={item.createdAt}>
+                {formatTime(item.createdAt)}
+              </time>
+              <footer className="alert-inbox-item-footer">
+                <div className="alert-inbox-context" aria-label="消息来源">
+                  <span>{item.source === "service-status" ? "服务状态" : item.siteName ?? "未知站点"}</span>
+                  <span>{item.source === "service-status" ? "自动监控" : item.accountLabel ?? "未知账号"}</span>
+                </div>
                 <button
                   type="button"
-                  className="inline-text-button alert-inbox-dismiss"
+                  className="ghost-button alert-inbox-dismiss"
                   onClick={() => onAcknowledge(item)}
+                  aria-label={`将“${item.title}”标记为已处理`}
                 >
-                  知道了
+                  <Check size={14} aria-hidden="true" />
+                  <span>标记已处理</span>
                 </button>
-              </div>
+              </footer>
             </article>
           ))}
         </div>
       ) : (
-        <EmptyState title="没有待处理消息" detail="当前没有新的余额、订阅或登录异常。" compact />
+        <EmptyState title="没有待处理消息" detail="当前没有新的提醒需要处理。" compact />
       )}
     </Modal>
   );

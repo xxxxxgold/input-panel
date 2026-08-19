@@ -5,7 +5,8 @@
   "windows": [
     "main",
     "floating",
-    "floating-panel"
+    "floating-panel",
+    "floating-notification"
   ],
   "webviews": [
     "*"
@@ -22,6 +23,9 @@
     "core:window:allow-set-shadow",
     "core:window:allow-set-always-on-top",
     "core:window:allow-set-focus",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
     "core:window:allow-start-dragging",
     "core:window:allow-current-monitor",
     "core:window:allow-outer-position",

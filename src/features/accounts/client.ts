@@ -9,41 +9,94 @@ import type {
   DataSyncTrigger,
   RefreshAccountTaskResponse,
   RefreshTriggerSource,
+  SiteCooldownClearInput,
+  SiteEndpointTestInput,
+  SiteEndpointTestResult,
+  SiteFailoverStatusPayload,
+  SiteFailoverTransitionBatch,
   SiteInput,
+  SitePatchInput,
   SiteRecord
 } from "../../types";
-import { isTauriRuntime, request } from "../../shared/transport/runtime";
+import {
+  desktopOrHttp,
+  isTauriRuntime,
+  request,
+  requestErrorFromUnknown
+} from "../../shared/transport/runtime";
+import { refreshSiteFailoverTransitionsAfter } from "../../shared/site-failover-transition";
 
 export function createSite(payload: SiteInput) {
-  if (isTauriRuntime()) {
-    return invoke<SiteRecord>("create_site", { payload });
-  }
-  return request<SiteRecord>("/api/sites", {
-    method: "POST",
-    body: JSON.stringify(payload)
+  return desktopOrHttp<SiteRecord>({
+    command: "create_site",
+    args: { payload },
+    url: "/api/sites",
+    init: {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
   });
 }
 
-export function updateSite(siteId: string, payload: Partial<SiteInput>) {
-  if (isTauriRuntime()) {
-    return invoke<SiteRecord>("update_site", {
-      siteId,
-      name: payload.name,
-      baseUrl: payload.baseUrl
-    });
-  }
-  return request<SiteRecord>(`/api/sites/${siteId}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload)
+export function updateSite(siteId: string, payload: SitePatchInput) {
+  return desktopOrHttp<SiteRecord>({
+    command: "update_site",
+    args: { siteId, payload },
+    url: `/api/sites/${siteId}`,
+    init: {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }
   });
 }
 
 export function removeSite(siteId: string) {
-  if (isTauriRuntime()) {
-    return invoke<boolean>("remove_site", { siteId }).then(() => ({ ok: true as const }));
-  }
-  return request<{ ok: true }>(`/api/sites/${siteId}`, {
-    method: "DELETE"
+  return desktopOrHttp<boolean | { ok: true }>({
+    command: "remove_site",
+    args: { siteId },
+    url: `/api/sites/${siteId}`,
+    init: { method: "DELETE" }
+  }).then(() => ({ ok: true as const }));
+}
+
+export function getSiteFailoverStatus(siteId: string) {
+  return desktopOrHttp<SiteFailoverStatusPayload>({
+    command: "get_site_failover_status",
+    args: { siteId },
+    url: `/api/sites/${siteId}/failover-status`
+  });
+}
+
+export function testSiteEndpoint(siteId: string, payload: SiteEndpointTestInput) {
+  return desktopOrHttp<SiteEndpointTestResult>({
+    command: "test_site_endpoint",
+    args: { siteId, payload },
+    url: `/api/sites/${siteId}/failover/test`,
+    init: {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  });
+}
+
+export function clearSiteFailoverCooldown(siteId: string, payload: SiteCooldownClearInput) {
+  return desktopOrHttp<SiteFailoverStatusPayload>({
+    command: "clear_site_failover_cooldown",
+    args: { siteId, payload },
+    url: `/api/sites/${siteId}/failover/clear-cooldown`,
+    init: {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  });
+}
+
+export function listSiteFailoverTransitions(afterRevision: number) {
+  const query = new URLSearchParams({ afterRevision: String(afterRevision) });
+  return desktopOrHttp<SiteFailoverTransitionBatch>({
+    command: "list_site_failover_transitions",
+    args: { afterRevision },
+    url: `/api/site-failover/transitions?${query.toString()}`
   });
 }
 
@@ -84,10 +137,19 @@ export function removeAccount(accountId: string) {
   });
 }
 
-export async function loginAccount(accountId: string, password: string): Promise<LoginFlowResult> {
+export function loginAccount(accountId: string, password: string): Promise<LoginFlowResult> {
   if (isTauriRuntime()) {
-    return invoke<LoginFlowResult>("login_account", { accountId, password });
+    return refreshSiteFailoverTransitionsAfter(desktopOrHttp<LoginFlowResult>({
+      command: "login_account",
+      args: { accountId, password },
+      url: ""
+    }));
   }
+
+  return refreshSiteFailoverTransitionsAfter(loginAccountHttp(accountId, password));
+}
+
+async function loginAccountHttp(accountId: string, password: string): Promise<LoginFlowResult> {
   const response = await fetch(`/api/accounts/${accountId}/login`, {
     method: "POST",
     headers: {
@@ -96,7 +158,7 @@ export async function loginAccount(accountId: string, password: string): Promise
     body: JSON.stringify({ password })
   });
   const data = (await response.json().catch(() => null)) as
-    | { error?: string; tempToken?: string; emailMasked?: string }
+    | { error?: string; tempToken?: string; originBaseUrl?: string; emailMasked?: string }
     | AccountRuntime
     | null;
   if (response.ok) {
@@ -106,14 +168,18 @@ export async function loginAccount(accountId: string, password: string): Promise
     };
   }
   if (response.status === 409 && data && "tempToken" in data && typeof data.tempToken === "string") {
+    if (!("originBaseUrl" in data) || typeof data.originBaseUrl !== "string") {
+      throw new Error("2FA 响应缺少来源站点地址。");
+    }
     return {
       type: "2fa",
       tempToken: data.tempToken,
+      originBaseUrl: data.originBaseUrl,
       emailMasked: data.emailMasked ?? null,
       message: data.error
     };
   }
-  throw new Error((data as { error?: string } | null)?.error ?? `Request failed: ${response.status}`);
+  throw requestErrorFromUnknown(data, response.status);
 }
 
 export function persistAccountCredential(accountId: string, password: string) {
@@ -126,30 +192,37 @@ export function persistAccountCredential(accountId: string, password: string) {
   });
 }
 
-export function completeAccount2fa(accountId: string, tempToken: string, code: string) {
-  if (isTauriRuntime()) {
-    return invoke<AccountRuntime>("login_account_2fa", { accountId, tempToken, code });
-  }
-  return request<AccountRuntime>(`/api/accounts/${accountId}/login/2fa`, {
-    method: "POST",
-    body: JSON.stringify({ tempToken, code })
-  });
+export function completeAccount2fa(
+  accountId: string,
+  tempToken: string,
+  code: string,
+  originBaseUrl: string
+) {
+  return refreshSiteFailoverTransitionsAfter(desktopOrHttp<AccountRuntime>({
+    command: "login_account_2fa",
+    args: { accountId, tempToken, code, originBaseUrl },
+    url: `/api/accounts/${accountId}/login/2fa`,
+    init: {
+      method: "POST",
+      body: JSON.stringify({ tempToken, code, originBaseUrl })
+    }
+  }));
 }
 
 export function refreshAccount(
   accountId: string,
   triggerSource: RefreshTriggerSource = "manual"
 ) {
-  if (isTauriRuntime()) {
-    return invoke<RefreshAccountTaskResponse>("refresh_account", {
-      accountId,
-      triggerSource
-    }).then((result) => result.account);
-  }
-  return request<RefreshAccountTaskResponse>(`/api/accounts/${accountId}/refresh`, {
-    method: "POST",
-    body: JSON.stringify({ triggerSource })
+  const operation = desktopOrHttp<RefreshAccountTaskResponse>({
+    command: "refresh_account",
+    args: { accountId, triggerSource },
+    url: `/api/accounts/${accountId}/refresh`,
+    init: {
+      method: "POST",
+      body: JSON.stringify({ triggerSource })
+    }
   }).then((result) => result.account);
+  return refreshSiteFailoverTransitionsAfter(operation);
 }
 
 export function syncAccountData(
@@ -159,22 +232,25 @@ export function syncAccountData(
     triggerSource?: DataSyncTrigger;
   }
 ) {
-  if (isTauriRuntime()) {
-    return invoke<AccountSyncStatusPayload>("sync_account_data", {
+  const normalizedPayload = {
+    scope: payload.scope,
+    triggerSource: payload.triggerSource ?? "manual"
+  };
+  return refreshSiteFailoverTransitionsAfter(desktopOrHttp<AccountSyncStatusPayload>({
+    command: "sync_account_data",
+    args: {
       accountId,
-      payload: {
-        scope: payload.scope,
-        triggerSource: payload.triggerSource ?? "manual"
-      }
-    });
-  }
-  return request<AccountSyncStatusPayload>(`/api/accounts/${accountId}/sync`, {
-    method: "POST",
-    body: JSON.stringify({
-      scope: payload.scope,
-      triggerSource: payload.triggerSource ?? "manual"
-    })
-  });
+      payload: normalizedPayload
+    },
+    url: `/api/accounts/${accountId}/sync`,
+    init: {
+      method: "POST",
+      body: JSON.stringify({
+        scope: normalizedPayload.scope,
+        triggerSource: normalizedPayload.triggerSource
+      })
+    }
+  }));
 }
 
 export function getAccountSyncStatus(accountId: string) {

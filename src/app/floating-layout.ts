@@ -10,14 +10,14 @@ export interface FloatingWorkArea {
 }
 
 export const FLOATING_ORB_SIZE = 60;
-export const FLOATING_MENU_WIDTH = 80;
-export const FLOATING_MENU_HEIGHT = 248;
-export const FLOATING_PREVIEW_WIDTH = 328;
-export const FLOATING_PREVIEW_HEIGHT = 248;
-export const FLOATING_PANEL_GAP = 4;
-export const FLOATING_PANEL_TAIL_SPACE = 14;
-export const FLOATING_PANEL_SHELL_WIDTH = 408;
-export const FLOATING_EDGE_HIDE = 16;
+export const FLOATING_MENU_WIDTH = 360;
+export const FLOATING_MENU_HEIGHT = 264;
+export const FLOATING_PREVIEW_WIDTH = 360;
+export const FLOATING_PREVIEW_HEIGHT = 264;
+export const FLOATING_PANEL_GAP = 8;
+export const FLOATING_PANEL_TAIL_SPACE = 0;
+export const FLOATING_PANEL_SHELL_WIDTH = 360;
+export const FLOATING_EDGE_HIDE = 0;
 export const FLOATING_SAFE_MARGIN = 12;
 
 function clamp(value: number, min: number, max: number) {
@@ -49,8 +49,17 @@ export function computePanelWindowPosition(options: {
   dock: FloatingDock;
   orbX: number;
   orbY: number;
+  workArea?: FloatingWorkArea;
 }) {
-  const y = options.orbY - Math.max(FLOATING_MENU_HEIGHT, FLOATING_PREVIEW_HEIGHT);
+  const panelHeight = Math.max(FLOATING_MENU_HEIGHT, FLOATING_PREVIEW_HEIGHT);
+  const rawY = options.orbY - panelHeight;
+  const y = options.workArea
+    ? clamp(
+        rawY,
+        options.workArea.y + FLOATING_SAFE_MARGIN,
+        Math.max(options.workArea.y + FLOATING_SAFE_MARGIN, options.workArea.y + options.workArea.height - panelHeight - FLOATING_SAFE_MARGIN)
+      )
+    : rawY;
   const x =
     options.dock === "left"
       ? options.orbX + FLOATING_ORB_SIZE + FLOATING_PANEL_GAP
@@ -60,6 +69,6 @@ export function computePanelWindowPosition(options: {
     x,
     y,
     width: FLOATING_PANEL_SHELL_WIDTH,
-    height: Math.max(FLOATING_MENU_HEIGHT, FLOATING_PREVIEW_HEIGHT)
+    height: panelHeight
   };
 }

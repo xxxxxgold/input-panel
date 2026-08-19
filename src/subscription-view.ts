@@ -64,10 +64,13 @@ export interface SubscriptionUsageInsights {
 
 export interface SubscriptionDetailRecord {
   id: string;
+  subscriptionKey: string;
+  identityAmbiguous: boolean;
   name: string;
   status: string;
   platform: string | null;
   groupName: string | null;
+  sourceGroupId: number | null;
   expiresAt: string | null;
   dailyUsedUsd: number;
   dailyLimitUsd: number;
@@ -83,6 +86,11 @@ export interface SubscriptionDetailRecord {
 type SubscriptionStatusPresentation = {
   label: string;
   tone: SubscriptionStatusTone;
+};
+
+type SummaryRecordMatch = {
+  index: number;
+  identityMatched: boolean;
 };
 
 type TopbarSubscriptionSourceRecord = Pick<
@@ -104,9 +112,14 @@ export function mergeSubscriptionRecords(
   const remainingCacheViews = [...cacheViewSubscriptions];
   const fallbackPlatform = remainingCacheViews.find((item) => item.platform)?.platform ?? null;
   const merged = summary.subscriptions.map((summaryRecord) => {
-    const matchIndex = remainingCacheViews.findIndex((item) => matchesSummaryRecord(item, summaryRecord));
-    const cacheViewRecord = matchIndex >= 0 ? remainingCacheViews.splice(matchIndex, 1)[0] : null;
-    return buildSummarySubscriptionRecord(summaryRecord, cacheViewRecord, fallbackPlatform);
+    const match = findSummaryRecordMatch(remainingCacheViews, summaryRecord);
+    const cacheViewRecord = match ? remainingCacheViews.splice(match.index, 1)[0] : null;
+    return buildSummarySubscriptionRecord(
+      summaryRecord,
+      cacheViewRecord,
+      fallbackPlatform,
+      match?.identityMatched ?? false
+    );
   });
 
   return [...merged, ...remainingCacheViews];
@@ -247,10 +260,13 @@ export function buildSubscriptionDetailRecords(input: {
 
     return {
       id: subscriptionRecord.id,
+      subscriptionKey: subscriptionRecord.subscriptionKey,
+      identityAmbiguous: subscriptionRecord.identityAmbiguous,
       name: subscriptionRecord.groupName ?? subscriptionRecord.name,
       status: summaryRecord?.status ?? subscriptionRecord.status,
       platform: subscriptionRecord.platform ?? null,
       groupName: subscriptionRecord.groupName ?? null,
+      sourceGroupId: subscriptionRecord.groupId ?? (summaryRecord?.groupId ?? null),
       expiresAt: summaryRecord?.expiresAt ?? subscriptionRecord.expiresAt ?? null,
       dailyUsedUsd: summaryRecord?.dailyUsedUsd ?? subscriptionRecord.daily?.current ?? 0,
       dailyLimitUsd: summaryRecord?.dailyLimitUsd ?? subscriptionRecord.daily?.limit ?? 0,
@@ -277,15 +293,45 @@ function matchesSummaryRecord(
     return true;
   }
 
-  const cacheViewKey = normalizeSubscriptionKey(cacheViewRecord.groupName ?? cacheViewRecord.name);
+  return cacheViewRecord.subscriptionKey.length === 0
+    && cacheViewRecord.id === buildSummaryRecordId(summaryRecord);
+}
+
+function findSummaryRecordMatch(
+  cacheViewRecords: SubscriptionRecord[],
+  summaryRecord: SubscriptionSummaryRecord
+): SummaryRecordMatch | null {
+  const identityIndex = cacheViewRecords.findIndex((item) => matchesSummaryGroupIdentity(item, summaryRecord));
+  if (identityIndex >= 0) {
+    return { index: identityIndex, identityMatched: true };
+  }
+
   const summaryKey = normalizeSubscriptionKey(summaryRecord.groupName);
-  return cacheViewKey.length > 0 && cacheViewKey === summaryKey;
+  if (!summaryKey) {
+    return null;
+  }
+  const displayIndexes = cacheViewRecords.flatMap((item, index) =>
+    normalizeSubscriptionKey(item.groupName ?? item.name) === summaryKey ? [index] : []
+  );
+  return displayIndexes.length === 1
+    ? { index: displayIndexes[0], identityMatched: false }
+    : null;
+}
+
+function matchesSummaryGroupIdentity(
+  cacheViewRecord: SubscriptionRecord,
+  summaryRecord: SubscriptionSummaryRecord
+) {
+  return typeof cacheViewRecord.groupId === "number"
+    && cacheViewRecord.groupId > 0
+    && cacheViewRecord.groupId === summaryRecord.groupId;
 }
 
 function buildSummarySubscriptionRecord(
   summaryRecord: SubscriptionSummaryRecord,
   cacheViewRecord: SubscriptionRecord | null,
-  fallbackPlatform: string | null
+  fallbackPlatform: string | null,
+  identityMatched: boolean
 ): SubscriptionRecord {
   const summaryDailyWindow = summaryRecord.dailyLimitUsd > 0
     ? {
@@ -296,8 +342,15 @@ function buildSummarySubscriptionRecord(
     : cacheViewRecord?.daily ?? null;
 
   return {
-    id: cacheViewRecord?.id ?? buildSummaryRecordId(summaryRecord),
-    groupId: summaryRecord.groupId > 0 ? summaryRecord.groupId : (cacheViewRecord?.groupId ?? null),
+    id: identityMatched && cacheViewRecord ? cacheViewRecord.id : buildSummaryRecordId(summaryRecord),
+    subscriptionKey: identityMatched && cacheViewRecord ? cacheViewRecord.subscriptionKey : "",
+    identityKind: identityMatched && cacheViewRecord ? cacheViewRecord.identityKind : "fallback",
+    identityAmbiguous: identityMatched && cacheViewRecord ? cacheViewRecord.identityAmbiguous : true,
+    groupId: summaryRecord.groupId > 0
+      ? summaryRecord.groupId
+      : identityMatched && cacheViewRecord
+        ? cacheViewRecord.groupId
+        : null,
     name: cacheViewRecord?.name ?? summaryRecord.groupName,
     status: summaryRecord.status || cacheViewRecord?.status || "unknown",
     groupName: summaryRecord.groupName || cacheViewRecord?.groupName || cacheViewRecord?.name || "未分组",

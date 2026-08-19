@@ -1,7 +1,10 @@
-import { sendNotification as sendTauriNotification, isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
+import { invoke } from "@tauri-apps/api/core";
 
 import { isTauriRuntime } from "../../shared/transport/runtime";
-import type { ServiceStatusPayload } from "../../types";
+import type {
+  ServiceStatusMonitorNotificationEvent,
+  ServiceStatusPayload
+} from "../../types";
 
 export type AppNotificationSeverity = "critical" | "success" | "info";
 export type AppNotificationSource = "overview-alert" | "service-status";
@@ -9,6 +12,8 @@ export type AppNotificationKind =
   | "overview-alert"
   | "service-status-down"
   | "service-status-recovered"
+  | "service-status-monitor-unavailable"
+  | "service-status-monitor-recovered"
   | "service-status-test-down"
   | "service-status-test-recovered";
 
@@ -33,7 +38,7 @@ export interface ServiceStatusIssue {
 }
 
 export interface ServiceStatusTransitionEvent {
-  kind: "down" | "recovered";
+  kind: "down" | "recovered" | "monitor-unavailable" | "monitor-recovered";
   title: string;
   detail: string;
   dedupeKey: string;
@@ -41,6 +46,14 @@ export interface ServiceStatusTransitionEvent {
   createdAt: string;
   models: string[];
 }
+
+export interface ServiceStatusModelHealth {
+  available: boolean;
+  lastProbeTs: number;
+  lastError: string | null;
+}
+
+export type ServiceStatusModelHealthMap = Map<string, ServiceStatusModelHealth>;
 
 export function describeServiceStatusIssue(status: ServiceStatusPayload | null): ServiceStatusIssue | null {
   if (!status) {
@@ -72,8 +85,8 @@ export function describeServiceStatusIssue(status: ServiceStatusPayload | null):
       signature,
       failingModels,
       message: reason
-        ? `服务状态自动刷新发现异常: ${service.model} 探测失败, ${reason}`
-        : `服务状态自动刷新发现异常: ${service.model} 探测失败`
+        ? `${service.model} 当前无法使用, 请打开服务状态查看详情`
+        : `${service.model} 当前无法使用, 请打开服务状态查看详情`
     };
   }
 
@@ -82,7 +95,7 @@ export function describeServiceStatusIssue(status: ServiceStatusPayload | null):
   return {
     signature,
     failingModels,
-    message: `服务状态自动刷新发现异常: ${scope} 探测失败`
+    message: `${scope} 当前无法使用, 请打开服务状态查看详情`
   };
 }
 
@@ -108,7 +121,7 @@ export function buildServiceStatusTransitionEvent(options: {
       kind: "down",
       title: "检测到服务状态不可用",
       detail: issue?.message ?? "服务状态自动刷新发现异常, 请打开服务状态查看详情。",
-      dedupeKey: `service-status:down:${issue?.signature ?? "unknown"}:${createdAt}`,
+      dedupeKey: `service-status:down:${issue?.signature ?? "unknown"}`,
       severity: "critical",
       createdAt,
       models
@@ -119,9 +132,116 @@ export function buildServiceStatusTransitionEvent(options: {
     kind: "recovered",
     title: "检测到服务状态恢复正常",
     detail: issue?.message ?? buildRecoveryDetail(options.nextStatus),
-    dedupeKey: `service-status:recovered:${createdAt}`,
+    dedupeKey: "service-status:recovered",
     severity: "success",
     createdAt,
+    models: []
+  };
+}
+
+export function buildServiceStatusModelHealthMap(
+  status: ServiceStatusPayload
+): ServiceStatusModelHealthMap {
+  return new Map(
+    status.services.map((service) => [
+      service.model,
+      {
+        available: service.last?.ok ?? false,
+        lastProbeTs: service.last?.ts ?? status.generatedAt,
+        lastError: normalizeOptionalFailureReason(service.last?.error)
+      }
+    ])
+  );
+}
+
+/**
+ * 按模型维护切换基线，避免整体仍处于异常时漏掉其他模型的新故障或恢复。
+ */
+export function buildServiceStatusModelTransitionEvents(options: {
+  previousModels: ServiceStatusModelHealthMap | null;
+  nextStatus: ServiceStatusPayload;
+  notifyInitialFailures?: boolean;
+  createdAt?: string;
+}) {
+  const nextModels = buildServiceStatusModelHealthMap(options.nextStatus);
+  const createdAt = options.createdAt ?? new Date().toISOString();
+  const events: ServiceStatusTransitionEvent[] = [];
+
+  for (const [model, current] of nextModels) {
+    const previous = options.previousModels?.get(model);
+    const becameUnavailable = !current.available
+      && (previous ? previous.available : options.notifyInitialFailures === true);
+    const recovered = current.available && previous?.available === false;
+
+    if (becameUnavailable) {
+      events.push({
+        kind: "down",
+        title: `${model} 服务不可用`,
+        detail: current.lastError
+          ? `${model} 当前无法使用: ${current.lastError}`
+          : `${model} 当前无法使用, 请打开服务状态查看详情。`,
+        dedupeKey: `service-status:model-down:${model}:${current.lastProbeTs}`,
+        severity: "critical",
+        createdAt,
+        models: [model]
+      });
+    } else if (recovered) {
+      events.push({
+        kind: "recovered",
+        title: `${model} 服务已恢复`,
+        detail: `${model} 当前已恢复正常。`,
+        dedupeKey: `service-status:model-recovered:${model}:${current.lastProbeTs}`,
+        severity: "success",
+        createdAt,
+        models: [model]
+      });
+    }
+  }
+
+  if (options.nextStatus.allOk && options.previousModels) {
+    for (const [model, previous] of options.previousModels) {
+      if (!previous.available && !nextModels.has(model)) {
+        events.push({
+          kind: "recovered",
+          title: `${model} 服务已恢复`,
+          detail: `${model} 已不再出现在异常服务列表中。`,
+          dedupeKey: `service-status:model-recovered:${model}:${options.nextStatus.generatedAt}`,
+          severity: "success",
+          createdAt,
+          models: [model]
+        });
+      }
+    }
+  }
+
+  return { events, nextModels };
+}
+
+export function buildServiceStatusMonitorUnavailableEvent(
+  failedAt: string,
+  detail: string
+): ServiceStatusTransitionEvent {
+  return {
+    kind: "monitor-unavailable",
+    title: "模型状态监控暂时不可用",
+    detail,
+    dedupeKey: `service-status:monitor-unavailable:${failedAt}`,
+    severity: "critical",
+    createdAt: failedAt,
+    models: []
+  };
+}
+
+export function buildServiceStatusMonitorRecoveredEvent(
+  recoveredAt = new Date().toISOString()
+): ServiceStatusTransitionEvent {
+  return {
+    kind: "monitor-recovered",
+    title: "模型状态监控已恢复",
+    detail: "Input 服务状态读取已恢复, 后台监控正在正常运行。",
+    dedupeKey: `service-status:monitor-recovered:${recoveredAt}`,
+    severity: "success",
+    createdAt: recoveredAt,
     models: []
   };
 }
@@ -131,7 +251,30 @@ export function buildServiceStatusNotificationRecord(event: ServiceStatusTransit
     id: crypto.randomUUID(),
     source: "service-status",
     severity: event.severity,
-    kind: event.kind === "down" ? "service-status-down" : "service-status-recovered",
+    kind: resolveServiceStatusNotificationKind(event.kind),
+    title: event.title,
+    detail: event.detail,
+    createdAt: event.createdAt,
+    dedupeKey: event.dedupeKey,
+    models: event.models
+  };
+}
+
+export function buildNativeServiceStatusNotificationRecord(
+  event: ServiceStatusMonitorNotificationEvent
+): AppNotificationItem {
+  const kindByNativeEvent = {
+    modelDown: "service-status-down",
+    modelRecovered: "service-status-recovered",
+    monitorUnavailable: "service-status-monitor-unavailable",
+    monitorRecovered: "service-status-monitor-recovered"
+  } as const;
+
+  return {
+    id: event.id,
+    source: "service-status",
+    severity: event.severity,
+    kind: kindByNativeEvent[event.kind],
     title: event.title,
     detail: event.detail,
     createdAt: event.createdAt,
@@ -169,20 +312,34 @@ export function buildServiceStatusTestNotification(kind: "down" | "recovered"): 
   };
 }
 
-export async function sendAppNotification(notification: Pick<AppNotificationItem, "title" | "detail">) {
+export async function sendAppNotification(notification: AppNotificationItem) {
+  if (isTauriRuntime()) {
+    try {
+      await invoke("enqueue_floating_notification", {
+        payload: {
+          id: notification.id,
+          dedupeKey: notification.dedupeKey,
+          title: notification.title,
+          level: notification.severity,
+          source: notification.source,
+          createdAt: notification.createdAt,
+          content: notification.detail,
+          model: notification.models?.length
+            ? { label: notification.models.join(", ") }
+            : null
+        }
+      });
+    } catch {
+      // 气泡窗口失败不应阻断消息盒子或系统通知。
+    }
+  }
+
   try {
     if (isTauriRuntime()) {
-      let granted = await isPermissionGranted();
-      if (!granted) {
-        const permission = await requestPermission();
-        granted = permission === "granted";
-      }
-      if (granted) {
-        sendTauriNotification({
-          title: notification.title,
-          body: notification.detail
-        });
-      }
+      await invoke("send_service_status_system_notification", {
+        title: notification.title,
+        body: notification.detail
+      });
       return;
     }
 
@@ -215,4 +372,24 @@ function buildRecoveryDetail(status: ServiceStatusPayload) {
 function normalizeFailureReason(reason?: string | null) {
   const trimmed = reason?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : "probe_failed";
+}
+
+function normalizeOptionalFailureReason(reason?: string | null) {
+  const trimmed = reason?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : null;
+}
+
+function resolveServiceStatusNotificationKind(
+  kind: ServiceStatusTransitionEvent["kind"]
+): AppNotificationKind {
+  switch (kind) {
+    case "down":
+      return "service-status-down";
+    case "recovered":
+      return "service-status-recovered";
+    case "monitor-unavailable":
+      return "service-status-monitor-unavailable";
+    case "monitor-recovered":
+      return "service-status-monitor-recovered";
+  }
 }

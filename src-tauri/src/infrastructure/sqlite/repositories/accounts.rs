@@ -71,6 +71,32 @@ pub fn find_account(db: &Database, account_id: &str) -> Result<Option<AccountRec
     Ok(account)
 }
 
+pub fn list_accounts(db: &Database) -> Result<Vec<AccountRecord>> {
+    let conn = db.connect()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, site_id, label, email, balance_warning, last_login_at, created_at, updated_at
+         FROM accounts
+         ORDER BY created_at ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(AccountRecord {
+            id: row.get(0)?,
+            site_id: row.get(1)?,
+            label: row.get(2)?,
+            email: row.get(3)?,
+            balance_warning: row.get(4)?,
+            last_login_at: row.get(5)?,
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
+        })
+    })?;
+    let mut accounts = Vec::new();
+    for row in rows {
+        accounts.push(row?);
+    }
+    Ok(accounts)
+}
+
 pub fn list_account_ids(db: &Database) -> Result<Vec<String>> {
     let conn = db.connect()?;
     let mut stmt = conn.prepare("SELECT id FROM accounts ORDER BY created_at ASC")?;
@@ -81,4 +107,3 @@ pub fn list_account_ids(db: &Database) -> Result<Vec<String>> {
     }
     Ok(ids)
 }
-

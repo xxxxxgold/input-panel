@@ -13,10 +13,10 @@ export function UsageTrendSection({
   subtitle,
   points,
   emptyTitle = "当前没有趋势数据",
-  emptyDetail = "站点未返回 dashboard/trend 数据。"
+  emptyDetail = "刷新数据后, 这里会显示一段时间内的变化趋势。"
 }: {
   title?: string;
-  subtitle: string;
+  subtitle?: string;
   points: UsageTrendPoint[];
   emptyTitle?: string;
   emptyDetail?: string;

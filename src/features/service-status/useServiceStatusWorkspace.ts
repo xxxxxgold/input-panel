@@ -2,20 +2,27 @@ import { useEffect, useRef, useState } from "react";
 
 import { getServiceStatus } from "./client";
 import {
-  buildServiceStatusTransitionEvent,
+  buildServiceStatusModelHealthMap,
+  buildServiceStatusModelTransitionEvents,
+  buildServiceStatusMonitorRecoveredEvent,
+  buildServiceStatusMonitorUnavailableEvent,
   describeServiceStatusIssue,
-  resolveServiceStatusHealthState,
+  type ServiceStatusModelHealthMap,
   type ServiceStatusTransitionEvent
 } from "./notifications";
 import type { ServiceStatusPayload } from "../../types";
 
 const REFRESH_INTERVAL_MS = 5000;
+type ServiceStatusRefreshSource = "page" | "topbar" | null;
+export type ServiceStatusRefreshMode = "foreground" | "background";
+export type ServiceStatusRefreshResult = "success" | "cancelled";
 
 export function useServiceStatusWorkspace(options: {
   setError: (message: string | null) => void;
   notifyStatusTransition?: (event: ServiceStatusTransitionEvent) => void;
   refreshIntervalMs?: number;
   autoRefresh?: boolean;
+  notifyInitialStatus?: boolean;
   enabled?: boolean;
 }) {
   const {
@@ -23,19 +30,23 @@ export function useServiceStatusWorkspace(options: {
     notifyStatusTransition,
     refreshIntervalMs = REFRESH_INTERVAL_MS,
     autoRefresh = true,
+    notifyInitialStatus = false,
     enabled = true
   } = options;
   const [status, setStatus] = useState<ServiceStatusPayload | null>(null);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
+  const [refreshingSource, setRefreshingSource] = useState<ServiceStatusRefreshSource>(null);
+  const [requestInFlight, setRequestInFlight] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
   const lastReportedRequestErrorRef = useRef<string | null>(null);
-  const lastKnownHealthRef = useRef<"healthy" | "degraded" | null>(null);
+  const lastKnownModelsRef = useRef<ServiceStatusModelHealthMap | null>(null);
+  const monitorRequestFailedRef = useRef(false);
   const lifecycleTokenRef = useRef(0);
-  const requestInFlightRef = useRef(false);
+  const activeRequestRef = useRef<{ id: number; token: number } | null>(null);
+  const requestSequenceRef = useRef(0);
   const enabledRef = useRef(enabled);
   const autoRefreshRef = useRef(autoRefresh);
   const refreshIntervalMsRef = useRef(refreshIntervalMs);
@@ -55,35 +66,47 @@ export function useServiceStatusWorkspace(options: {
     }
   }
 
-  function reportRequestError(message: string) {
+  function reportRequestError(message: string, mode: ServiceStatusRefreshMode) {
     setLastError(message);
-    if (lastReportedRequestErrorRef.current !== message) {
+    if (mode === "foreground" && lastReportedRequestErrorRef.current !== message) {
       setErrorRef.current(message);
       lastReportedRequestErrorRef.current = message;
     }
   }
 
   function syncStatusTransition(next: ServiceStatusPayload, shouldNotify: boolean) {
-    const nextHealth = resolveServiceStatusHealthState(next);
+    const { events, nextModels } = buildServiceStatusModelTransitionEvents({
+      previousModels: lastKnownModelsRef.current,
+      nextStatus: next,
+      notifyInitialFailures: shouldNotify
+    });
+    lastKnownModelsRef.current = nextModels;
     const notifyStatusTransition = notifyStatusTransitionRef.current;
-    if (lastKnownHealthRef.current === null) {
-      lastKnownHealthRef.current = nextHealth;
-      return;
-    }
     if (!shouldNotify || !notifyStatusTransition) {
-      lastKnownHealthRef.current = nextHealth;
+      monitorRequestFailedRef.current = false;
       return;
     }
 
-    const event = buildServiceStatusTransitionEvent({
-      previousHealth: lastKnownHealthRef.current,
-      nextStatus: next
-    });
-    lastKnownHealthRef.current = nextHealth;
-    if (!event) {
+    if (monitorRequestFailedRef.current) {
+      notifyStatusTransition(buildServiceStatusMonitorRecoveredEvent());
+      monitorRequestFailedRef.current = false;
+    }
+    for (const event of events) {
+      notifyStatusTransition(event);
+    }
+  }
+
+  function reportMonitorRequestFailure(message: string, shouldNotify: boolean) {
+    const notifyStatusTransition = notifyStatusTransitionRef.current;
+    if (!shouldNotify || !notifyStatusTransition || monitorRequestFailedRef.current) {
       return;
     }
-    notifyStatusTransition(event);
+    const failedAt = new Date().toISOString();
+    monitorRequestFailedRef.current = true;
+    notifyStatusTransition(buildServiceStatusMonitorUnavailableEvent(
+      failedAt,
+      `无法读取 Input 服务状态: ${message}`
+    ));
   }
 
   function scheduleNextRefresh(token: number) {
@@ -95,8 +118,10 @@ export function useServiceStatusWorkspace(options: {
       void executeRefresh({
         initial: false,
         notifyTransition: true,
-        token
-      });
+        token,
+        refreshSource: null,
+        mode: "background"
+      }).catch(() => undefined);
     }, refreshIntervalMsRef.current);
   }
 
@@ -104,28 +129,33 @@ export function useServiceStatusWorkspace(options: {
     initial: boolean;
     notifyTransition: boolean;
     token: number;
-  }) {
-    const { initial, notifyTransition, token } = options;
+    refreshSource: ServiceStatusRefreshSource;
+    mode: ServiceStatusRefreshMode;
+  }): Promise<ServiceStatusRefreshResult> {
+    const { initial, notifyTransition, token, refreshSource, mode } = options;
+    const activeRequest = activeRequestRef.current;
     if (
       !mountedRef.current
       || !enabledRef.current
       || token !== lifecycleTokenRef.current
-      || requestInFlightRef.current
+      || activeRequest?.token === token
     ) {
-      return;
+      return "cancelled";
     }
 
-    requestInFlightRef.current = true;
+    const requestId = ++requestSequenceRef.current;
+    activeRequestRef.current = { id: requestId, token };
+    setRequestInFlight(true);
     if (initial) {
       setLoading(true);
-    } else {
-      setRefreshing(true);
+    } else if (refreshSource) {
+      setRefreshingSource(refreshSource);
     }
 
     try {
       const next = await getServiceStatus();
       if (!mountedRef.current || token !== lifecycleTokenRef.current) {
-        return;
+        return "cancelled";
       }
       setStatus(next);
       setLastSyncedAt(Date.now());
@@ -134,18 +164,25 @@ export function useServiceStatusWorkspace(options: {
       syncStatusTransition(next, notifyTransition);
     } catch (cause) {
       if (!mountedRef.current || token !== lifecycleTokenRef.current) {
-        return;
+        return "cancelled";
       }
-      reportRequestError((cause as Error).message);
+      const message = (cause as Error).message;
+      reportRequestError(message, mode);
+      reportMonitorRequestFailure(message, notifyTransition);
+      throw cause;
     } finally {
-      requestInFlightRef.current = false;
-      if (!mountedRef.current || token !== lifecycleTokenRef.current) {
-        return;
+      const isActiveRequest = activeRequestRef.current?.id === requestId;
+      if (isActiveRequest) {
+        activeRequestRef.current = null;
       }
-      setLoading(false);
-      setRefreshing(false);
-      scheduleNextRefresh(token);
+      if (isActiveRequest && mountedRef.current && token === lifecycleTokenRef.current) {
+        setLoading(false);
+        setRefreshingSource(null);
+        setRequestInFlight(false);
+        scheduleNextRefresh(token);
+      }
     }
+    return "success";
   }
 
   useEffect(() => {
@@ -162,22 +199,30 @@ export function useServiceStatusWorkspace(options: {
 
     if (!enabled) {
       clearRefreshTimer();
-      requestInFlightRef.current = false;
+      activeRequestRef.current = null;
       setStatus(null);
       setLastError(null);
       setLastSyncedAt(null);
       setLoading(false);
-      setRefreshing(false);
+      setRefreshingSource(null);
+      setRequestInFlight(false);
       lastReportedRequestErrorRef.current = null;
-      lastKnownHealthRef.current = null;
+      lastKnownModelsRef.current = null;
+      monitorRequestFailedRef.current = false;
       return;
     }
 
     void executeRefresh({
       initial: true,
-      notifyTransition: false,
-      token
-    });
+      notifyTransition: notifyInitialStatus,
+      token,
+      refreshSource: null,
+      mode: "foreground"
+    }).catch(() => undefined);
+
+    if (!autoRefresh) {
+      clearRefreshTimer();
+    }
 
     return () => {
       if (lifecycleTokenRef.current === token) {
@@ -185,28 +230,51 @@ export function useServiceStatusWorkspace(options: {
       }
       clearRefreshTimer();
     };
-  }, [autoRefresh, enabled, refreshIntervalMs]);
+  }, [autoRefresh, enabled, notifyInitialStatus, refreshIntervalMs]);
 
-  async function refreshNow() {
-    if (!enabledRef.current || requestInFlightRef.current) {
-      return;
+  async function refreshNow(options: {
+    notifyTransition?: boolean;
+    source?: Exclude<ServiceStatusRefreshSource, null>;
+    mode?: ServiceStatusRefreshMode;
+  } = {}): Promise<ServiceStatusRefreshResult> {
+    const activeRequest = activeRequestRef.current;
+    if (!enabledRef.current || activeRequest?.token === lifecycleTokenRef.current) {
+      return "cancelled";
     }
     clearRefreshTimer();
     const token = lifecycleTokenRef.current;
-    await executeRefresh({
+    return await executeRefresh({
       initial: false,
-      notifyTransition: false,
-      token
+      notifyTransition: options.notifyTransition ?? true,
+      token,
+      refreshSource: options.source ?? null,
+      mode: options.mode ?? "foreground"
     });
+  }
+
+  function acceptExternalSnapshot(next: ServiceStatusPayload, syncedAtEpochMs: number) {
+    if (!mountedRef.current || !enabledRef.current) {
+      return;
+    }
+    setStatus(next);
+    setLastSyncedAt(syncedAtEpochMs);
+    setLastError(null);
+    setLoading(false);
+    lastReportedRequestErrorRef.current = null;
+    lastKnownModelsRef.current = buildServiceStatusModelHealthMap(next);
+    monitorRequestFailedRef.current = false;
   }
 
   return {
     status,
     loading,
-    refreshing,
+    refreshing: refreshingSource === "page",
+    refreshingSource,
+    requestInFlight,
     lastError,
     lastSyncedAt,
-    refreshNow
+    refreshNow,
+    acceptExternalSnapshot
   };
 }
 

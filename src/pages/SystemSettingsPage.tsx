@@ -1,26 +1,28 @@
 import {
   Database,
   FolderOpen,
-  Home,
   Minus,
-  Monitor,
   Plus,
-  RefreshCw
+  RefreshCw,
+  RotateCcw,
+  Volume2
 } from "lucide-react";
 import { useEffect, useState, type CSSProperties } from "react";
 
 import { MIN_AUTO_REFRESH_INTERVAL_SECONDS } from "../app/refresh-policy";
 import { DatabaseMigrationConfirmDialog } from "../features/database-storage/DatabaseMigrationConfirmDialog";
-import type { DesktopUiPrefsSaveState } from "../features/desktop-ui/prefs-save-queue";
 import { THEME_OPTIONS, type ThemeId, type ThemeOption } from "../shared/lib/theme";
 import { Modal } from "../shared/ui/Modal";
+import { TitleHint } from "../shared/ui/TitleHint";
 import type {
   AppLaunchMode,
   CloseBehavior,
   DatabaseStorageMigrationResult,
   DatabaseStorageStatus,
   DesktopUiPrefs,
-  FloatingNotificationDensity
+  FloatingNotificationDensity,
+  RuntimeCoordinationConfigPayload,
+  SchedulerConfigPayload
 } from "../types";
 
 const MIN_OVERVIEW_ACCOUNT_RUNTIME_TIMEOUT_MS = 1000;
@@ -30,7 +32,17 @@ const MIN_FLOATING_NOTIFICATION_DURATION_MS = 3000;
 const MAX_FLOATING_NOTIFICATION_DURATION_MS = 30000;
 const MIN_FLOATING_NOTIFICATION_MAX_VISIBLE = 1;
 const MAX_FLOATING_NOTIFICATION_MAX_VISIBLE = 5;
-const MIN_SCHEDULER_INTERVAL_SECONDS = 15;
+const MIN_SCHEDULER_INTERVAL_SECONDS = 4;
+const MAX_SCHEDULER_INTERVAL_SECONDS = 10;
+const DEFAULT_SUBSCRIPTION_INTERVAL_SECONDS = 30;
+const MIN_SUBSCRIPTION_INTERVAL_SECONDS = 15;
+const MAX_SUBSCRIPTION_INTERVAL_SECONDS = 300;
+const MIN_SITE_REQUESTS_PER_SECOND = 1;
+const MAX_SITE_REQUESTS_PER_SECOND = 10;
+const MIN_SITE_MAX_IN_FLIGHT = 1;
+const MAX_SITE_MAX_IN_FLIGHT = 8;
+const MIN_USAGE_PAGE_MAX_IN_FLIGHT = 1;
+const MAX_USAGE_PAGE_MAX_IN_FLIGHT = 16;
 
 const DATABASE_MIGRATION_PHASE_LABELS: Record<string, string> = {
   idle: "就绪",
@@ -42,41 +54,13 @@ const DATABASE_MIGRATION_PHASE_LABELS: Record<string, string> = {
   restart_required: "迁移完成，等待重启"
 };
 
-function databaseRuntimeScopeLabel(scope: string) {
-  if (scope === "web") {
-    return "网页后端";
-  }
-  if (scope === "desktop") {
-    return "桌面应用";
-  }
-  return "隔离运行环境";
-}
-
 function databaseMigrationPhaseLabel(phase: string) {
   return DATABASE_MIGRATION_PHASE_LABELS[phase] ?? "未知状态";
 }
 
-const DESKTOP_UI_PREF_FIELD_LABELS: Record<string, string> = {
-  theme: "主题",
-  launchMode: "默认启动模式",
-  openFloatingInMainMode: "主窗口悬浮窗",
-  keepFloatingPanelVisible: "悬浮快捷菜单",
-  floatingPanelOpacity: "悬浮窗透明度",
-  floatingNotificationDurationMs: "消息显示时长",
-  floatingNotificationDensity: "消息密度",
-  floatingNotificationMaxVisible: "消息最大显示数",
-  closeBehavior: "关闭行为",
-  autoRefreshEnabled: "前端自动刷新总开关",
-  autoRefreshServiceStatusEnabled: "服务状态与公开端点刷新",
-  autoRefreshIntervalSeconds: "服务状态与公开端点间隔",
-  autoRefreshCoreEnabled: "核心总览刷新",
-  autoRefreshCoreIntervalSeconds: "核心总览间隔",
-  autoRefreshKeysEnabled: "密钥刷新",
-  autoRefreshKeysIntervalSeconds: "密钥间隔",
-  autoRefreshUsageEnabled: "用量刷新",
-  autoRefreshUsageIntervalSeconds: "用量间隔",
-  overviewAccountRuntimeTimeoutMs: "总览单账号超时"
-};
+function databaseMigrationPhaseIsActive(phase: string) {
+  return phase !== "idle" && phase !== "restart_required";
+}
 
 export function normalizeSystemSettingsStepperValue(
   value: string,
@@ -143,14 +127,73 @@ function renderWorkbenchPreview(option: ThemeOption) {
   );
 }
 
+function SettingsNumberStepper({
+  label,
+  value,
+  min,
+  max,
+  disabled,
+  testId,
+  onChange
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  disabled: boolean;
+  testId: string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="number-stepper">
+      <button
+        type="button"
+        className="number-stepper-button"
+        onClick={() => onChange(Math.max(min, value - 1))}
+        disabled={disabled || value <= min}
+        aria-label={`${label}减少 1`}
+      >
+        <Minus size={14} />
+      </button>
+      <input
+        type="number"
+        min={min}
+        max={max}
+        step={1}
+        value={value}
+        onChange={(event) => {
+          const normalized = normalizeSystemSettingsStepperValue(event.target.value, {
+            min,
+            max,
+            step: 1
+          });
+          if (normalized !== null) {
+            onChange(normalized);
+          }
+        }}
+        disabled={disabled}
+        data-testid={testId}
+        aria-label={label}
+      />
+      <button
+        type="button"
+        className="number-stepper-button"
+        onClick={() => onChange(Math.min(max, value + 1))}
+        disabled={disabled || value >= max}
+        aria-label={`${label}增加 1`}
+      >
+        <Plus size={14} />
+      </button>
+    </div>
+  );
+}
+
 export function SystemSettingsPage({
   theme,
   setTheme,
   desktopUiPrefs,
   desktopUiLoading,
-  desktopUiSaveState,
   desktopUiLoadError,
-  onRetryDesktopUiPrefs,
   nativeWindowControlsAvailable = true,
   onLaunchModeChange,
   onFloatingVisibleChange,
@@ -159,6 +202,11 @@ export function SystemSettingsPage({
   onFloatingNotificationDurationMsChange,
   onFloatingNotificationDensityChange,
   onFloatingNotificationMaxVisibleChange,
+  onFloatingNotificationSoundVolumeChange,
+  floatingNotificationSoundAction,
+  onSelectFloatingNotificationSound,
+  onPreviewFloatingNotificationSound,
+  onRestoreDefaultFloatingNotificationSound,
   onCloseBehaviorChange,
   onAutoRefreshEnabledChange,
   onServiceStatusAutoRefreshEnabledChange,
@@ -171,15 +219,15 @@ export function SystemSettingsPage({
   onUsageAutoRefreshIntervalSecondsChange,
   onOverviewAccountRuntimeTimeoutMsChange,
   schedulerConfig,
-  schedulerConfirmedConfig,
   schedulerConfigLoading,
-  schedulerConfigSaving,
-  schedulerConfigAvailable = true,
   schedulerLoadError,
-  schedulerSaveError,
   onRetrySchedulerConfigLoad,
-  onRetrySchedulerConfig,
   onSchedulerConfigChange,
+  runtimeCoordinationConfig,
+  runtimeCoordinationConfigLoading,
+  runtimeCoordinationLoadError,
+  onRetryRuntimeCoordinationConfigLoad,
+  onRuntimeCoordinationConfigChange,
   databaseStorageStatus,
   databaseStorageTargetDirectory,
   databaseStorageLoading,
@@ -197,9 +245,7 @@ export function SystemSettingsPage({
   setTheme: (theme: ThemeId) => void;
   desktopUiPrefs: DesktopUiPrefs;
   desktopUiLoading: boolean;
-  desktopUiSaveState: DesktopUiPrefsSaveState;
   desktopUiLoadError: string | null;
-  onRetryDesktopUiPrefs: () => void;
   nativeWindowControlsAvailable?: boolean;
   onLaunchModeChange: (value: AppLaunchMode) => void;
   onFloatingVisibleChange: (value: boolean) => void;
@@ -208,6 +254,11 @@ export function SystemSettingsPage({
   onFloatingNotificationDurationMsChange: (value: number) => void;
   onFloatingNotificationDensityChange: (value: FloatingNotificationDensity) => void;
   onFloatingNotificationMaxVisibleChange: (value: number) => void;
+  onFloatingNotificationSoundVolumeChange: (value: number) => void;
+  floatingNotificationSoundAction: "select" | "preview" | "restore" | null;
+  onSelectFloatingNotificationSound: () => void;
+  onPreviewFloatingNotificationSound: () => void;
+  onRestoreDefaultFloatingNotificationSound: () => void;
   onCloseBehaviorChange: (value: CloseBehavior) => void;
   onAutoRefreshEnabledChange: (value: boolean) => void;
   onServiceStatusAutoRefreshEnabledChange: (value: boolean) => void;
@@ -219,16 +270,19 @@ export function SystemSettingsPage({
   onUsageAutoRefreshEnabledChange: (value: boolean) => void;
   onUsageAutoRefreshIntervalSecondsChange: (value: number) => void;
   onOverviewAccountRuntimeTimeoutMsChange: (value: number) => void;
-  schedulerConfig: { enabled: boolean; intervalSeconds: number };
-  schedulerConfirmedConfig: { enabled: boolean; intervalSeconds: number };
+  schedulerConfig: SchedulerConfigPayload;
   schedulerConfigLoading: boolean;
-  schedulerConfigSaving: boolean;
-  schedulerConfigAvailable?: boolean;
   schedulerLoadError: string | null;
-  schedulerSaveError: string | null;
   onRetrySchedulerConfigLoad: () => void;
-  onRetrySchedulerConfig: () => void;
-  onSchedulerConfigChange: (value: { enabled: boolean; intervalSeconds: number }, options?: { debounce?: boolean }) => void;
+  onSchedulerConfigChange: (value: SchedulerConfigPayload, options?: { debounce?: boolean }) => void;
+  runtimeCoordinationConfig: RuntimeCoordinationConfigPayload;
+  runtimeCoordinationConfigLoading: boolean;
+  runtimeCoordinationLoadError: string | null;
+  onRetryRuntimeCoordinationConfigLoad: () => void;
+  onRuntimeCoordinationConfigChange: (
+    value: RuntimeCoordinationConfigPayload,
+    options?: { debounce?: boolean }
+  ) => void;
   databaseStorageStatus: DatabaseStorageStatus | null;
   databaseStorageTargetDirectory: string;
   databaseStorageLoading: boolean;
@@ -246,10 +300,19 @@ export function SystemSettingsPage({
   const [removeSitesAndAccounts, setRemoveSitesAndAccounts] = useState(false);
   const [databaseMigrationConfirmTarget, setDatabaseMigrationConfirmTarget] = useState<string | null>(null);
   const nativeWindowControlsDisabled = desktopUiLoading || !nativeWindowControlsAvailable;
-  const schedulerControlsDisabled = schedulerConfigLoading || !schedulerConfigAvailable || Boolean(schedulerLoadError);
+  const floatingNotificationSoundControlsDisabled =
+    nativeWindowControlsDisabled || floatingNotificationSoundAction !== null;
+  const schedulerControlsDisabled = schedulerConfigLoading || Boolean(schedulerLoadError);
+  const runtimeCoordinationControlsDisabled =
+    runtimeCoordinationConfigLoading || Boolean(runtimeCoordinationLoadError);
+  const databaseStorageStatusMigrationActive = Boolean(
+    databaseStorageStatus
+    && databaseMigrationPhaseIsActive(databaseStorageStatus.migrationPhase)
+  );
   const databaseStorageActionsDisabled =
     databaseStorageLoading
     || databaseStorageMigrationLoading
+    || databaseStorageStatusMigrationActive
     || !databaseStorageStatus
     || databaseStorageStatus.overrideActive
     || !databaseStorageStatus.migrationSupported
@@ -261,10 +324,10 @@ export function SystemSettingsPage({
     || normalizedDatabaseTarget === databaseStorageStatus?.currentDirectory;
 
   useEffect(() => {
-    if (databaseStorageMigrationResult) {
+    if (databaseStorageMigrationResult || databaseStorageStatusMigrationActive) {
       setDatabaseMigrationConfirmTarget(null);
     }
-  }, [databaseStorageMigrationResult]);
+  }, [databaseStorageMigrationResult, databaseStorageStatusMigrationActive]);
   function handleIntervalInputChange(
     value: string,
     onChange: (value: number) => void,
@@ -314,9 +377,9 @@ export function SystemSettingsPage({
     return (
       <section className={`section-card system-settings-card system-settings-card--window ${extraClassName}`.trim()}>
         <header className="section-card-header">
-          <div>
+          <div className="title-with-hint">
             <h3>窗口与托盘</h3>
-            <p>控制默认打开方式、悬浮窗和关闭时的处理方式</p>
+            <TitleHint content="控制默认打开方式、悬浮窗和关闭时的处理方式" label="查看窗口与托盘说明" />
           </div>
         </header>
         {nativeWindowControlsAvailable === false && (
@@ -506,6 +569,70 @@ export function SystemSettingsPage({
               </div>
               <small>可同时显示 1 到 5 条消息。超出的消息会按顺序等待显示。</small>
             </div>
+            <div className="field" aria-busy={floatingNotificationSoundAction !== null}>
+              <span>提示音</span>
+              <strong>
+                {desktopUiPrefs.floatingNotificationSoundSource === "custom"
+                  ? "自定义提示音"
+                  : "内置默认提示音"}
+              </strong>
+              <small>
+                {desktopUiPrefs.floatingNotificationSoundSource === "custom"
+                  ? `当前文件: ${desktopUiPrefs.floatingNotificationSoundFileName ?? "自定义提示音"}`
+                  : "当前使用应用内置提示音。"}
+              </small>
+              <div className="inline-actions wrap-actions">
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={onSelectFloatingNotificationSound}
+                  disabled={floatingNotificationSoundControlsDisabled}
+                >
+                  <FolderOpen size={15} />
+                  <span>{floatingNotificationSoundAction === "select" ? "正在选择..." : "选择文件"}</span>
+                </button>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={onPreviewFloatingNotificationSound}
+                  disabled={floatingNotificationSoundControlsDisabled}
+                >
+                  <Volume2 size={15} />
+                  <span>{floatingNotificationSoundAction === "preview" ? "正在试听..." : "试听"}</span>
+                </button>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={onRestoreDefaultFloatingNotificationSound}
+                  disabled={
+                    floatingNotificationSoundControlsDisabled
+                    || desktopUiPrefs.floatingNotificationSoundSource === "default"
+                  }
+                >
+                  <RotateCcw size={15} />
+                  <span>{floatingNotificationSoundAction === "restore" ? "正在恢复..." : "恢复默认"}</span>
+                </button>
+              </div>
+            </div>
+            <label className="field">
+              <span>提示音音量</span>
+              <div className="range-field settings-range-field">
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={desktopUiPrefs.floatingNotificationSoundVolume}
+                  onChange={(event) =>
+                    onFloatingNotificationSoundVolumeChange(Number(event.target.value))
+                  }
+                  disabled={floatingNotificationSoundControlsDisabled}
+                  aria-label="提示音音量"
+                />
+                <strong>{desktopUiPrefs.floatingNotificationSoundVolume}%</strong>
+              </div>
+              <small>0% 保持静音但不会清除选择的文件。默认 100%。</small>
+            </label>
           </fieldset>
           <label className="toggle-field motion-surface-card">
             <div>
@@ -534,45 +661,6 @@ export function SystemSettingsPage({
         </fieldset>
       </section>
     );
-  }
-
-  function describeDesktopUiFields(fields: string[]) {
-    return fields.map((field) => DESKTOP_UI_PREF_FIELD_LABELS[field] ?? field).join("、");
-  }
-
-  function renderDesktopUiSaveStatus() {
-    if (desktopUiLoadError) {
-      return (
-        <div className="auto-refresh-group-note" role="alert">
-          设置读取失败: {desktopUiLoadError}
-        </div>
-      );
-    }
-    if (desktopUiSaveState.phase === "failed") {
-      return (
-        <div className="auto-refresh-group-note" role="alert">
-          <span>
-            以下设置尚未保存: {describeDesktopUiFields(desktopUiSaveState.failedFields)}。当前界面保留新值,
-            已持久化值仍是上次成功保存的版本。{desktopUiSaveState.error ? ` ${desktopUiSaveState.error}` : ""}
-          </span>
-          <button type="button" className="ghost-button" onClick={onRetryDesktopUiPrefs}>
-            重试保存
-          </button>
-        </div>
-      );
-    }
-    if (desktopUiSaveState.phase === "saving") {
-      const fields = [...desktopUiSaveState.savingFields, ...desktopUiSaveState.pendingFields];
-      return (
-        <p className="auto-refresh-group-note" role="status">
-          正在保存: {describeDesktopUiFields(fields)}。
-        </p>
-      );
-    }
-    if (desktopUiSaveState.lastSavedAt !== null) {
-      return <p className="auto-refresh-group-note" role="status">所有设置已保存。</p>;
-    }
-    return null;
   }
 
   function renderAutoRefreshGroup(input: {
@@ -673,7 +761,7 @@ export function SystemSettingsPage({
       {
         key: "usage" as const,
         title: "用量",
-        description: "控制用量、模型统计、按密钥查看和趋势页面的后台刷新。",
+        description: "控制用量、模型统计和数据分析页面的后台刷新。",
         enabled: desktopUiPrefs.autoRefreshUsageEnabled,
         intervalSeconds: desktopUiPrefs.autoRefreshUsageIntervalSeconds,
         onEnabledChange: onUsageAutoRefreshEnabledChange,
@@ -684,13 +772,17 @@ export function SystemSettingsPage({
     return (
       <section className={`section-card system-settings-card system-settings-card--refresh ${extraClassName}`.trim()}>
         <header className="section-card-header">
-          <div>
+          <div className="title-with-hint">
             <h3>前端自动刷新</h3>
-            <p>自动更新常用页面和服务状态, 不会打断你当前操作。</p>
+            <TitleHint content="自动更新常用页面和服务状态, 不会打断你当前操作。" label="查看前端自动刷新说明" />
           </div>
         </header>
         <div className="stack-list">
-          {renderDesktopUiSaveStatus()}
+          {desktopUiLoadError && (
+            <div className="auto-refresh-group-note" role="alert">
+              设置读取失败: {desktopUiLoadError}
+            </div>
+          )}
           <label className="toggle-field motion-surface-card">
             <div>
               <strong>启用前端自动刷新</strong>
@@ -765,19 +857,24 @@ export function SystemSettingsPage({
   }
 
   function renderSchedulerCard(extraClassName = "") {
+    const subscriptionIntervalSeconds = Math.min(
+      MAX_SUBSCRIPTION_INTERVAL_SECONDS,
+      Math.max(
+        MIN_SUBSCRIPTION_INTERVAL_SECONDS,
+        Math.round(schedulerConfig.subscriptionIntervalSeconds ?? DEFAULT_SUBSCRIPTION_INTERVAL_SECONDS)
+      )
+    );
     return (
       <section className={`section-card system-settings-card system-settings-card--scheduler ${extraClassName}`.trim()}>
         <header className="section-card-header">
-          <div>
-            <h3>后端用量同步器</h3>
-            <p>控制后台是否自动更新所有账号的用量缓存。</p>
+          <div className="title-with-hint">
+            <h3>后端用量自动同步</h3>
+            <TitleHint
+              content="由 Rust 后端定期向上游读取所有账号的最新用量, 与前端页面刷新相互独立。"
+              label="查看后端用量自动同步说明"
+            />
           </div>
         </header>
-        {schedulerConfigAvailable === false && (
-          <p className="field-help" role="status">
-            浏览器调试模式不会启动后端用量同步器。当前值可查看, 但只有桌面应用才能实际执行同步。
-          </p>
-        )}
         <div className="stack-list">
           {schedulerLoadError && (
             <div className="auto-refresh-group-note" role="alert">
@@ -792,30 +889,10 @@ export function SystemSettingsPage({
               </button>
             </div>
           )}
-          {schedulerSaveError && !schedulerLoadError && (
-            <div className="auto-refresh-group-note" role="alert">
-              <span>
-                后端用量同步器设置未保存: {schedulerSaveError}。已保存值:{" "}
-                {schedulerConfirmedConfig.enabled ? "已启用" : "已关闭"}, 间隔{" "}
-                {schedulerConfirmedConfig.intervalSeconds} 秒。
-              </span>
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={onRetrySchedulerConfig}
-                disabled={schedulerControlsDisabled}
-              >
-                重试保存
-              </button>
-            </div>
-          )}
-          {!schedulerLoadError && !schedulerSaveError && schedulerConfigSaving && (
-            <p className="auto-refresh-group-note" role="status">正在保存后端用量同步器设置。</p>
-          )}
           <label className="toggle-field motion-surface-card">
             <div>
-              <strong>启用自动同步</strong>
-              <p>关闭后不会再自动更新用量缓存, 需要你手动刷新。</p>
+              <strong>启用后端自动同步</strong>
+              <p>关闭后只停止后端向上游同步, 前端自动刷新和手动刷新不受影响。</p>
             </div>
             <input
               type="checkbox"
@@ -825,7 +902,7 @@ export function SystemSettingsPage({
             />
           </label>
           <div className="field">
-            <span>调度间隔(秒)</span>
+            <span>后端同步间隔(秒)</span>
             <div className="number-stepper">
               <button
                 type="button"
@@ -844,18 +921,25 @@ export function SystemSettingsPage({
               <input
                 type="number"
                 min={MIN_SCHEDULER_INTERVAL_SECONDS}
+                max={MAX_SCHEDULER_INTERVAL_SECONDS}
                 step={1}
                 value={schedulerConfig.intervalSeconds}
                 onChange={(event) => {
-                  const parsed = Number(event.target.value);
-                  if (Number.isFinite(parsed)) {
+                  const normalized = normalizeSystemSettingsStepperValue(event.target.value, {
+                    min: MIN_SCHEDULER_INTERVAL_SECONDS,
+                    max: MAX_SCHEDULER_INTERVAL_SECONDS,
+                    step: 1
+                  });
+                  if (normalized !== null) {
                     onSchedulerConfigChange({
                       ...schedulerConfig,
-                      intervalSeconds: Math.max(MIN_SCHEDULER_INTERVAL_SECONDS, parsed)
+                      intervalSeconds: normalized
                     }, { debounce: true });
                   }
                 }}
                 disabled={schedulerControlsDisabled}
+                data-testid="fresh-usage-refresh-interval"
+                aria-label="Fresh Usage 同步间隔"
               />
               <button
                 type="button"
@@ -863,17 +947,105 @@ export function SystemSettingsPage({
                 onClick={() =>
                   onSchedulerConfigChange({
                     ...schedulerConfig,
-                    intervalSeconds: schedulerConfig.intervalSeconds + 1
+                    intervalSeconds: Math.min(MAX_SCHEDULER_INTERVAL_SECONDS, schedulerConfig.intervalSeconds + 1)
                   }, { debounce: true })
                 }
-                disabled={schedulerControlsDisabled}
+                disabled={schedulerControlsDisabled || schedulerConfig.intervalSeconds >= MAX_SCHEDULER_INTERVAL_SECONDS}
                 aria-label="调度间隔增加 1 秒"
               >
                 <Plus size={14} />
               </button>
             </div>
-            <small>最低 {MIN_SCHEDULER_INTERVAL_SECONDS} 秒。后台会按这个间隔更新用量缓存; 有启用订阅切换规则时才会检查规则。</small>
+            <small>{MIN_SCHEDULER_INTERVAL_SECONDS}-{MAX_SCHEDULER_INTERVAL_SECONDS} 秒, 默认 6 秒。后端会在上一轮完成后按此间隔再次读取上游用量。</small>
           </div>
+          <div className="field">
+            <span>订阅同步间隔(秒)</span>
+            <SettingsNumberStepper
+              label="订阅同步间隔"
+              value={subscriptionIntervalSeconds}
+              min={MIN_SUBSCRIPTION_INTERVAL_SECONDS}
+              max={MAX_SUBSCRIPTION_INTERVAL_SECONDS}
+              disabled={schedulerControlsDisabled}
+              testId="subscription-refresh-interval"
+              onChange={(value) =>
+                onSchedulerConfigChange({
+                  ...schedulerConfig,
+                  subscriptionIntervalSeconds: value
+                }, { debounce: true })
+              }
+            />
+            <small>{MIN_SUBSCRIPTION_INTERVAL_SECONDS}-{MAX_SUBSCRIPTION_INTERVAL_SECONDS} 秒, 默认 30 秒。订阅与额度规则按独立节奏检查。</small>
+          </div>
+          <div className="field">
+            <span>共享请求速率(每秒)</span>
+            <SettingsNumberStepper
+              label="共享请求速率"
+              value={runtimeCoordinationConfig.siteRequestsPerSecond}
+              min={MIN_SITE_REQUESTS_PER_SECOND}
+              max={MAX_SITE_REQUESTS_PER_SECOND}
+              disabled={runtimeCoordinationControlsDisabled}
+              testId="site-requests-per-second"
+              onChange={(value) =>
+                onRuntimeCoordinationConfigChange({
+                  ...runtimeCoordinationConfig,
+                  siteRequestsPerSecond: value
+                }, { debounce: true })
+              }
+            />
+            <small>{MIN_SITE_REQUESTS_PER_SECOND}-{MAX_SITE_REQUESTS_PER_SECOND}, Web 与 Desktop 共用同一站点预算。</small>
+          </div>
+          <div className="field">
+            <span>站点并发请求数</span>
+            <SettingsNumberStepper
+              label="站点并发请求数"
+              value={runtimeCoordinationConfig.siteMaxInFlight}
+              min={MIN_SITE_MAX_IN_FLIGHT}
+              max={MAX_SITE_MAX_IN_FLIGHT}
+              disabled={runtimeCoordinationControlsDisabled}
+              testId="site-max-in-flight"
+              onChange={(value) =>
+                onRuntimeCoordinationConfigChange({
+                  ...runtimeCoordinationConfig,
+                  siteMaxInFlight: value
+                }, { debounce: true })
+              }
+            />
+            <small>{MIN_SITE_MAX_IN_FLIGHT}-{MAX_SITE_MAX_IN_FLIGHT}, 限制同一站点同时进行的真实请求。</small>
+          </div>
+          <div className="field">
+            <span>用量分页并发数</span>
+            <SettingsNumberStepper
+              label="用量分页并发数"
+              value={runtimeCoordinationConfig.usagePageMaxInFlight}
+              min={MIN_USAGE_PAGE_MAX_IN_FLIGHT}
+              max={MAX_USAGE_PAGE_MAX_IN_FLIGHT}
+              disabled={runtimeCoordinationControlsDisabled}
+              testId="usage-page-max-in-flight"
+              onChange={(value) =>
+                onRuntimeCoordinationConfigChange({
+                  ...runtimeCoordinationConfig,
+                  usagePageMaxInFlight: value
+                }, { debounce: true })
+              }
+            />
+            <small>{MIN_USAGE_PAGE_MAX_IN_FLIGHT}-{MAX_USAGE_PAGE_MAX_IN_FLIGHT}, 历史回填与最新用量读取共享此上限。</small>
+          </div>
+          {runtimeCoordinationLoadError && (
+            <div className="auto-refresh-group-note" role="alert">
+              <span>共享请求协调设置读取失败: {runtimeCoordinationLoadError}。当前未读取到可确认的配置，未尝试保存。</span>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={onRetryRuntimeCoordinationConfigLoad}
+                disabled={runtimeCoordinationConfigLoading}
+              >
+                重新读取
+              </button>
+            </div>
+          )}
+          {runtimeCoordinationConfigLoading && !runtimeCoordinationLoadError && (
+            <p className="auto-refresh-group-note" role="status">正在读取共享请求协调设置。</p>
+          )}
         </div>
       </section>
     );
@@ -881,15 +1053,18 @@ export function SystemSettingsPage({
 
   function renderStorageCard(extraClassName = "") {
     return (
-      <section className={`section-card system-settings-card system-settings-card--database-storage ${extraClassName}`.trim()}>
+      <section
+        className={`section-card system-settings-card system-settings-card--database-storage ${extraClassName}`.trim()}
+        aria-busy={databaseStorageMigrationLoading || databaseStorageStatusMigrationActive}
+      >
         <header className="section-card-header">
           <div className="database-storage-heading">
             <span className="database-storage-heading-icon" aria-hidden="true">
               <Database size={18} />
             </span>
-            <div>
+            <div className="title-with-hint">
               <h3>数据库存储</h3>
-              <p>查看当前 SQLite 文件，并将完整数据库迁移到新的本机目录。</p>
+              <TitleHint content="查看当前 SQLite 文件，并将完整数据库迁移到新的本机目录。" label="查看数据库存储说明" />
             </div>
           </div>
           <button
@@ -922,21 +1097,9 @@ export function SystemSettingsPage({
         {databaseStorageStatus && (
           <div className="database-storage-content">
             <dl className="database-storage-facts">
-              <div>
-                <dt>运行范围</dt>
-                <dd>{databaseRuntimeScopeLabel(databaseStorageStatus.runtimeScope)}</dd>
-              </div>
-              <div>
-                <dt>迁移状态</dt>
-                <dd>{databaseMigrationPhaseLabel(databaseStorageStatus.migrationPhase)}</dd>
-              </div>
               <div className="database-storage-fact--path">
                 <dt>当前数据库文件</dt>
                 <dd>{databaseStorageStatus.currentDatabasePath}</dd>
-              </div>
-              <div className="database-storage-fact--path">
-                <dt>当前目录</dt>
-                <dd>{databaseStorageStatus.currentDirectory}</dd>
               </div>
             </dl>
 
@@ -952,39 +1115,35 @@ export function SystemSettingsPage({
               </div>
             )}
 
-            <label className="field database-storage-target-field">
+            <div className="field database-storage-target-field">
               <span>目标目录</span>
-              <input
-                type="text"
-                value={databaseStorageTargetDirectory}
-                onChange={(event) => onDatabaseStorageTargetDirectoryChange(event.target.value)}
-                disabled={databaseStorageActionsDisabled}
-                aria-label="数据库目标存储目录"
-                autoComplete="off"
-                spellCheck={false}
-              />
-              <small>数据库文件名固定为 config.sqlite。</small>
-            </label>
-
-            <div className="database-storage-presets" aria-label="数据库目录快捷选择">
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={() => onDatabaseStorageTargetDirectoryChange(databaseStorageStatus.userDirectory)}
-                disabled={databaseStorageActionsDisabled}
-              >
-                <Home size={15} />
-                <span>用户目录</span>
-              </button>
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={() => onDatabaseStorageTargetDirectoryChange(databaseStorageStatus.programDirectory)}
-                disabled={databaseStorageActionsDisabled}
-              >
-                <Monitor size={15} />
-                <span>程序目录</span>
-              </button>
+              <div className="database-storage-target-control">
+                <input
+                  type="text"
+                  value={databaseStorageTargetDirectory}
+                  onChange={(event) => onDatabaseStorageTargetDirectoryChange(event.target.value)}
+                  disabled={databaseStorageActionsDisabled}
+                  aria-label="数据库目标存储目录"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <select
+                  value={
+                    databaseStorageTargetDirectory === databaseStorageStatus.userDirectory
+                    || databaseStorageTargetDirectory === databaseStorageStatus.programDirectory
+                      ? databaseStorageTargetDirectory
+                      : ""
+                  }
+                  onChange={(event) => onDatabaseStorageTargetDirectoryChange(event.target.value)}
+                  disabled={databaseStorageActionsDisabled}
+                  aria-label="选择数据库目标存储目录"
+                  title="选择快捷目录"
+                >
+                  <option value="" disabled>快捷目录</option>
+                  <option value={databaseStorageStatus.userDirectory}>用户目录</option>
+                  <option value={databaseStorageStatus.programDirectory}>程序目录</option>
+                </select>
+              </div>
             </div>
 
             {databaseStorageMigrationError && (
@@ -998,8 +1157,21 @@ export function SystemSettingsPage({
                 <span>正在冻结写入、创建一致快照并校验目标数据库。</span>
               </div>
             )}
+            {databaseStorageStatusMigrationActive && !databaseStorageMigrationLoading && (
+              <div className="database-storage-message" role="status">
+                <RefreshCw size={15} className="spin" aria-hidden="true" />
+                <span>
+                  {databaseMigrationPhaseLabel(databaseStorageStatus.migrationPhase)}，数据库迁移操作已锁定。
+                </span>
+              </div>
+            )}
             {databaseStorageMigrationResult && (
-              <div className="database-storage-result" role="status">
+              <div
+                className="database-storage-result"
+                role="status"
+                tabIndex={-1}
+                data-database-storage-migration-result
+              >
                 <strong>数据库迁移完成</strong>
                 <dl>
                   <div>
@@ -1040,7 +1212,7 @@ export function SystemSettingsPage({
             <div className="database-storage-actions">
               <button
                 type="button"
-                className="inline-text-button"
+                className="primary-button database-storage-migrate-button"
                 onClick={() => setDatabaseMigrationConfirmTarget(normalizedDatabaseTarget)}
                 disabled={databaseMigrationDisabled}
               >
@@ -1058,9 +1230,9 @@ export function SystemSettingsPage({
     return (
       <section className={`section-card system-settings-card system-settings-card--danger ${extraClassName}`.trim()}>
         <header className="section-card-header">
-          <div>
+          <div className="title-with-hint">
             <h3>危险操作</h3>
-            <p>清空当前设备上保存的数据, 让应用回到初始状态。</p>
+            <TitleHint content="清空当前设备上保存的数据, 让应用回到初始状态。" label="查看危险操作说明" />
           </div>
         </header>
         <div className="stack-list">

@@ -26,7 +26,6 @@ const ACCOUNT_DATA_REFRESH_NAVS: NavKey[] = [
   "usage",
   "modelStats",
   "subscriptions",
-  "keyUsage",
   "trends"
 ];
 
@@ -36,7 +35,6 @@ const AUTO_REFRESH_RESOURCE_BY_NAV: Partial<Record<NavKey, AutoRefreshResource>>
   keys: "keys",
   usage: "usage",
   modelStats: "modelStats",
-  keyUsage: "keyUsage",
   trends: "trends",
   settings: "settings",
   serviceStatus: "serviceStatus"

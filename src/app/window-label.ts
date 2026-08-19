@@ -8,7 +8,7 @@ export function getCurrentWindowLabel(): WindowLabel {
     return "main";
   }
   const label = getCurrentWebviewWindow().label;
-  if (label === "floating" || label === "floating-panel") {
+  if (label === "floating" || label === "floating-panel" || label === "floating-notification") {
     return label;
   }
   return "main";

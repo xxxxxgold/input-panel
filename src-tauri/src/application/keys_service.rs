@@ -1,19 +1,25 @@
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::contracts::{GroupRecord, KeyMutationInput, KeyPatchInput, ManagedKeyRecord, PaginatedResult};
-use crate::infrastructure::sqlite::repositories;
-use crate::infrastructure::sub2api::normalizers::{
-    normalize_managed_key_record,
+use crate::contracts::{
+    GroupRecord, KeyMutationInput, KeyPatchInput, ManagedKeyRecord, PaginatedResult,
+};
+use crate::infrastructure::sub2api::normalizers::normalize_managed_key_record;
+
+use super::{
+    data_center_service,
+    resource_coordinator::LiveResourceKind,
+    upstream_service::{self, UpstreamRequestPolicy},
+    AppContext,
 };
 
-use super::{upstream_service, AppContext};
-
 pub async fn get_available_groups(ctx: &AppContext, account_id: &str) -> Result<Vec<GroupRecord>> {
-    Ok(repositories::list_group_cache(&ctx.db, account_id)?
-        .into_iter()
-        .map(|record| record.row)
-        .collect())
+    ctx.live_resources
+        .get_or_fetch(account_id, LiveResourceKind::Groups, false, || async {
+            data_center_service::fetch_groups(ctx, account_id, UpstreamRequestPolicy::ReadOnly)
+                .await
+        })
+        .await
 }
 
 pub async fn list_managed_keys(
@@ -21,11 +27,9 @@ pub async fn list_managed_keys(
     account_id: &str,
     page: i64,
     page_size: i64,
+    force: bool,
 ) -> Result<PaginatedResult<ManagedKeyRecord>> {
-    let rows = repositories::list_key_cache(&ctx.db, account_id)?
-        .into_iter()
-        .map(|record| record.row)
-        .collect::<Vec<_>>();
+    let rows = load_managed_keys(ctx, account_id, force).await?;
     Ok(paginate_cached_keys(rows, page, page_size))
 }
 
@@ -34,8 +38,10 @@ pub async fn get_managed_key(
     account_id: &str,
     key_id: &str,
 ) -> Result<ManagedKeyRecord> {
-    repositories::find_key_cache(&ctx.db, account_id, key_id)?
-        .map(|record| record.row)
+    load_managed_keys(ctx, account_id, false)
+        .await?
+        .into_iter()
+        .find(|record| record.key.id == key_id)
         .ok_or_else(|| anyhow::anyhow!("Key 不存在。"))
 }
 
@@ -50,14 +56,12 @@ pub async fn create_managed_key(
         "/api/v1/keys",
         "POST",
         Some(key_mutation_payload(&payload, false)),
+        UpstreamRequestPolicy::RecoverableSyncOrWrite,
     )
     .await?;
-    super::data_center_service::sync_keys_scope(
-        ctx,
-        account_id,
-        crate::contracts::DataSyncTrigger::PostWrite,
-    )
-    .await?;
+    ctx.live_resources
+        .invalidate(account_id, LiveResourceKind::Keys)
+        .await;
     Ok(normalize_managed_key_record(&raw))
 }
 
@@ -67,21 +71,35 @@ pub async fn update_managed_key(
     key_id: &str,
     payload: KeyPatchInput,
 ) -> Result<ManagedKeyRecord> {
+    let raw = update_managed_key_raw(ctx, account_id, key_id, payload).await?;
+    Ok(normalize_managed_key_record(&raw))
+}
+
+pub async fn update_managed_key_raw(
+    ctx: &AppContext,
+    account_id: &str,
+    key_id: &str,
+    payload: KeyPatchInput,
+) -> Result<Value> {
     let raw = upstream_service::account_upstream_request(
         ctx,
         account_id,
         &format!("/api/v1/keys/{key_id}"),
         "PUT",
         Some(key_patch_payload(&payload)),
+        UpstreamRequestPolicy::RecoverableSyncOrWrite,
     )
     .await?;
-    super::data_center_service::sync_keys_scope(
-        ctx,
-        account_id,
-        crate::contracts::DataSyncTrigger::PostWrite,
-    )
-    .await?;
-    Ok(normalize_managed_key_record(&raw))
+    ctx.live_resources
+        .invalidate(account_id, LiveResourceKind::Keys)
+        .await;
+    ctx.live_resources
+        .invalidate(account_id, LiveResourceKind::Subscriptions)
+        .await;
+    ctx.live_resources
+        .invalidate(account_id, LiveResourceKind::SubscriptionSummary)
+        .await;
+    Ok(raw)
 }
 
 pub async fn delete_managed_key(ctx: &AppContext, account_id: &str, key_id: &str) -> Result<bool> {
@@ -91,15 +109,31 @@ pub async fn delete_managed_key(ctx: &AppContext, account_id: &str, key_id: &str
         &format!("/api/v1/keys/{key_id}"),
         "DELETE",
         None,
+        UpstreamRequestPolicy::RecoverableSyncOrWrite,
     )
     .await?;
-    super::data_center_service::sync_keys_scope(
-        ctx,
-        account_id,
-        crate::contracts::DataSyncTrigger::PostWrite,
-    )
-    .await?;
+    ctx.live_resources
+        .invalidate(account_id, LiveResourceKind::Keys)
+        .await;
+    ctx.live_resources
+        .invalidate(account_id, LiveResourceKind::Subscriptions)
+        .await;
+    ctx.live_resources
+        .invalidate(account_id, LiveResourceKind::SubscriptionSummary)
+        .await;
     Ok(true)
+}
+
+async fn load_managed_keys(
+    ctx: &AppContext,
+    account_id: &str,
+    force: bool,
+) -> Result<Vec<ManagedKeyRecord>> {
+    ctx.live_resources
+        .get_or_fetch(account_id, LiveResourceKind::Keys, force, || async {
+            data_center_service::fetch_keys(ctx, account_id, UpstreamRequestPolicy::ReadOnly).await
+        })
+        .await
 }
 
 fn key_mutation_payload(payload: &KeyMutationInput, include_resets: bool) -> Value {
@@ -112,10 +146,10 @@ fn key_mutation_payload(payload: &KeyMutationInput, include_resets: bool) -> Val
         body.insert("custom_key".into(), Value::String(custom_key.clone()));
     }
     if let Some(ip_whitelist) = &payload.ip_whitelist {
-        body.insert("ip_whitelist".into(), Value::String(ip_whitelist.clone()));
+        body.insert("ip_whitelist".into(), json_string_array(ip_whitelist));
     }
     if let Some(ip_blacklist) = &payload.ip_blacklist {
-        body.insert("ip_blacklist".into(), Value::String(ip_blacklist.clone()));
+        body.insert("ip_blacklist".into(), json_string_array(ip_blacklist));
     }
     if let Some(quota) = payload.quota {
         body.insert("quota".into(), Value::from(quota));
@@ -161,10 +195,10 @@ fn key_patch_payload(payload: &KeyPatchInput) -> Value {
         body.insert("custom_key".into(), Value::String(custom_key.clone()));
     }
     if let Some(ip_whitelist) = &payload.ip_whitelist {
-        body.insert("ip_whitelist".into(), Value::String(ip_whitelist.clone()));
+        body.insert("ip_whitelist".into(), json_string_array(ip_whitelist));
     }
     if let Some(ip_blacklist) = &payload.ip_blacklist {
-        body.insert("ip_blacklist".into(), Value::String(ip_blacklist.clone()));
+        body.insert("ip_blacklist".into(), json_string_array(ip_blacklist));
     }
     if let Some(quota) = payload.quota {
         body.insert("quota".into(), Value::from(quota));
@@ -196,6 +230,10 @@ fn key_patch_payload(payload: &KeyPatchInput) -> Value {
     Value::Object(body)
 }
 
+fn json_string_array(items: &[String]) -> Value {
+    Value::Array(items.iter().cloned().map(Value::String).collect())
+}
+
 fn paginate_cached_keys(
     rows: Vec<ManagedKeyRecord>,
     page: i64,
@@ -223,7 +261,7 @@ fn paginate_cached_keys(
 #[cfg(test)]
 mod tests {
     use super::{key_patch_payload, paginate_cached_keys};
-    use crate::contracts::{KeyPatchInput, ManagedKeyRecord, KeyRecord};
+    use crate::contracts::{KeyPatchInput, KeyRecord, ManagedKeyRecord};
     use serde_json::json;
 
     #[test]
@@ -256,6 +294,25 @@ mod tests {
         assert_eq!(body, json!({ "status": "inactive" }));
     }
 
+    #[test]
+    fn key_patch_payload_sends_ip_lists_as_arrays() {
+        let payload = KeyPatchInput {
+            ip_whitelist: Some(vec!["192.168.1.100".into(), "10.0.0.0/8".into()]),
+            ip_blacklist: Some(vec!["1.2.3.4".into()]),
+            ..KeyPatchInput::default()
+        };
+
+        let body = key_patch_payload(&payload);
+
+        assert_eq!(
+            body,
+            json!({
+                "ip_whitelist": ["192.168.1.100", "10.0.0.0/8"],
+                "ip_blacklist": ["1.2.3.4"]
+            })
+        );
+    }
+
     fn build_key(id: &str, name: &str) -> ManagedKeyRecord {
         ManagedKeyRecord {
             key: KeyRecord {
@@ -275,6 +332,7 @@ mod tests {
                 usage5h: None,
                 usage1d: None,
                 usage7d: None,
+                current_concurrency: None,
             },
             api_key_id: None,
             raw_key: None,

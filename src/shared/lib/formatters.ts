@@ -16,6 +16,16 @@ export function formatTime(value: string) {
   });
 }
 
+export function formatTimeOnly(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
+}
+
 export function formatDateTimeFull(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
@@ -82,6 +92,14 @@ export function formatBillingMode(mode?: string | null, billingType?: number | n
   if (mode) return mode;
   if (billingType) return `#${billingType}`;
   return "-";
+}
+
+export function formatUsageServiceTier(value?: string | null) {
+  const tier = value?.trim();
+  if (!tier) {
+    return "-";
+  }
+  return tier.toLowerCase() === "priority" ? "Fast" : tier;
 }
 
 export function formatSubscriptionTypeLabel(value?: string | null) {

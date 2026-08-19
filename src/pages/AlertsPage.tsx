@@ -5,7 +5,7 @@ import { SectionCard } from "../shared/ui/SectionCard";
 
 export function AlertsPage({ alerts }: { alerts: AccountAlert[] }) {
   return (
-    <SectionCard title="告警列表" subtitle="按严重级别集中处理低余额、失效和拉取失败">
+    <SectionCard title="提醒列表" subtitle="把需要你关注的问题集中列出来, 方便快速处理">
       <div className="stack-list">
         {alerts.map((alert) => (
           <div key={alert.id} className={`alert-item ${alert.severity}`}>
@@ -17,7 +17,7 @@ export function AlertsPage({ alerts }: { alerts: AccountAlert[] }) {
           </div>
         ))}
         {alerts.length === 0 && (
-          <EmptyState title="没有待处理告警" detail="所有已刷新账号都处于健康状态。" compact />
+          <EmptyState title="当前没有待处理提醒" detail="现在一切正常, 暂时不需要你处理。" compact />
         )}
       </div>
     </SectionCard>

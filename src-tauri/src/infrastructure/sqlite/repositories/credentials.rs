@@ -44,7 +44,9 @@ pub fn load_credential(db: &Database, account_id: &str) -> Result<Option<StoredC
 
 pub fn remove_credential(db: &Database, account_id: &str) -> Result<()> {
     let conn = db.connect()?;
-    conn.execute("DELETE FROM credentials WHERE account_id = ?1", params![account_id])?;
+    conn.execute(
+        "DELETE FROM credentials WHERE account_id = ?1",
+        params![account_id],
+    )?;
     Ok(())
 }
-

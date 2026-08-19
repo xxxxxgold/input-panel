@@ -40,8 +40,9 @@ pub(crate) fn load_legacy_usage_rows(db: &Database, account_id: &str) -> Result<
             .map(|cache_view| cache_view.recent_usage)
             .unwrap_or_default());
     }
-    let mut stmt =
-        conn.prepare("SELECT row_json FROM usage_history WHERE account_id = ?1 ORDER BY last_seen_at DESC")?;
+    let mut stmt = conn.prepare(
+        "SELECT row_json FROM usage_history WHERE account_id = ?1 ORDER BY last_seen_at DESC",
+    )?;
     let rows = stmt.query_map(params![account_id], |row| row.get::<_, String>(0))?;
     let history_rows = rows
         .filter_map(|raw| raw.ok())
@@ -67,5 +68,3 @@ fn has_table(conn: &rusqlite::Connection, table_name: &str) -> Result<bool> {
         Err(error) => Err(error.into()),
     }
 }
-
-

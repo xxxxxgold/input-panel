@@ -1,11 +1,69 @@
+import { RefreshCcw } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
 
+import type { AccountDataResourcePresentation } from "../../accounts/useAccountDataWorkspace";
 import type { PlatformQuotaPayload, ProfileUpdateInput, UserProfileRecord } from "../../../types";
 import { EmptyState } from "../../../shared/ui/EmptyState";
 import { SectionCard } from "../../../shared/ui/SectionCard";
 
+function ResourceColdState({
+  label,
+  presentation,
+  onRetry
+}: {
+  label: string;
+  presentation: AccountDataResourcePresentation;
+  onRetry: () => void;
+}) {
+  if (presentation.hasSnapshot || (!presentation.initialLoading && !presentation.lastError)) {
+    return null;
+  }
+
+  const failed = Boolean(presentation.lastError);
+  return (
+    <div className="stack-list">
+      <EmptyState
+        title={failed ? `${label}暂时无法读取` : `正在读取${label}`}
+        detail={failed ? `${presentation.lastError} 请重新读取。` : `正在读取当前账号的${label}, 请稍候。`}
+        compact
+      />
+      {failed && (
+        <button className="ghost-button" type="button" onClick={onRetry}>
+          <RefreshCcw size={16} />
+          重新读取{label}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ResourceRefreshNotice({
+  label,
+  presentation,
+  onRetry
+}: {
+  label: string;
+  presentation: AccountDataResourcePresentation;
+  onRetry: () => void;
+}) {
+  if (!presentation.hasSnapshot || !presentation.lastError) {
+    return null;
+  }
+
+  return (
+    <div className="workspace-refresh-status has-error" role="alert" aria-live="polite">
+      <span>{label}刷新失败, 当前展示上次成功的数据。</span>
+      <button className="ghost-button" type="button" onClick={onRetry}>
+        <RefreshCcw size={16} />
+        重试
+      </button>
+    </div>
+  );
+}
+
 export function ProfileModalContent({
   profileRecord,
+  profilePresentation,
   profileForm,
   setProfileForm,
   profilePassword,
@@ -13,6 +71,9 @@ export function ProfileModalContent({
   notifyEmailDraft,
   setNotifyEmailDraft,
   platformQuotas,
+  platformQuotasPresentation,
+  onRetryProfile,
+  onRetryPlatformQuotas,
   onProfileSave,
   onPasswordChange,
   onNotifyEmailSend,
@@ -20,6 +81,7 @@ export function ProfileModalContent({
   onUnbind
 }: {
   profileRecord: UserProfileRecord | null;
+  profilePresentation: AccountDataResourcePresentation;
   profileForm: ProfileUpdateInput;
   setProfileForm: Dispatch<SetStateAction<ProfileUpdateInput>>;
   profilePassword: { oldPassword: string; newPassword: string };
@@ -27,6 +89,9 @@ export function ProfileModalContent({
   notifyEmailDraft: { email: string; code: string; target: string };
   setNotifyEmailDraft: Dispatch<SetStateAction<{ email: string; code: string; target: string }>>;
   platformQuotas: PlatformQuotaPayload | null;
+  platformQuotasPresentation: AccountDataResourcePresentation;
+  onRetryProfile: () => void;
+  onRetryPlatformQuotas: () => void;
   onProfileSave: () => void;
   onPasswordChange: () => void;
   onNotifyEmailSend: () => void;
@@ -36,9 +101,14 @@ export function ProfileModalContent({
   return (
     <div className="profile-modal-shell">
       <section className="content-grid profile-modal-grid">
-        <SectionCard title="个人资料" subtitle="对齐 user/profile 与 user 更新接口">
+        <SectionCard title="个人资料" subtitle="查看并修改当前账号的基础信息">
           {profileRecord ? (
             <div className="stack-list">
+              <ResourceRefreshNotice
+                label="个人资料"
+                presentation={profilePresentation}
+                onRetry={onRetryProfile}
+              />
               <label className="field">
                 <span>邮箱</span>
                 <input
@@ -61,11 +131,26 @@ export function ProfileModalContent({
                 保存资料
               </button>
             </div>
+          ) : profilePresentation.hasSnapshot ? (
+            <div className="stack-list">
+              <ResourceRefreshNotice
+                label="个人资料"
+                presentation={profilePresentation}
+                onRetry={onRetryProfile}
+              />
+              <EmptyState title="当前没有资料数据" detail="先登录并刷新当前账号。" compact />
+            </div>
+          ) : profilePresentation.initialLoading || profilePresentation.lastError ? (
+            <ResourceColdState
+              label="个人资料"
+              presentation={profilePresentation}
+              onRetry={onRetryProfile}
+            />
           ) : (
             <EmptyState title="当前没有资料数据" detail="先登录并刷新当前账号。" compact />
           )}
         </SectionCard>
-        <SectionCard title="密码与通知" subtitle="改密、通知邮箱与账号绑定状态">
+        <SectionCard title="密码与通知" subtitle="修改密码, 设置通知邮箱, 查看绑定状态">
           <div className="stack-list">
             <label className="field">
               <span>旧密码</span>
@@ -132,8 +217,13 @@ export function ProfileModalContent({
           </div>
         </SectionCard>
       </section>
-      <SectionCard title="平台配额" subtitle="对齐 user/platform-quotas 接口">
+      <SectionCard title="平台额度" subtitle="查看各个平台还能用多少">
         <div className="table-list">
+          <ResourceRefreshNotice
+            label="平台额度"
+            presentation={platformQuotasPresentation}
+            onRetry={onRetryPlatformQuotas}
+          />
           {(platformQuotas?.platformQuotas ?? []).map((quota, index) => (
             <div key={`${quota.platform ?? "platform"}-${index}`} className="table-row">
               <div>
@@ -145,9 +235,16 @@ export function ProfileModalContent({
               </div>
             </div>
           ))}
-          {(!platformQuotas || platformQuotas.platformQuotas.length === 0) && (
-            <EmptyState title="当前没有平台配额" detail="站点当前返回为空，这与网页版一致。" compact />
-          )}
+          {!platformQuotasPresentation.hasSnapshot
+            && (platformQuotasPresentation.initialLoading || platformQuotasPresentation.lastError)
+            ? <ResourceColdState
+                label="平台额度"
+                presentation={platformQuotasPresentation}
+                onRetry={onRetryPlatformQuotas}
+              />
+            : (!platformQuotas || platformQuotas.platformQuotas.length === 0) && (
+            <EmptyState title="当前没有平台额度" detail="这个账号暂时没有可展示的平台额度。" compact />
+            )}
         </div>
       </SectionCard>
     </div>
