@@ -822,7 +822,7 @@
 }
 
 .settings-range-field input[type="range"]:active,
-.toggle-field input[type="checkbox"]:active {
+.toggle-field > input[type="checkbox"]:active {
   transform: scale(0.96);
 }
 
@@ -985,7 +985,9 @@
 
 @media (prefers-reduced-motion: reduce) {
   .subscription-switch-toggle-track,
-  .subscription-switch-toggle-track::after {
+  .subscription-switch-toggle-track::after,
+  .system-settings-switch-track,
+  .system-settings-switch-track::after {
     transition-duration: 0ms !important;
   }
 
