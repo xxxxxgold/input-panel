@@ -219,6 +219,15 @@ pub enum FloatingNotificationDock {
     Right,
 }
 
+/// 通知窗口相对悬浮球与展开面板锚点的实际纵向位置。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FloatingNotificationPlacement {
+    #[default]
+    Above,
+    Below,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FloatingNotificationSnapshot {
@@ -226,6 +235,8 @@ pub struct FloatingNotificationSnapshot {
     pub items: Vec<FloatingNotificationPayload>,
     #[serde(default)]
     pub dock: FloatingNotificationDock,
+    #[serde(default)]
+    pub placement: FloatingNotificationPlacement,
 }
 
 #[derive(Default)]
@@ -240,6 +251,7 @@ impl FloatingNotificationMailbox {
             revision: self.revision,
             items: self.items.clone(),
             dock: FloatingNotificationDock::default(),
+            placement: FloatingNotificationPlacement::default(),
         }
     }
 
@@ -2248,6 +2260,14 @@ fn resolve_floating_notification_physical_size(
     )
 }
 
+/// 最终物理位置与纵向 placement 必须由同一次几何分支共同产出。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ResolvedFloatingNotificationPosition {
+    x: i32,
+    y: i32,
+    placement: FloatingNotificationPlacement,
+}
+
 fn compute_floating_notification_position_for_geometry(
     work_area_x: i32,
     work_area_y: i32,
@@ -2260,7 +2280,7 @@ fn compute_floating_notification_position_for_geometry(
     notification_width: i32,
     notification_height: i32,
     geometry: FloatingGeometry,
-) -> (i32, i32) {
+) -> ResolvedFloatingNotificationPosition {
     let min_x = work_area_x + geometry.safe_margin;
     let max_x =
         (work_area_x + work_area_width - notification_width - geometry.safe_margin).max(min_x);
@@ -2275,13 +2295,16 @@ fn compute_floating_notification_position_for_geometry(
     let max_y =
         (work_area_y + work_area_height - notification_height - geometry.safe_margin).max(min_y);
     let above_y = anchor_top - geometry.notification_gap - notification_height;
-    let y = if above_y >= min_y {
-        above_y
+    let (y, placement) = if above_y >= min_y {
+        (above_y, FloatingNotificationPlacement::Above)
     } else {
-        clamp_i32(anchor_bottom + geometry.notification_gap, min_y, max_y)
+        (
+            clamp_i32(anchor_bottom + geometry.notification_gap, min_y, max_y),
+            FloatingNotificationPlacement::Below,
+        )
     };
 
-    (x, y)
+    ResolvedFloatingNotificationPosition { x, y, placement }
 }
 
 fn compute_floating_notification_position(
@@ -2295,7 +2318,7 @@ fn compute_floating_notification_position(
     anchor_bottom: i32,
     notification_width: i32,
     notification_height: i32,
-) -> (i32, i32) {
+) -> ResolvedFloatingNotificationPosition {
     compute_floating_notification_position_for_geometry(
         work_area_x,
         work_area_y,
@@ -2345,6 +2368,7 @@ fn resolve_floating_notification_hit_regions_for_items(
     width: i32,
     height: i32,
     layout: FloatingNotificationLayout,
+    placement: FloatingNotificationPlacement,
 ) -> Vec<FloatingNotificationHitRegion> {
     const HORIZONTAL_INSET: i32 = 4;
     const DETAIL_INSET: i32 = 4;
@@ -2367,9 +2391,13 @@ fn resolve_floating_notification_hit_regions_for_items(
         .rev()
         .take(layout.max_visible)
         .map(|item_height| {
+            let y = match placement {
+                FloatingNotificationPlacement::Above => height - offset - *item_height,
+                FloatingNotificationPlacement::Below => offset,
+            };
             let region = FloatingNotificationHitRegion {
                 x: HORIZONTAL_INSET,
-                y: height - offset - *item_height,
+                y,
                 width: surface_width,
                 height: *item_height,
                 corner_radius: 8,
@@ -2387,6 +2415,7 @@ fn resolve_floating_notification_regions_for_motion(
     width: i32,
     height: i32,
     layout: FloatingNotificationLayout,
+    placement: FloatingNotificationPlacement,
     motion_active: bool,
 ) -> Vec<FloatingNotificationHitRegion> {
     let regions = resolve_floating_notification_hit_regions_for_items(
@@ -2395,6 +2424,7 @@ fn resolve_floating_notification_regions_for_motion(
         width,
         height,
         layout,
+        placement,
     );
     if detail_open || !motion_active || regions.len() < 2 {
         return regions;
@@ -2540,21 +2570,23 @@ fn set_floating_notification_window_bounds(
 }
 
 #[cfg(target_os = "windows")]
-fn configure_floating_notification_hit_region(
+fn configure_floating_notification_hit_region_for_client_size(
     window: &WebviewWindow,
     item_heights: &[i32],
     detail_open: bool,
     logical_width: i32,
     logical_height: i32,
     layout: FloatingNotificationLayout,
+    placement: FloatingNotificationPlacement,
     motion_active: bool,
+    client_width: i32,
+    client_height: i32,
 ) {
     use std::ffi::c_void;
 
     const RGN_OR: i32 = 2;
 
     unsafe extern "system" {
-        fn GetClientRect(hwnd: *mut c_void, rect: *mut NativeRect) -> i32;
         fn CreateRoundRectRgn(
             left: i32,
             top: i32,
@@ -2579,24 +2611,15 @@ fn configure_floating_notification_hit_region(
 
     unsafe {
         let raw = hwnd.0 as *mut c_void;
-        let mut client_rect = NativeRect {
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
-        };
-        if GetClientRect(raw, &mut client_rect) == 0 {
-            return;
-        }
-
-        let client_width = (client_rect.right - client_rect.left).max(1);
-        let client_height = (client_rect.bottom - client_rect.top).max(1);
+        let client_width = client_width.max(1);
+        let client_height = client_height.max(1);
         let regions = resolve_floating_notification_regions_for_motion(
             item_heights,
             detail_open,
             logical_width,
             logical_height,
             layout,
+            placement,
             motion_active,
         );
         let Some(first) = regions.first() else {
@@ -2641,6 +2664,65 @@ fn configure_floating_notification_hit_region(
     }
 }
 
+#[cfg(target_os = "windows")]
+fn configure_floating_notification_hit_region(
+    window: &WebviewWindow,
+    item_heights: &[i32],
+    detail_open: bool,
+    logical_width: i32,
+    logical_height: i32,
+    layout: FloatingNotificationLayout,
+    placement: FloatingNotificationPlacement,
+    motion_active: bool,
+) {
+    use std::ffi::c_void;
+
+    unsafe extern "system" {
+        fn GetClientRect(hwnd: *mut c_void, rect: *mut NativeRect) -> i32;
+    }
+
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let mut client_rect = NativeRect {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    if unsafe { GetClientRect(hwnd.0 as *mut c_void, &mut client_rect) } == 0 {
+        return;
+    }
+
+    configure_floating_notification_hit_region_for_client_size(
+        window,
+        item_heights,
+        detail_open,
+        logical_width,
+        logical_height,
+        layout,
+        placement,
+        motion_active,
+        client_rect.right - client_rect.left,
+        client_rect.bottom - client_rect.top,
+    );
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_floating_notification_hit_region_for_client_size(
+    _window: &WebviewWindow,
+    _item_heights: &[i32],
+    _detail_open: bool,
+    _logical_width: i32,
+    _logical_height: i32,
+    _layout: FloatingNotificationLayout,
+    _placement: FloatingNotificationPlacement,
+    _motion_active: bool,
+    _client_width: i32,
+    _client_height: i32,
+) {
+}
+
 #[cfg(not(target_os = "windows"))]
 fn configure_floating_notification_hit_region(
     _window: &WebviewWindow,
@@ -2649,6 +2731,7 @@ fn configure_floating_notification_hit_region(
     _logical_width: i32,
     _logical_height: i32,
     _layout: FloatingNotificationLayout,
+    _placement: FloatingNotificationPlacement,
     _motion_active: bool,
 ) {
 }
@@ -4000,6 +4083,7 @@ fn ensure_floating_notification_window(app: &AppHandle) -> tauri::Result<Webview
         FLOATING_NOTIFICATION_WIDTH,
         layout.min_height(),
         layout,
+        FloatingNotificationPlacement::Above,
         false,
     );
     hide_floating_auxiliary_window(app, FLOATING_NOTIFICATION_WINDOW_LABEL);
@@ -4039,7 +4123,7 @@ fn resolve_floating_notification_position(
     app: &AppHandle,
     notification_width: i32,
     notification_height: i32,
-) -> (i32, i32) {
+) -> ResolvedFloatingNotificationPosition {
     let fallback = || {
         compute_floating_notification_position(
             0,
@@ -4146,17 +4230,8 @@ fn emit_floating_notification_snapshot(app: &AppHandle, snapshot: &FloatingNotif
 }
 
 fn reposition_floating_notification_window(app: &AppHandle) {
-    let Some(window) = app.get_webview_window(FLOATING_NOTIFICATION_WINDOW_LABEL) else {
-        return;
-    };
-    if !window.is_visible().unwrap_or(false) {
-        return;
-    }
-    let Ok(size) = window.outer_size() else {
-        return;
-    };
-    let (x, y) = resolve_floating_notification_position(app, size.width as i32, size.height as i32);
-    let _ = window.set_position(PhysicalPosition::new(x, y));
+    // 面板显隐会同时改变锚点、placement 与 Region，必须复用完整同步链路。
+    let _ = sync_floating_notification_window(app);
 }
 
 pub(crate) fn sync_floating_notification_window_with_prefs(
@@ -4193,7 +4268,7 @@ fn sync_floating_notification_window_with_prefs_for_drag_restore(
     let _sync_guard = floating_notification_sync_lock()
         .lock()
         .map_err(|_| "floating notification sync unavailable".to_string())?;
-    let snapshot = get_floating_notification_snapshot_for_app(app)?;
+    let mut snapshot = get_floating_notification_snapshot_for_app(app)?;
     let layout = FloatingNotificationLayout::from_prefs(prefs);
 
     if !should_sync_floating_notification_window(
@@ -4251,16 +4326,26 @@ fn sync_floating_notification_window_with_prefs_for_drag_restore(
         notification_height,
         scale_factor,
     );
-    let (x, y) = resolve_floating_notification_position(app, physical_width, physical_height);
-    set_floating_notification_window_bounds(&window, x, y, physical_width, physical_height);
-    configure_floating_notification_hit_region(
+    let resolved = resolve_floating_notification_position(app, physical_width, physical_height);
+    snapshot.placement = resolved.placement;
+    configure_floating_notification_hit_region_for_client_size(
         &window,
         &item_heights,
         detail_open,
         notification_width,
         notification_height,
         layout,
+        resolved.placement,
         !detail_open,
+        physical_width,
+        physical_height,
+    );
+    set_floating_notification_window_bounds(
+        &window,
+        resolved.x,
+        resolved.y,
+        physical_width,
+        physical_height,
     );
     if !window_was_visible {
         show_floating_notification_window(&window);
@@ -4319,6 +4404,7 @@ pub(crate) fn settle_floating_notification_motion(app: &AppHandle) -> Result<boo
         FLOATING_NOTIFICATION_WIDTH,
         notification_height,
         layout,
+        snapshot.placement,
         false,
     );
     Ok(true)
@@ -4393,6 +4479,14 @@ pub(crate) fn get_floating_notification_snapshot_for_app(
 ) -> Result<FloatingNotificationSnapshot, String> {
     let mut snapshot = get_floating_notification_snapshot()?;
     snapshot.dock = resolve_floating_notification_dock(app);
+    snapshot.placement = app
+        .get_webview_window(FLOATING_NOTIFICATION_WINDOW_LABEL)
+        .and_then(|window| window.outer_size().ok())
+        .map(|size| {
+            resolve_floating_notification_position(app, size.width as i32, size.height as i32)
+                .placement
+        })
+        .unwrap_or_default();
     Ok(snapshot)
 }
 
@@ -5110,7 +5204,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_floating_notification_position, compute_panel_position,
+        compute_floating_notification_position,
+        compute_floating_notification_position_for_geometry, compute_panel_position,
         compute_panel_position_for_size, compute_release_orb_position_for_size,
         floating_drag_threshold_exceeded, is_floating_auxiliary_window_label, logical_to_physical,
         normalize_floating_window_ex_style, physical_to_logical, queue_startup_handoff_activation,
@@ -5128,12 +5223,13 @@ mod tests {
         should_hide_floating_panel_after_startup, should_recheck_floating_taskbar_style,
         take_startup_handoff_activation, FloatingGeometry, FloatingNotificationChannel,
         FloatingNotificationDock, FloatingNotificationHitRegion, FloatingNotificationLayout,
-        FloatingNotificationMailbox, FloatingNotificationPayload, FloatingNotificationReference,
-        StartupHandoffState, StartupRevealStage, StartupRevealTarget, FLOATING_NATIVE_DRAG_POLL_MS,
-        FLOATING_NATIVE_HIDDEN_POLL_MS, FLOATING_NATIVE_IDLE_POLL_MS,
-        FLOATING_NATIVE_VISIBLE_POLL_MS, FLOATING_NOTIFICATION_DETAIL_WIDTH,
-        FLOATING_NOTIFICATION_WIDTH, FLOATING_ORB_ALPHA_REGION_RUNS, FLOATING_ORB_SIZE,
-        FLOATING_PANEL_GAP, FLOATING_PANEL_WIDTH,
+        FloatingNotificationMailbox, FloatingNotificationPayload, FloatingNotificationPlacement,
+        FloatingNotificationReference, StartupHandoffState, StartupRevealStage,
+        StartupRevealTarget, FLOATING_NATIVE_DRAG_POLL_MS, FLOATING_NATIVE_HIDDEN_POLL_MS,
+        FLOATING_NATIVE_IDLE_POLL_MS, FLOATING_NATIVE_VISIBLE_POLL_MS,
+        FLOATING_NOTIFICATION_DETAIL_WIDTH, FLOATING_NOTIFICATION_WIDTH,
+        FLOATING_ORB_ALPHA_REGION_RUNS, FLOATING_ORB_SIZE, FLOATING_PANEL_GAP,
+        FLOATING_PANEL_WIDTH,
     };
 
     fn floating_notification_payload(id: &str, dedupe_key: &str) -> FloatingNotificationPayload {
@@ -5877,10 +5973,26 @@ mod tests {
         let mut mailbox = FloatingNotificationMailbox::default();
         let empty = mailbox.snapshot();
         assert_eq!(empty.dock, FloatingNotificationDock::Right);
+        assert_eq!(empty.placement, FloatingNotificationPlacement::Above);
         assert_eq!(
             serde_json::to_value(&empty).expect("serialize default notification snapshot")["dock"],
             "right"
         );
+        assert_eq!(
+            serde_json::to_value(&empty).expect("serialize default notification snapshot")
+                ["placement"],
+            "above"
+        );
+        assert_eq!(
+            serde_json::to_value(FloatingNotificationPlacement::Below)
+                .expect("serialize below notification placement"),
+            "below"
+        );
+        let legacy: super::FloatingNotificationSnapshot = serde_json::from_value(
+            serde_json::json!({ "revision": 0, "items": [], "dock": "left" }),
+        )
+        .expect("deserialize legacy notification snapshot");
+        assert_eq!(legacy.placement, FloatingNotificationPlacement::Above);
         let first = mailbox.enqueue(floating_notification_payload(
             "notification-1",
             "service:down:model-a",
@@ -6064,8 +6176,60 @@ mod tests {
                 .min_height(),
         );
 
-        assert_eq!(above, (214, 420));
-        assert_eq!(below, (214, 98));
+        assert_eq!((above.x, above.y), (214, 420));
+        assert_eq!(above.placement, FloatingNotificationPlacement::Above);
+        assert_eq!((below.x, below.y), (214, 98));
+        assert_eq!(below.placement, FloatingNotificationPlacement::Below);
+    }
+
+    #[test]
+    fn floating_notification_placement_uses_the_same_scaled_boundary_as_positioning() {
+        for scale in [1.0, 1.25, 1.5] {
+            let geometry = FloatingGeometry::for_scale(scale);
+            let work_area_x = -1_920;
+            let work_area_y = -120;
+            let notification_width = logical_to_physical(FLOATING_NOTIFICATION_WIDTH, scale);
+            let notification_height = logical_to_physical(113, scale);
+            let anchor_left = -1_800;
+            let anchor_right = anchor_left + logical_to_physical(FLOATING_ORB_SIZE as i32, scale);
+            let boundary_anchor_top = work_area_y
+                + geometry.safe_margin
+                + geometry.notification_gap
+                + notification_height;
+            let anchor_height = logical_to_physical(FLOATING_ORB_SIZE as i32, scale);
+
+            let above = compute_floating_notification_position_for_geometry(
+                work_area_x,
+                work_area_y,
+                1_920,
+                1_080,
+                anchor_left,
+                boundary_anchor_top,
+                anchor_right,
+                boundary_anchor_top + anchor_height,
+                notification_width,
+                notification_height,
+                geometry,
+            );
+            let below = compute_floating_notification_position_for_geometry(
+                work_area_x,
+                work_area_y,
+                1_920,
+                1_080,
+                anchor_left,
+                boundary_anchor_top - 1,
+                anchor_right,
+                boundary_anchor_top - 1 + anchor_height,
+                notification_width,
+                notification_height,
+                geometry,
+            );
+
+            assert_eq!(above.y, work_area_y + geometry.safe_margin);
+            assert_eq!(above.placement, FloatingNotificationPlacement::Above);
+            assert_eq!(below.placement, FloatingNotificationPlacement::Below);
+            assert!(below.y > above.y);
+        }
     }
 
     #[test]
@@ -6181,6 +6345,7 @@ mod tests {
             FLOATING_NOTIFICATION_WIDTH,
             183,
             FloatingNotificationLayout::from_prefs(&crate::contracts::DesktopUiPrefs::default()),
+            FloatingNotificationPlacement::Above,
         );
 
         assert_eq!(pills.len(), 2);
@@ -6191,19 +6356,39 @@ mod tests {
         assert_eq!(pills[0].corner_radius, 8);
         assert_eq!(pills[1].y, 4);
 
-        let detail = resolve_floating_notification_hit_regions_for_items(
-            &[105],
-            true,
-            FLOATING_NOTIFICATION_DETAIL_WIDTH,
-            360,
+        let below_pills = resolve_floating_notification_hit_regions_for_items(
+            &[64, 105],
+            false,
+            FLOATING_NOTIFICATION_WIDTH,
+            183,
             FloatingNotificationLayout::from_prefs(&crate::contracts::DesktopUiPrefs::default()),
+            FloatingNotificationPlacement::Below,
         );
-        assert_eq!(detail.len(), 1);
-        assert_eq!(detail[0].x, 4);
-        assert_eq!(detail[0].y, 4);
-        assert_eq!(detail[0].width, 336);
-        assert_eq!(detail[0].height, 352);
-        assert_eq!(detail[0].corner_radius, 8);
+        assert_eq!(below_pills.len(), 2);
+        assert_eq!(below_pills[0].y, 4);
+        assert_eq!(below_pills[0].height, 105);
+        assert_eq!(below_pills[1].y, 115);
+        assert_eq!(below_pills[1].height, 64);
+
+        for placement in [
+            FloatingNotificationPlacement::Above,
+            FloatingNotificationPlacement::Below,
+        ] {
+            let detail = resolve_floating_notification_hit_regions_for_items(
+                &[105],
+                true,
+                FLOATING_NOTIFICATION_DETAIL_WIDTH,
+                360,
+                FloatingNotificationLayout::from_prefs(&crate::contracts::DesktopUiPrefs::default()),
+                placement,
+            );
+            assert_eq!(detail.len(), 1);
+            assert_eq!(detail[0].x, 4);
+            assert_eq!(detail[0].y, 4);
+            assert_eq!(detail[0].width, 336);
+            assert_eq!(detail[0].height, 352);
+            assert_eq!(detail[0].corner_radius, 8);
+        }
     }
 
     #[test]
@@ -6216,6 +6401,7 @@ mod tests {
             FLOATING_NOTIFICATION_WIDTH,
             183,
             layout,
+            FloatingNotificationPlacement::Above,
             true,
         );
 
@@ -6239,6 +6425,7 @@ mod tests {
             FLOATING_NOTIFICATION_WIDTH,
             183,
             layout,
+            FloatingNotificationPlacement::Above,
             false,
         );
         assert_eq!(settled.len(), 2);
@@ -6262,6 +6449,34 @@ mod tests {
         );
         assert_eq!((newest_bounds.right, newest_bounds.bottom), (229, 180));
         assert_eq!((oldest_bounds.right, oldest_bounds.bottom), (229, 69));
+
+        let below_settled = resolve_floating_notification_regions_for_motion(
+            &[64, 105],
+            false,
+            FLOATING_NOTIFICATION_WIDTH,
+            183,
+            layout,
+            FloatingNotificationPlacement::Below,
+            false,
+        );
+        assert_eq!(below_settled.len(), 2);
+        assert_eq!(below_settled[0].y, 4);
+        assert_eq!(below_settled[1].y, 115);
+        assert_eq!(
+            below_settled[1].y - (below_settled[0].y + below_settled[0].height),
+            layout.item_gap
+        );
+
+        let below_motion = resolve_floating_notification_regions_for_motion(
+            &[64, 105],
+            false,
+            FLOATING_NOTIFICATION_WIDTH,
+            183,
+            layout,
+            FloatingNotificationPlacement::Below,
+            true,
+        );
+        assert_eq!(below_motion, regions);
     }
 
     #[test]
@@ -6276,34 +6491,55 @@ mod tests {
             let visible_count = usize::try_from(max_visible).expect("supported visible count");
             let item_heights = vec![layout.usage_item_height; visible_count];
             let height = resolve_floating_notification_height_for_items(&item_heights, layout);
-            let hit_regions = resolve_floating_notification_hit_regions_for_items(
-                &item_heights,
-                false,
-                FLOATING_NOTIFICATION_WIDTH,
-                height,
-                layout,
-            );
-
             assert_eq!(height, expected_height);
             assert_eq!(
                 resolve_floating_notification_window_height(visible_count, false, 900, layout),
                 expected_height
             );
-            assert_eq!(hit_regions.len(), visible_count);
-            assert_eq!(
-                hit_regions[0].y + hit_regions[0].height,
-                height - layout.vertical_padding / 2
-            );
-            assert_eq!(
-                hit_regions.last().expect("oldest card region").y,
-                layout.vertical_padding / 2
-            );
-            assert!(hit_regions.windows(2).all(|regions| {
-                regions[0].y - (regions[1].y + regions[1].height) == layout.item_gap
-            }));
-            assert!(hit_regions
-                .iter()
-                .all(|region| region.width == FLOATING_NOTIFICATION_WIDTH - 8));
+            for placement in [
+                FloatingNotificationPlacement::Above,
+                FloatingNotificationPlacement::Below,
+            ] {
+                let hit_regions = resolve_floating_notification_hit_regions_for_items(
+                    &item_heights,
+                    false,
+                    FLOATING_NOTIFICATION_WIDTH,
+                    height,
+                    layout,
+                    placement,
+                );
+
+                assert_eq!(hit_regions.len(), visible_count);
+                match placement {
+                    FloatingNotificationPlacement::Above => {
+                        assert_eq!(
+                            hit_regions[0].y + hit_regions[0].height,
+                            height - layout.vertical_padding / 2
+                        );
+                        assert_eq!(
+                            hit_regions.last().expect("oldest card region").y,
+                            layout.vertical_padding / 2
+                        );
+                        assert!(hit_regions.windows(2).all(|regions| {
+                            regions[0].y - (regions[1].y + regions[1].height) == layout.item_gap
+                        }));
+                    }
+                    FloatingNotificationPlacement::Below => {
+                        assert_eq!(hit_regions[0].y, layout.vertical_padding / 2);
+                        let oldest = hit_regions.last().expect("oldest card region");
+                        assert_eq!(
+                            oldest.y + oldest.height,
+                            height - layout.vertical_padding / 2
+                        );
+                        assert!(hit_regions.windows(2).all(|regions| {
+                            regions[1].y - (regions[0].y + regions[0].height) == layout.item_gap
+                        }));
+                    }
+                }
+                assert!(hit_regions
+                    .iter()
+                    .all(|region| region.width == FLOATING_NOTIFICATION_WIDTH - 8));
+            }
         }
     }
 
@@ -6328,6 +6564,7 @@ mod tests {
                 FLOATING_NOTIFICATION_WIDTH,
                 height,
                 layout,
+                FloatingNotificationPlacement::Above,
             );
 
             assert_eq!(hit_regions.len(), 2);
@@ -6376,7 +6613,7 @@ mod tests {
             360,
             FloatingNotificationLayout::from_prefs(&crate::contracts::DesktopUiPrefs::default()),
         );
-        let (_, y) = compute_floating_notification_position(
+        let resolved = compute_floating_notification_position(
             0,
             0,
             1440,
@@ -6389,8 +6626,8 @@ mod tests {
             detail_height,
         );
 
-        assert!(y >= 12);
-        assert!(y + detail_height <= 348);
+        assert!(resolved.y >= 12);
+        assert!(resolved.y + detail_height <= 348);
     }
 
     #[test]
