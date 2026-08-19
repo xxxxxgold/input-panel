@@ -256,7 +256,6 @@ impl FloatingNotificationMailbox {
     }
 
     #[cfg(test)]
-    #[cfg(test)]
     pub(crate) fn enqueue(
         &mut self,
         payload: FloatingNotificationPayload,
