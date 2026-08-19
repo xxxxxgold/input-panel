@@ -27,6 +27,7 @@ import {
   DEFAULT_SUBSCRIPTION_QUOTA_ALERT_RULE,
   resolveEffectiveSubscriptionQuotaAlertRule
 } from "../features/subscriptions/quota-alert-config";
+import { buildSubscriptionKeyUsageScopeKey } from "../features/subscriptions/subscription-key-usage-scope";
 import { getSubscriptionKeyUsage } from "../features/usage/client";
 import "../features/subscriptions/components/SubscriptionsPage.css";
 import {
@@ -774,17 +775,6 @@ function formatLargeNumber(value: number) {
     return `${(value / 1_000).toFixed(1)}K`;
   }
   return value.toLocaleString();
-}
-
-export function buildSubscriptionKeyUsageScopeKey(input: {
-  accountId: string | null;
-  subscriptionId: string;
-  subscriptionKey: string;
-  relatedKeyIdsSignature: string;
-  startDate: string;
-  endDate: string;
-}) {
-  return JSON.stringify(input);
 }
 
 function buildSubscriptionUsagePresetRange(
