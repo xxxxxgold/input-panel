@@ -240,7 +240,9 @@ export function FloatingOrbWindow({ keepPanelVisible = false }: { keepPanelVisib
         }, 160);
       }
 
-      await ensurePanelWindow();
+      if (!nativeFloatingInput) {
+        await ensurePanelWindow();
+      }
 
       if (!nativeFloatingInput) {
         unlistenMoved = await appWindow.onMoved(async ({ payload }) => {

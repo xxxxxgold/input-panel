@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
         Arc, Mutex, OnceLock,
     },
     time::{Duration, Instant},
@@ -325,20 +325,120 @@ static FLOATING_NATIVE_STATE: OnceLock<Arc<Mutex<FloatingNativeState>>> = OnceLo
 static FLOATING_AUXILIARY_WINDOW_BUILD_LOCK: Mutex<()> = Mutex::new(());
 static FLOATING_AUXILIARY_VISIBILITY_STATE: OnceLock<Mutex<FloatingAuxiliaryVisibilityState>> =
     OnceLock::new();
-/// 主窗口是否已因前端首帧就绪（或超时兜底）而显示过；show 逻辑必须幂等，
-/// dev 模式 HMR 重放 frontend_ready 时不能重复触发聚焦。
+/// 主窗口仅在真实 show 成功后才记录为已显示；HMR 重放 frontend_ready 时不能重复聚焦。
 static MAIN_WINDOW_REVEALED: AtomicBool = AtomicBool::new(false);
+/// 主窗口从 show 到 HWND 可见之间的短暂交接锁。失败或超时会释放它以允许后续重试。
+static MAIN_WINDOW_REVEAL_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// 主窗口持久化状态仅在本进程第一次实际显示时恢复。它独立于
 /// `MAIN_WINDOW_REVEALED`，因为悬浮启动收到 frontend_ready 时主窗口仍保持隐藏。
 static MAIN_WINDOW_INITIAL_STATE_RESTORED: AtomicBool = AtomicBool::new(false);
-const MAIN_WINDOW_REVEAL_FALLBACK_MS: u64 = 3_000;
+/// 等待前端首帧的诊断阈值。到期不允许反向显示透明主窗口。
+const FRONTEND_READY_TIMEOUT_MS: u64 = 3_000;
 const MAIN_WINDOW_NATIVE_VISIBILITY_POLL_MS: u64 = 16;
+static STARTUP_REVEAL_STAGE: AtomicU8 =
+    AtomicU8::new(StartupRevealStage::NativeSplashUnavailable as u8);
+/// 首个安全可见目标已完成交接。此后显式打开主窗口不再需要等前端首帧门禁。
+static STARTUP_HANDOFF_COMPLETED: AtomicBool = AtomicBool::new(false);
+static STARTUP_HANDOFF_STATE: OnceLock<Mutex<StartupHandoffState>> = OnceLock::new();
 static FLOATING_NOTIFICATION_MAILBOX: OnceLock<Arc<Mutex<FloatingNotificationMailbox>>> =
     OnceLock::new();
 static FLOATING_NOTIFICATION_SYNC_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static FLOATING_NOTIFICATION_MUTATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static FLOATING_NOTIFICATION_DETAIL_OPEN: AtomicBool = AtomicBool::new(false);
 static FLOATING_NOTIFICATION_PREFS_SYNC_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// 只记录启动可见性交接，不承载业务状态或跨进程持久化。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum StartupRevealStage {
+    NativeSplashUnavailable = 0,
+    NativeSplashVisible = 1,
+    MainWebviewCreated = 2,
+    FrontendReady = 3,
+    MainShowRequested = 4,
+    FloatingWindowVisible = 5,
+    MainHwndVisible = 6,
+    NativeSplashDestroyed = 7,
+    FrontendReadyTimeout = 8,
+    MainShowFailed = 9,
+}
+
+fn record_startup_reveal_stage(stage: StartupRevealStage) {
+    STARTUP_REVEAL_STAGE.store(stage as u8, Ordering::SeqCst);
+    log::info!("[startup] stage={stage:?}");
+}
+
+/// 交接完成状态和待回放唤醒必须在同一把锁内变更，避免 completed/replay 与入队交错后丢失请求。
+#[derive(Default)]
+struct StartupHandoffState {
+    completed: bool,
+    pending_main_window_activation: bool,
+    pending_main_window_navigation: Option<String>,
+}
+
+fn startup_handoff_state() -> &'static Mutex<StartupHandoffState> {
+    STARTUP_HANDOFF_STATE.get_or_init(|| Mutex::new(StartupHandoffState::default()))
+}
+
+fn queue_startup_handoff_activation(
+    state: &mut StartupHandoffState,
+    navigation: Option<&str>,
+) -> bool {
+    if state.completed {
+        return false;
+    }
+
+    state.pending_main_window_activation = true;
+    if let Some(navigation) = navigation {
+        state.pending_main_window_navigation = Some(navigation.to_string());
+    }
+    true
+}
+
+fn take_startup_handoff_activation(state: &mut StartupHandoffState) -> Option<Option<String>> {
+    if !state.pending_main_window_activation {
+        return None;
+    }
+
+    state.pending_main_window_activation = false;
+    Some(state.pending_main_window_navigation.take())
+}
+
+fn restore_startup_handoff_activation(state: &mut StartupHandoffState, navigation: Option<String>) {
+    state.pending_main_window_activation = true;
+    if let Some(navigation) = navigation {
+        state.pending_main_window_navigation = Some(navigation);
+    }
+}
+
+/// 返回 true 表示请求已在首帧门禁内原子入队；false 表示 handoff 已经完成，可立即打开。
+fn queue_main_window_activation_until_startup_handoff(navigation: Option<&str>) -> bool {
+    let mut state = startup_handoff_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    queue_startup_handoff_activation(&mut state, navigation)
+}
+
+fn take_pending_startup_main_window_activation() -> Option<Option<String>> {
+    let mut state = startup_handoff_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    take_startup_handoff_activation(&mut state)
+}
+
+fn restore_pending_startup_main_window_activation(navigation: Option<String>) {
+    let mut state = startup_handoff_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    restore_startup_handoff_activation(&mut state, navigation);
+}
+
+fn startup_handoff_has_pending_main_window_activation() -> bool {
+    startup_handoff_state()
+        .lock()
+        .map(|state| state.pending_main_window_activation)
+        .unwrap_or(false)
+}
 
 #[derive(Default)]
 struct FloatingAuxiliaryVisibilitySlot {
@@ -446,7 +546,8 @@ fn resolve_floating_drag_surface_restore(
 struct FloatingNativeState {
     app: AppHandle,
     orb_hwnd: usize,
-    panel_hwnd: usize,
+    /// 悬浮面板按实际交互创建，冷启动时原生轮询器必须允许它尚不存在。
+    panel_hwnd: Option<usize>,
     keep_panel_visible: bool,
     pointer_down: bool,
     drag_started: bool,
@@ -475,6 +576,8 @@ struct FloatingNativeState {
     hover_reentry_required: bool,
     /// 后台已投递、等待主线程处理的原生轮询 tick，避免事件队列累积。
     poll_tick_pending: bool,
+    /// 悬浮原生运行时只允许启动一个轮询任务。
+    poller_started: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -694,44 +797,51 @@ pub(crate) fn begin_floating_native_pointer_session_from_webview() -> bool {
     }
 }
 
-/// 用户显式打开主窗口的路径调用：跳过"等待前端就绪"的启动门禁。
-pub(crate) fn mark_main_window_revealed() {
-    MAIN_WINDOW_REVEALED.store(true, Ordering::SeqCst);
-}
-
 pub(crate) async fn reveal_main_window_on_frontend_ready(app: &AppHandle) -> Result<(), String> {
     // frontend_ready 从 WebView IPC 进入时不保证已在 Windows UI 线程；必须让
     // configure -> show -> configure 与 Tao 的 ShowWindow 样式回写串行执行，且只有
     // 完成后才回复 IPC，避免前端在原生窗口真正可见前撤掉静态 Loading。
-    let wait_for_native_visibility = should_wait_for_main_window_native_visibility(app);
+    record_startup_reveal_stage(StartupRevealStage::FrontendReady);
     let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
     let app_for_main_thread = app.clone();
     app.run_on_main_thread(move || {
-        reveal_main_window(&app_for_main_thread, "前端首帧就绪");
-        let _ = completion_tx.send(());
+        let _ = completion_tx.send(reveal_main_window(&app_for_main_thread, "前端首帧就绪"));
     })
     .map_err(|error| {
         let message = format!("无法在主线程显示主窗口: {error}");
         log::warn!("[window] {message}");
         message
     })?;
-    completion_rx.await.map_err(|_| {
+    let target = completion_rx.await.map_err(|_| {
         let message = "主窗口首帧显示任务在完成前被取消".to_string();
         log::warn!("[window] {message}");
         message
-    })?;
-    if wait_for_native_visibility {
-        wait_for_main_window_native_visibility(app).await;
+    })??;
+    match target {
+        StartupRevealTarget::Main => finish_main_startup_handoff(app).await,
+        StartupRevealTarget::Floating => finish_floating_startup_handoff(app).await,
     }
-    Ok(())
 }
 
-/// 悬浮启动不会显示主窗口，不能让 frontend_ready 因等待不可见的主窗口而延迟。
-fn should_wait_for_main_window_native_visibility(app: &AppHandle) -> bool {
-    app.try_state::<application::AppContext>()
-        .and_then(|ctx| application::desktop_ui_service::get_desktop_ui_prefs(&ctx).ok())
-        .map(|prefs| prefs.launch_mode != crate::contracts::AppLaunchMode::Floating)
-        .unwrap_or(true)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StartupRevealTarget {
+    Main,
+    Floating,
+}
+
+/// 只有当前启动目标真正可见时，才允许进入销毁原生启动窗的最终交接阶段。
+fn resolve_startup_handoff_stage(
+    target: StartupRevealTarget,
+    main_visible: bool,
+    floating_visible: bool,
+) -> Option<StartupRevealStage> {
+    match target {
+        StartupRevealTarget::Main if main_visible => Some(StartupRevealStage::MainHwndVisible),
+        StartupRevealTarget::Floating if floating_visible => {
+            Some(StartupRevealStage::FloatingWindowVisible)
+        }
+        _ => None,
+    }
 }
 
 /// Windows 的 `show()` 返回后仍可能要等一个消息循环才真正提交到桌面，尤其是恢复最大化时。
@@ -754,27 +864,203 @@ fn main_window_native_visible(app: &AppHandle) -> bool {
     }
 }
 
-/// 让 IPC completion 对应主窗口的原生可见状态，避免最大化恢复期间提前撤走静态 Loading。
-async fn wait_for_main_window_native_visibility(app: &AppHandle) {
-    let deadline = Instant::now() + Duration::from_millis(MAIN_WINDOW_REVEAL_FALLBACK_MS);
+fn floating_window_native_visible(app: &AppHandle) -> bool {
+    let Some(floating) = app.get_webview_window(FLOATING_WINDOW_LABEL) else {
+        return false;
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        let Ok(hwnd) = floating.hwnd() else {
+            return false;
+        };
+        return native_window_visible(hwnd.0 as usize).unwrap_or(false);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        floating.is_visible().unwrap_or(false)
+    }
+}
+
+/// 让 IPC completion 对应真实原生可见性，超时保留启动窗而不是把透明宿主当作成功。
+async fn wait_for_startup_window_native_visibility(
+    app: &AppHandle,
+    window_visible: fn(&AppHandle) -> bool,
+    window_name: &'static str,
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_millis(FRONTEND_READY_TIMEOUT_MS);
     loop {
         let (visible_tx, visible_rx) = tokio::sync::oneshot::channel();
         let app_for_main_thread = app.clone();
         if let Err(error) = app.run_on_main_thread(move || {
-            let _ = visible_tx.send(main_window_native_visible(&app_for_main_thread));
+            let _ = visible_tx.send(window_visible(&app_for_main_thread));
         }) {
-            log::warn!("[window] 无法确认主窗口原生可见状态: {error}");
-            return;
+            let message = format!("无法确认{window_name}原生可见状态: {error}");
+            log::warn!("[startup] {message}");
+            return Err(message);
         }
 
         if matches!(visible_rx.await, Ok(true)) {
-            return;
+            return Ok(());
         }
         if Instant::now() >= deadline {
-            log::warn!("[window] 主窗口显示后未在限定时间内确认原生可见状态");
-            return;
+            record_startup_reveal_stage(StartupRevealStage::FrontendReadyTimeout);
+            let message = format!("{window_name}显示后未在限定时间内确认原生可见状态");
+            log::warn!("[startup] {message}");
+            return Err(message);
         }
         tokio::time::sleep(Duration::from_millis(MAIN_WINDOW_NATIVE_VISIBILITY_POLL_MS)).await;
+    }
+}
+
+async fn wait_for_main_window_native_visibility(app: &AppHandle) -> Result<(), String> {
+    wait_for_startup_window_native_visibility(app, main_window_native_visible, "主窗口").await
+}
+
+async fn wait_for_floating_window_native_visibility(app: &AppHandle) -> Result<(), String> {
+    wait_for_startup_window_native_visibility(app, floating_window_native_visible, "悬浮球").await
+}
+
+fn native_startup_splash_visible() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        return infrastructure::windows_splash::startup_splash_visible();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
+/// 仅在创建启动窗的 Tauri UI 线程销毁 HWND，避免退出路径跨线程调用 DestroyWindow。
+/// 销毁失败必须向启动交接传播，不能把仍可见的 HWND 标记为已完成。
+fn dismiss_native_startup_splash_on_main_thread() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        if native_startup_splash_visible() {
+            infrastructure::windows_splash::dismiss_startup_splash()?;
+            record_startup_reveal_stage(StartupRevealStage::NativeSplashDestroyed);
+        }
+    }
+
+    Ok(())
+}
+
+/// 请求应用退出时尽早关闭原生启动窗。Windows 的 HWND 生命周期仍由主线程收口。
+pub(crate) fn dismiss_native_startup_splash_for_exit(app: &AppHandle) {
+    #[cfg(target_os = "windows")]
+    {
+        if !native_startup_splash_visible() {
+            return;
+        }
+        if let Err(error) = app.run_on_main_thread(|| {
+            if let Err(error) = dismiss_native_startup_splash_on_main_thread() {
+                log::warn!("[startup] 原生启动窗退出清理失败: {error}");
+            }
+        }) {
+            log::warn!("[startup] 调度启动窗退出清理失败: {error}");
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+    }
+}
+
+/// 只能在 Tauri 主线程调用，确保 DestroyWindow 与创建线程一致。
+fn complete_startup_handoff_on_main_thread(
+    app: &AppHandle,
+    stage: StartupRevealStage,
+) -> Result<(), String> {
+    record_startup_reveal_stage(stage);
+    let first_handoff = {
+        let mut handoff = startup_handoff_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if handoff.completed {
+            false
+        } else {
+            // 持有 handoff 锁直到 HWND 销毁成功并提交 completed，避免其他线程在
+            // replay 与入队之间插入一个永远不会回放的显式打开请求。
+            if let Err(error) = dismiss_native_startup_splash_on_main_thread() {
+                log::warn!("[startup] 原生启动窗销毁失败，保留 handoff 重试资格: {error}");
+                return Err(error);
+            }
+            handoff.completed = true;
+            STARTUP_HANDOFF_COMPLETED.store(true, Ordering::SeqCst);
+            true
+        }
+    };
+    if stage == StartupRevealStage::MainHwndVisible {
+        MAIN_WINDOW_REVEALED.store(true, Ordering::SeqCst);
+        if first_handoff {
+            ensure_main_mode_auxiliary_windows_after_startup(app);
+        }
+    }
+    MAIN_WINDOW_REVEAL_IN_FLIGHT.store(false, Ordering::SeqCst);
+    if first_handoff {
+        replay_pending_main_window_activation_after_startup_handoff(app);
+    }
+    Ok(())
+}
+
+async fn finish_main_startup_handoff(app: &AppHandle) -> Result<(), String> {
+    if let Err(error) = wait_for_main_window_native_visibility(app).await {
+        MAIN_WINDOW_REVEAL_IN_FLIGHT.store(false, Ordering::SeqCst);
+        return Err(error);
+    }
+    let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+    let app_for_main_thread = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || {
+        let completion = resolve_startup_handoff_stage(
+            StartupRevealTarget::Main,
+            main_window_native_visible(&app_for_main_thread),
+            false,
+        )
+        .ok_or_else(|| "主窗口可见性交接在完成前被取消".to_string())
+        .and_then(|stage| complete_startup_handoff_on_main_thread(&app_for_main_thread, stage));
+        let _ = completion_tx.send(completion);
+    }) {
+        MAIN_WINDOW_REVEAL_IN_FLIGHT.store(false, Ordering::SeqCst);
+        let message = format!("无法在主线程完成主窗口启动交接: {error}");
+        log::warn!("[startup] {message}");
+        return Err(message);
+    }
+    match completion_rx.await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => {
+            MAIN_WINDOW_REVEAL_IN_FLIGHT.store(false, Ordering::SeqCst);
+            Err(error)
+        }
+        Err(_) => {
+            MAIN_WINDOW_REVEAL_IN_FLIGHT.store(false, Ordering::SeqCst);
+            Err("主窗口可见性交接在完成前被取消".to_string())
+        }
+    }
+}
+
+async fn finish_floating_startup_handoff(app: &AppHandle) -> Result<(), String> {
+    wait_for_floating_window_native_visibility(app).await?;
+    let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+    let app_for_main_thread = app.clone();
+    app.run_on_main_thread(move || {
+        let completion = resolve_startup_handoff_stage(
+            StartupRevealTarget::Floating,
+            false,
+            floating_window_native_visible(&app_for_main_thread),
+        )
+        .ok_or_else(|| "悬浮球可见性交接在完成前被取消".to_string())
+        .and_then(|stage| complete_startup_handoff_on_main_thread(&app_for_main_thread, stage));
+        let _ = completion_tx.send(completion);
+    })
+    .map_err(|error| format!("无法在主线程完成悬浮球启动交接: {error}"))?;
+    match completion_rx.await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err("悬浮球可见性交接在完成前被取消".to_string()),
     }
 }
 
@@ -819,6 +1105,7 @@ fn floating_drag_threshold_exceeded(delta_x: i32, delta_y: i32, threshold: i32) 
     delta_x.abs() >= threshold || delta_y.abs() >= threshold
 }
 
+#[cfg(test)]
 fn should_hide_floating_panel_after_startup(
     panel_visible: bool,
     pointer_down: bool,
@@ -2027,8 +2314,10 @@ fn toggle_floating_panel_native(shared: &Arc<Mutex<FloatingNativeState>>) {
         };
         (state.panel_hwnd, state.panel_visible)
     };
-    let is_visible =
-        resolve_floating_native_panel_visible(cached_visible, native_window_visible(panel_hwnd));
+    let is_visible = resolve_floating_native_panel_visible(
+        cached_visible,
+        panel_hwnd.and_then(native_window_visible),
+    );
 
     if is_visible != cached_visible {
         if let Ok(mut state) = shared.lock() {
@@ -2365,21 +2654,15 @@ pub(crate) fn open_main_window_from_native(app: &AppHandle, navigation: &str) {
         &ctx,
         crate::contracts::AppLaunchMode::Main,
     ) {
-        mark_main_window_revealed();
-        show_main_window_with_controlled_state_restore(app, "原生通知打开主窗口");
-        if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-            let _ = window.emit("open-nav", navigation);
+        if let Err(error) = request_main_window_activation_after_startup_handoff(
+            app,
+            &prefs,
+            Some(navigation),
+            "原生通知打开主窗口",
+        ) {
+            log::warn!("[window] {error}");
+            return;
         }
-        if prefs.open_floating_in_main_mode {
-            if let Some(window) = app.get_webview_window(FLOATING_WINDOW_LABEL) {
-                show_floating_window(&window, false);
-            }
-        } else {
-            hide_floating_group(app);
-        }
-        hide_floating_auxiliary_window(app, FLOATING_PANEL_WINDOW_LABEL);
-        mark_floating_native_panel_hidden();
-        hide_floating_notification_window(app);
         let _ = app.emit("desktop-ui-prefs-updated", &prefs);
     }
 }
@@ -2425,7 +2708,7 @@ fn poll_floating_native_tick(shared: Arc<Mutex<FloatingNativeState>>) {
     // 的真实可见性校正缓存，避免非固定菜单失去自动收起和点击切换能力。
     let panel_visible = resolve_floating_native_panel_visible(
         cached_panel_visible,
-        native_window_visible(panel_hwnd),
+        panel_hwnd.and_then(native_window_visible),
     );
     let panel_visibility_drifted = panel_visible != cached_panel_visible;
     if panel_visibility_drifted {
@@ -2475,7 +2758,7 @@ fn poll_floating_native_tick(shared: Arc<Mutex<FloatingNativeState>>) {
     let (orb_hit, orb_drag_hit, panel_hit) = if should_sample_geometry {
         // Reuse one native geometry snapshot per window for all hit checks in this tick.
         let orb_rect = get_window_rect(orb_hwnd);
-        let panel_rect = get_window_rect(panel_hwnd);
+        let panel_rect = panel_hwnd.and_then(get_window_rect);
         let (orb_hit, orb_drag_hit) = orb_rect
             .as_ref()
             .map(|rect| resolve_floating_orb_hit_zones(&app, rect, cursor.x, cursor.y))
@@ -2802,6 +3085,11 @@ fn show_floating_panel_native_with_drag_restore(
         state.app.clone()
     };
 
+    if let Err(error) = ensure_floating_panel_runtime(&app) {
+        log::warn!("[floating] 悬浮面板按需初始化失败: {error}");
+        return;
+    }
+
     let Some(orb) = app.get_webview_window(FLOATING_WINDOW_LABEL) else {
         return;
     };
@@ -3030,6 +3318,13 @@ fn snap_orb_to_edge_native(shared: &Arc<Mutex<FloatingNativeState>>) {
 }
 
 pub(crate) fn set_floating_native_panel_visible(app: &AppHandle, visible: bool) {
+    if visible {
+        if let Err(error) = ensure_floating_panel_runtime(app) {
+            log::warn!("[floating] 打开悬浮面板前初始化运行时失败: {error}");
+            return;
+        }
+    }
+
     #[cfg(target_os = "windows")]
     if let Some(shared) = FLOATING_NATIVE_STATE.get() {
         if visible {
@@ -3377,10 +3672,12 @@ fn install_floating_native_subclasses(shared: &Arc<Mutex<FloatingNativeState>>) 
             orb_hwnd as *mut std::ffi::c_void,
             FLOATING_SUBCLASS_ORB_ID,
         );
-        install_floating_native_subclass_tree(
-            panel_hwnd as *mut std::ffi::c_void,
-            FLOATING_SUBCLASS_PANEL_ID,
-        );
+        if let Some(panel_hwnd) = panel_hwnd {
+            install_floating_native_subclass_tree(
+                panel_hwnd as *mut std::ffi::c_void,
+                FLOATING_SUBCLASS_PANEL_ID,
+            );
+        }
     }
 }
 
@@ -3471,26 +3768,24 @@ fn restore_or_place_floating_window(window: &WebviewWindow, app: &AppHandle) {
 
 #[cfg(target_os = "windows")]
 fn install_floating_native_state(app: &AppHandle) {
-    let (Some(orb), Some(panel)) = (
-        app.get_webview_window(FLOATING_WINDOW_LABEL),
-        app.get_webview_window(FLOATING_PANEL_WINDOW_LABEL),
-    ) else {
+    let Some(orb) = app.get_webview_window(FLOATING_WINDOW_LABEL) else {
         return;
     };
 
     let Ok(orb_hwnd) = orb.hwnd() else {
         return;
     };
-    let Ok(panel_hwnd) = panel.hwnd() else {
-        return;
-    };
+    let panel_hwnd = app
+        .get_webview_window(FLOATING_PANEL_WINDOW_LABEL)
+        .and_then(|panel| panel.hwnd().ok())
+        .map(|hwnd| hwnd.0 as usize);
 
     let shared = FLOATING_NATIVE_STATE
         .get_or_init(|| {
             Arc::new(Mutex::new(FloatingNativeState {
                 app: app.clone(),
                 orb_hwnd: orb_hwnd.0 as usize,
-                panel_hwnd: panel_hwnd.0 as usize,
+                panel_hwnd,
                 keep_panel_visible: should_keep_floating_panel_visible(app),
                 pointer_down: false,
                 drag_started: false,
@@ -3521,6 +3816,7 @@ fn install_floating_native_state(app: &AppHandle) {
                 suppress_hover_until: None,
                 hover_reentry_required: false,
                 poll_tick_pending: false,
+                poller_started: false,
             }))
         })
         .clone();
@@ -3529,7 +3825,7 @@ fn install_floating_native_state(app: &AppHandle) {
     if let Ok(mut state) = lock_result {
         state.app = app.clone();
         state.orb_hwnd = orb_hwnd.0 as usize;
-        state.panel_hwnd = panel_hwnd.0 as usize;
+        state.panel_hwnd = panel_hwnd;
         state.keep_panel_visible = should_keep_floating_panel_visible(app);
     }
 }
@@ -3611,6 +3907,48 @@ fn ensure_floating_panel_window(app: &AppHandle) -> tauri::Result<WebviewWindow>
         FLOATING_PANEL_HEIGHT as i32,
     );
     Ok(window)
+}
+
+/// 只有悬浮功能被实际请求时才创建悬浮球，并在首次创建后接通原生输入运行时。
+pub(crate) fn ensure_floating_runtime(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+    let floating = ensure_floating_window(app)?;
+    install_floating_native_state(app);
+
+    #[cfg(target_os = "windows")]
+    if let Some(shared) = FLOATING_NATIVE_STATE.get() {
+        install_floating_native_subclasses(shared);
+        let should_start_poller = shared
+            .lock()
+            .map(|mut state| {
+                if state.poller_started {
+                    false
+                } else {
+                    state.poller_started = true;
+                    true
+                }
+            })
+            .unwrap_or(false);
+        if should_start_poller {
+            start_floating_native_poller(shared.clone());
+            schedule_floating_native_subclass_refresh(app.clone());
+        }
+    }
+
+    Ok(floating)
+}
+
+/// 悬浮面板只在用户真实打开、hover 或保持展开的需求出现后才创建。
+fn ensure_floating_panel_runtime(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+    let _ = ensure_floating_runtime(app)?;
+    let panel = ensure_floating_panel_window(app)?;
+    install_floating_native_state(app);
+
+    #[cfg(target_os = "windows")]
+    if let Some(shared) = FLOATING_NATIVE_STATE.get() {
+        install_floating_native_subclasses(shared);
+    }
+
+    Ok(panel)
 }
 
 fn ensure_floating_notification_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
@@ -4160,58 +4498,102 @@ fn restore_main_window_display_state_after_reveal(main: &WebviewWindow) {
 }
 
 /// 主窗口首次实际显示统一走受控恢复，避免浮窗、托盘和原生通知路径绕过无标题栏处理。
-pub(crate) fn show_main_window_with_controlled_state_restore(app: &AppHandle, reason: &str) {
+pub(crate) fn show_main_window_with_controlled_state_restore(
+    app: &AppHandle,
+    reason: &str,
+) -> Result<(), String> {
     let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
-        log::warn!("[window] 主窗口不存在，无法显示（{reason}）");
-        return;
+        let message = format!("主窗口不存在，无法显示（{reason}）");
+        log::warn!("[window] {message}");
+        record_startup_reveal_stage(StartupRevealStage::MainShowFailed);
+        return Err(message);
     };
 
-    let restore_persisted_state = !MAIN_WINDOW_INITIAL_STATE_RESTORED.swap(true, Ordering::SeqCst);
+    record_startup_reveal_stage(StartupRevealStage::MainShowRequested);
+    let restore_persisted_state = !MAIN_WINDOW_INITIAL_STATE_RESTORED.load(Ordering::SeqCst);
     if restore_persisted_state {
         restore_main_window_geometry_before_reveal(&main);
     }
     configure_native_main_window(&main);
-    show_window(&main);
+    if let Err(error) = main.show() {
+        let message = format!("主窗口显示失败（{reason}）: {error}");
+        record_startup_reveal_stage(StartupRevealStage::MainShowFailed);
+        log::warn!("[window] {message}");
+        return Err(message);
+    }
+    if let Err(error) = main.unminimize() {
+        let message = format!("主窗口取消最小化失败（{reason}）: {error}");
+        record_startup_reveal_stage(StartupRevealStage::MainShowFailed);
+        log::warn!("[window] {message}");
+        return Err(message);
+    }
+    let _ = main.set_focus();
     if restore_persisted_state {
         restore_main_window_display_state_after_reveal(&main);
+        MAIN_WINDOW_INITIAL_STATE_RESTORED.store(true, Ordering::SeqCst);
     }
     configure_native_main_window(&main);
     #[cfg(target_os = "windows")]
     if restore_persisted_state {
         schedule_native_main_window_chrome_normalization(app.clone());
     }
+    Ok(())
 }
 
-/// 首帧就绪（frontend_ready command）或超时兜底后显示主窗口。幂等：只成功一次。
-fn reveal_main_window(app: &AppHandle, reason: &str) {
-    if MAIN_WINDOW_REVEALED.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
-        MAIN_WINDOW_REVEALED.store(false, Ordering::SeqCst);
-        return;
-    };
-    // 悬浮启动模式下主窗口保持隐藏，标志位仍置位以吞掉后续 frontend_ready。
+/// 前端首帧完成后按启动模式进入真实可见目标。失败时不提交 `MAIN_WINDOW_REVEALED`。
+fn reveal_main_window(app: &AppHandle, reason: &str) -> Result<StartupRevealTarget, String> {
     let launch_floating = app
         .try_state::<application::AppContext>()
         .and_then(|ctx| application::desktop_ui_service::get_desktop_ui_prefs(&ctx).ok())
         .map(|prefs| prefs.launch_mode == crate::contracts::AppLaunchMode::Floating)
         .unwrap_or(false);
     if launch_floating {
-        return;
+        if floating_window_native_visible(app) {
+            return Ok(StartupRevealTarget::Floating);
+        }
+        let floating = ensure_floating_runtime(app).map_err(|error| error.to_string())?;
+        show_floating_window(&floating, true);
+        return Ok(StartupRevealTarget::Floating);
+    }
+    if MAIN_WINDOW_REVEALED.load(Ordering::SeqCst) && main_window_native_visible(app) {
+        return Ok(StartupRevealTarget::Main);
+    }
+    if MAIN_WINDOW_REVEAL_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        return Ok(StartupRevealTarget::Main);
     }
     log::info!("[window] 主窗口显示（{reason}）");
-    drop(main);
-    show_main_window_with_controlled_state_restore(app, reason);
+    if let Err(error) = show_main_window_with_controlled_state_restore(app, reason) {
+        MAIN_WINDOW_REVEAL_IN_FLIGHT.store(false, Ordering::SeqCst);
+        return Err(error);
+    }
+    Ok(StartupRevealTarget::Main)
 }
 
-fn schedule_main_window_reveal_fallback(app: AppHandle) {
+/// 仅记录前端首帧超时。绝不以时间驱动显示尚不能绘制的透明主窗口。
+fn schedule_frontend_ready_timeout_diagnostic() {
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(MAIN_WINDOW_REVEAL_FALLBACK_MS)).await;
-        let app_for_main_thread = app.clone();
-        let _ = app.run_on_main_thread(move || {
-            reveal_main_window(&app_for_main_thread, "超时兜底");
-        });
+        tokio::time::sleep(Duration::from_millis(FRONTEND_READY_TIMEOUT_MS)).await;
+        if STARTUP_HANDOFF_COMPLETED.load(Ordering::SeqCst)
+            || MAIN_WINDOW_REVEALED.load(Ordering::SeqCst)
+        {
+            return;
+        }
+        record_startup_reveal_stage(StartupRevealStage::FrontendReadyTimeout);
+        log::warn!("[startup] frontend_ready 超时，保留原生启动窗并等待后续恢复");
+    });
+}
+
+/// Floating 首启以悬浮球的真实 HWND 可见性作为完成条件，不能等待按设计隐藏的主 WebView。
+fn schedule_floating_startup_handoff_after_orb_visible(app: &AppHandle) {
+    if STARTUP_HANDOFF_COMPLETED.load(Ordering::SeqCst) {
+        return;
+    }
+
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = finish_floating_startup_handoff(&app).await {
+            log::warn!("[startup] 悬浮球启动交接失败，保留后续显式唤醒重试机会: {error}");
+        }
     });
 }
 
@@ -4220,31 +4602,110 @@ fn sync_mode_windows(app: &AppHandle, prefs: &crate::contracts::DesktopUiPrefs) 
     if prefs.launch_mode == crate::contracts::AppLaunchMode::Floating {
         hide_window(app, MAIN_WINDOW_LABEL);
         hide_window(app, FLOATING_PANEL_WINDOW_LABEL);
-        if let Ok(window) = ensure_floating_window(app) {
+        if let Ok(window) = ensure_floating_runtime(app) {
             show_floating_window(&window, true);
+            schedule_floating_startup_handoff_after_orb_visible(app);
         }
-        let _ = ensure_floating_panel_window(app);
         hide_floating_auxiliary_window(app, FLOATING_PANEL_WINDOW_LABEL);
         mark_floating_native_panel_hidden();
         let _ = sync_floating_notification_window_with_prefs(app, prefs);
         return;
     }
 
-    if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        // 启动阶段（主窗口尚未首次显示）不在这里 show——等待前端 frontend_ready
-        // 或 3s 兜底，避免默认主题首帧闪变；此后的模式切换沿用即时 show。
-        if MAIN_WINDOW_REVEALED.load(Ordering::SeqCst) {
-            drop(main);
-            show_main_window_with_controlled_state_restore(app, "同步主窗口模式");
+    // 首次主模式启动必须只保留 main WebView 与原生启动窗，不能在首帧前抢占 WebView2。
+    if !MAIN_WINDOW_REVEALED.load(Ordering::SeqCst) || !main_window_native_visible(app) {
+        return;
+    }
+    let _ = show_main_window_with_controlled_state_restore(app, "同步主窗口模式");
+    ensure_main_mode_auxiliary_windows_after_startup(app);
+}
+
+/// 主工作台已经真实可见后，才根据偏好按需加载悬浮辅助窗口。
+fn ensure_main_mode_auxiliary_windows_after_startup(app: &AppHandle) {
+    let Ok(prefs) = application::desktop_ui_service::get_desktop_ui_prefs(
+        &app.state::<application::AppContext>(),
+    ) else {
+        return;
+    };
+    if prefs.launch_mode != crate::contracts::AppLaunchMode::Main {
+        return;
+    }
+    if !prefs.open_floating_in_main_mode {
+        hide_floating_group(app);
+        return;
+    }
+    if let Ok(window) = ensure_floating_runtime(app) {
+        show_floating_window(&window, false);
+        let _ = sync_floating_notification_window_with_prefs(app, &prefs);
+    }
+}
+
+/// 显式打开主窗口必须先等待任一安全首帧交接完成，避免抢先暴露透明主 WebView。
+pub(crate) fn request_main_window_activation_after_startup_handoff(
+    app: &AppHandle,
+    prefs: &crate::contracts::DesktopUiPrefs,
+    navigation: Option<&str>,
+    reason: &str,
+) -> Result<bool, String> {
+    if queue_main_window_activation_until_startup_handoff(navigation) {
+        log::info!("[startup] {reason} 已排队，等待安全首帧交接");
+        return Ok(false);
+    }
+
+    show_main_window_with_controlled_state_restore(app, reason)?;
+    if let Some(navigation) = navigation {
+        if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+            let _ = main.emit("open-nav", navigation);
         }
     }
-    let _ = ensure_floating_panel_window(app);
-    if let Ok(window) = ensure_floating_window(app) {
-        if prefs.open_floating_in_main_mode {
-            show_floating_window(&window, true);
-            let _ = sync_floating_notification_window_with_prefs(app, prefs);
-        } else {
-            hide_floating_group(app);
+    if prefs.open_floating_in_main_mode {
+        match ensure_floating_runtime(app) {
+            Ok(floating) => show_floating_window(&floating, false),
+            Err(error) => log::warn!("[floating] 主窗口打开后初始化悬浮窗失败: {error}"),
+        }
+    } else {
+        hide_floating_group(app);
+    }
+    hide_floating_auxiliary_window(app, FLOATING_PANEL_WINDOW_LABEL);
+    mark_floating_native_panel_hidden();
+    hide_floating_notification_window(app);
+    Ok(true)
+}
+
+/// 只有 startup handoff 提交后才回放启动期间抵达的单实例/原生唤醒请求。
+fn replay_pending_main_window_activation_after_startup_handoff(app: &AppHandle) {
+    let Some(navigation) = take_pending_startup_main_window_activation() else {
+        return;
+    };
+
+    let Some(ctx) = app.try_state::<application::AppContext>() else {
+        restore_pending_startup_main_window_activation(navigation);
+        log::warn!("[startup] 主窗口唤醒回放时应用上下文仍未就绪");
+        return;
+    };
+    let prefs = match application::desktop_ui_service::get_desktop_ui_prefs(&ctx) {
+        Ok(prefs) => prefs,
+        Err(error) => {
+            restore_pending_startup_main_window_activation(navigation);
+            log::warn!("[startup] 读取待回放主窗口偏好失败: {error}");
+            return;
+        }
+    };
+    match request_main_window_activation_after_startup_handoff(
+        app,
+        &prefs,
+        navigation.as_deref(),
+        "启动期间主窗口唤醒",
+    ) {
+        Ok(true) => {
+            let _ = app.emit("desktop-ui-prefs-updated", &prefs);
+        }
+        Ok(false) => {
+            restore_pending_startup_main_window_activation(navigation);
+        }
+        Err(error) => {
+            restore_pending_startup_main_window_activation(navigation);
+            log::warn!("[startup] 待回放主窗口唤醒失败: {error}");
         }
     }
 }
@@ -4254,11 +4715,10 @@ fn handle_tray_toggle(app: &AppHandle, ctx: &application::AppContext) {
         Ok(value) => value,
         Err(_) => return,
     };
-    let floating = match ensure_floating_window(app) {
+    let floating = match ensure_floating_runtime(app) {
         Ok(window) => window,
         Err(_) => return,
     };
-    let _ = ensure_floating_panel_window(app);
     let visible = floating.is_visible().unwrap_or(false);
     if prefs.launch_mode == crate::contracts::AppLaunchMode::Floating {
         if visible {
@@ -4292,9 +4752,14 @@ fn open_main_window_from_tray(app: &AppHandle, ctx: &application::AppContext) {
     if let Ok(prefs) =
         application::desktop_ui_service::set_launch_mode(ctx, crate::contracts::AppLaunchMode::Main)
     {
-        // 用户显式打开：无需再等前端就绪信号。
-        MAIN_WINDOW_REVEALED.store(true, Ordering::SeqCst);
-        sync_mode_windows(app, &prefs);
+        if let Err(error) = request_main_window_activation_after_startup_handoff(
+            app,
+            &prefs,
+            None,
+            "托盘打开主窗口",
+        ) {
+            log::warn!("[window] {error}");
+        }
         let _ = app.emit("desktop-ui-prefs-updated", &prefs);
     }
 }
@@ -4315,6 +4780,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 TRAY_OPEN_MAIN_ID => open_main_window_from_tray(app, &ctx),
                 TRAY_TOGGLE_FLOATING_ID => handle_tray_toggle(app, &ctx),
                 TRAY_QUIT_ID => {
+                    dismiss_native_startup_splash_for_exit(app);
                     let _ = app.save_window_state(persisted_window_state_flags());
                     app.exit(0);
                 }
@@ -4353,16 +4819,41 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "windows")]
+    match infrastructure::windows_splash::create_startup_splash() {
+        Ok(()) => record_startup_reveal_stage(StartupRevealStage::NativeSplashVisible),
+        Err(error) => log::warn!("[startup] 原生启动窗创建失败: {error}"),
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let app_handle = app.clone();
             let app_for_activation = app_handle.clone();
             if let Err(error) = app_handle.run_on_main_thread(move || {
                 let Some(ctx) = app_for_activation.try_state::<application::AppContext>() else {
-                    log::warn!("single-instance activation arrived before app context was ready");
+                    queue_main_window_activation_until_startup_handoff(None);
+                    log::info!("[startup] single-instance activation arrived before app context was ready");
                     return;
                 };
-                open_main_window_from_tray(&app_for_activation, ctx.inner());
+                let prefs = match application::desktop_ui_service::set_launch_mode(
+                    ctx.inner(),
+                    crate::contracts::AppLaunchMode::Main,
+                ) {
+                    Ok(prefs) => prefs,
+                    Err(error) => {
+                        log::warn!("[window] single-instance activation could not persist main mode: {error}");
+                        return;
+                    }
+                };
+                if let Err(error) = request_main_window_activation_after_startup_handoff(
+                    &app_for_activation,
+                    &prefs,
+                    None,
+                    "单实例唤醒主窗口",
+                ) {
+                    log::warn!("[window] {error}");
+                }
+                let _ = app_for_activation.emit("desktop-ui-prefs-updated", &prefs);
             }) {
                 log::warn!("failed to schedule single-instance activation: {error}");
             }
@@ -4375,9 +4866,12 @@ pub fn run() {
                 .skip_initial_state(MAIN_WINDOW_LABEL)
                 .skip_initial_state(FLOATING_WINDOW_LABEL)
                 .skip_initial_state(FLOATING_PANEL_WINDOW_LABEL)
+                .skip_initial_state(FLOATING_NOTIFICATION_WINDOW_LABEL)
                 .build(),
         )
         .setup(|app| {
+            // Tauri 已按配置创建 main WebView；原生启动窗在 run() 内已先显示。
+            record_startup_reveal_stage(StartupRevealStage::MainWebviewCreated);
             let ctx = tauri::async_runtime::block_on(application::AppContext::resolve_desktop())?;
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -4425,76 +4919,37 @@ pub fn run() {
                     open_main_window_from_native(app, "overview");
                 }
                 FLOATING_CONTEXT_QUIT_ID => {
+                    dismiss_native_startup_splash_for_exit(app);
                     let _ = app.save_window_state(persisted_window_state_flags());
                     app.exit(0);
                 }
                 _ => {}
             });
-            let prefs = application::desktop_ui_service::get_desktop_ui_prefs(
+            let mut prefs = application::desktop_ui_service::get_desktop_ui_prefs(
                 &app.state::<application::AppContext>(),
             )?;
+            if startup_handoff_has_pending_main_window_activation() {
+                prefs = application::desktop_ui_service::set_launch_mode(
+                    &app.state::<application::AppContext>(),
+                    crate::contracts::AppLaunchMode::Main,
+                )?;
+                let _ = app_handle.emit("desktop-ui-prefs-updated", &prefs);
+            }
             if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                 configure_native_main_window(&main);
                 #[cfg(target_os = "windows")]
                 install_main_window_chrome_subclass(&main);
             }
-            ensure_floating_window(&app_handle)?;
-            ensure_floating_panel_window(&app_handle)?;
-            {
-                let app_for_notification = app_handle.clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                    let app_for_main_thread = app_for_notification.clone();
-                    let _ = app_for_notification.run_on_main_thread(move || {
-                        if let Err(error) =
-                            ensure_floating_notification_window(&app_for_main_thread)
-                        {
-                            log::error!(
-                                "failed to initialize floating notification window: {error}"
-                            );
-                        }
-                    });
-                });
-            }
             sync_mode_windows(&app_handle, &prefs);
             #[cfg(target_os = "windows")]
             schedule_native_main_window_chrome_normalization(app_handle.clone());
-            install_floating_native_state(&app_handle);
-            if let Some(shared) = FLOATING_NATIVE_STATE.get() {
-                install_floating_native_subclasses(shared);
-                start_floating_native_poller(shared.clone());
-            }
-            #[cfg(target_os = "windows")]
-            schedule_floating_native_subclass_refresh(app_handle.clone());
-            {
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-                    let Some(shared) = FLOATING_NATIVE_STATE.get() else {
-                        return;
-                    };
-                    let should_hide = shared
-                        .lock()
-                        .map(|state| {
-                            should_hide_floating_panel_after_startup(
-                                state.panel_visible,
-                                state.pointer_down,
-                                state.drag_started,
-                            )
-                        })
-                        .unwrap_or(false);
-                    if should_hide {
-                        hide_floating_panel_native(shared);
-                    }
-                });
-            }
             if prefs.launch_mode == crate::contracts::AppLaunchMode::Floating {
                 if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                     let _ = main.hide();
                 }
             } else {
-                // 主模式启动：等前端 frontend_ready（内联主题脚本已生效）再显示，
-                // 3 秒未收到则兜底强制显示，避免异常时永远白屏。
-                schedule_main_window_reveal_fallback(app_handle.clone());
+                // 前端超时仅用于诊断；透明主窗口必须继续隐藏，直到真实首帧交接成立。
+                schedule_frontend_ready_timeout_diagnostic();
             }
             Ok(())
         })
@@ -4528,11 +4983,13 @@ pub fn run() {
                                 }
                             }
                             crate::contracts::CloseBehavior::ExitApp => {
+                                dismiss_native_startup_splash_for_exit(&app);
                                 let _ = app.save_window_state(persisted_window_state_flags());
                                 app.exit(0);
                             }
                         }
                     } else {
+                        dismiss_native_startup_splash_for_exit(&app);
                         let _ = app.save_window_state(persisted_window_state_flags());
                         app.exit(0);
                     }
@@ -4650,7 +5107,7 @@ mod tests {
         compute_floating_notification_position, compute_panel_position,
         compute_panel_position_for_size, compute_release_orb_position_for_size,
         floating_drag_threshold_exceeded, is_floating_auxiliary_window_label, logical_to_physical,
-        normalize_floating_window_ex_style, physical_to_logical,
+        normalize_floating_window_ex_style, physical_to_logical, queue_startup_handoff_activation,
         resolve_floating_native_panel_visible, resolve_floating_native_poll_ms,
         resolve_floating_native_poll_ms_with_pointer_near_orb,
         resolve_floating_notification_detail_open, resolve_floating_notification_dock_for_size,
@@ -4660,11 +5117,13 @@ mod tests {
         resolve_floating_notification_physical_size,
         resolve_floating_notification_regions_for_motion,
         resolve_floating_notification_visible_items, resolve_floating_notification_window_height,
+        resolve_startup_handoff_stage, restore_startup_handoff_activation,
         should_apply_floating_auxiliary_show, should_begin_floating_native_webview_session,
         should_hide_floating_panel_after_startup, should_recheck_floating_taskbar_style,
-        FloatingGeometry, FloatingNotificationChannel, FloatingNotificationDock,
-        FloatingNotificationHitRegion, FloatingNotificationLayout, FloatingNotificationMailbox,
-        FloatingNotificationPayload, FloatingNotificationReference, FLOATING_NATIVE_DRAG_POLL_MS,
+        take_startup_handoff_activation, FloatingGeometry, FloatingNotificationChannel,
+        FloatingNotificationDock, FloatingNotificationHitRegion, FloatingNotificationLayout,
+        FloatingNotificationMailbox, FloatingNotificationPayload, FloatingNotificationReference,
+        StartupHandoffState, StartupRevealStage, StartupRevealTarget, FLOATING_NATIVE_DRAG_POLL_MS,
         FLOATING_NATIVE_HIDDEN_POLL_MS, FLOATING_NATIVE_IDLE_POLL_MS,
         FLOATING_NATIVE_VISIBLE_POLL_MS, FLOATING_NOTIFICATION_DETAIL_WIDTH,
         FLOATING_NOTIFICATION_WIDTH, FLOATING_ORB_ALPHA_REGION_RUNS, FLOATING_ORB_SIZE,
@@ -5244,6 +5703,53 @@ mod tests {
         assert!(!should_hide_floating_panel_after_startup(
             false, false, true
         ));
+    }
+
+    #[test]
+    fn startup_handoff_requires_its_visible_target() {
+        assert_eq!(
+            resolve_startup_handoff_stage(StartupRevealTarget::Main, true, false),
+            Some(StartupRevealStage::MainHwndVisible)
+        );
+        assert_eq!(
+            resolve_startup_handoff_stage(StartupRevealTarget::Main, false, true),
+            None
+        );
+        assert_eq!(
+            resolve_startup_handoff_stage(StartupRevealTarget::Floating, false, true),
+            Some(StartupRevealStage::FloatingWindowVisible)
+        );
+        assert_eq!(
+            resolve_startup_handoff_stage(StartupRevealTarget::Floating, true, false),
+            None
+        );
+    }
+
+    #[test]
+    fn startup_handoff_activation_state_keeps_navigation_across_replay_and_rejects_late_queueing() {
+        let mut state = StartupHandoffState::default();
+
+        assert!(queue_startup_handoff_activation(
+            &mut state,
+            Some("service-status")
+        ));
+        assert_eq!(
+            take_startup_handoff_activation(&mut state),
+            Some(Some("service-status".to_string()))
+        );
+
+        restore_startup_handoff_activation(&mut state, Some("service-status".to_string()));
+        state.completed = true;
+
+        assert!(!queue_startup_handoff_activation(
+            &mut state,
+            Some("overview")
+        ));
+        assert_eq!(
+            take_startup_handoff_activation(&mut state),
+            Some(Some("service-status".to_string()))
+        );
+        assert_eq!(take_startup_handoff_activation(&mut state), None);
     }
 
     #[cfg(target_os = "windows")]

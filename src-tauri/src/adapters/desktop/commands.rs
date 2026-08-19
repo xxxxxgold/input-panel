@@ -74,7 +74,7 @@ pub fn health() -> String {
 }
 
 /// 前端首帧就绪信号：主窗口据此显示（内联主题脚本已生效，避免 FOUC）。
-/// 幂等，HMR 重放安全；3 秒未收到时由 Rust 侧兜底强制显示。
+/// 幂等，HMR 重放安全；超时只记录诊断，绝不提前显示尚未绘制的透明主窗口。
 #[tauri::command]
 pub async fn frontend_ready(app: AppHandle) -> Result<(), String> {
     crate::reveal_main_window_on_frontend_ready(&app).await
@@ -338,29 +338,30 @@ pub fn switch_app_mode(
     let prefs =
         desktop_ui_service::set_launch_mode(&ctx, launch_mode.clone()).map_err(to_message)?;
     let main = app.get_webview_window("main");
-    let floating = app.get_webview_window("floating");
+    let main_mode_requested = matches!(&launch_mode, AppLaunchMode::Main);
+    let mut main_window_activation_applied = false;
     match launch_mode {
         AppLaunchMode::Main => {
-            crate::mark_main_window_revealed();
-            crate::show_main_window_with_controlled_state_restore(&app, "切换到主窗口模式");
-            if prefs.open_floating_in_main_mode {
-                if let Some(window) = &floating {
-                    crate::show_floating_window(window, false);
-                }
-            } else {
-                crate::hide_floating_auxiliary_window(&app, "floating");
-                crate::hide_floating_auxiliary_window(&app, "floating-panel");
-            }
+            main_window_activation_applied = crate::request_main_window_activation_after_startup_handoff(
+                &app,
+                &prefs,
+                None,
+                "切换到主窗口模式",
+            )?;
         }
         AppLaunchMode::Floating => {
             if let Some(window) = &main {
                 let _ = window.hide();
             }
-            if let Some(window) = &floating {
-                crate::show_floating_window(window, true);
-            }
+            let floating =
+                crate::ensure_floating_runtime(&app).map_err(|error| error.to_string())?;
+            crate::show_floating_window(&floating, true);
             crate::hide_floating_auxiliary_window(&app, "floating-panel");
         }
+    }
+    if main_mode_requested && !main_window_activation_applied {
+        let _ = app.emit("desktop-ui-prefs-updated", &prefs);
+        return Ok(prefs);
     }
     crate::hide_floating_notification_window(&app);
     sync_keep_floating_panel_visible(&app, &prefs);
@@ -384,12 +385,11 @@ pub fn set_floating_window_visible(
     )
     .map_err(to_message)?;
 
-    if let Some(window) = app.get_webview_window("floating") {
-        if visible {
-            crate::show_floating_window(&window, true);
-        } else {
-            crate::hide_floating_auxiliary_window(&app, "floating");
-        }
+    if visible {
+        let floating = crate::ensure_floating_runtime(&app).map_err(|error| error.to_string())?;
+        crate::show_floating_window(&floating, true);
+    } else {
+        crate::hide_floating_auxiliary_window(&app, "floating");
     }
     crate::hide_floating_auxiliary_window(&app, "floating-panel");
     crate::hide_floating_notification_window(&app);
@@ -402,6 +402,9 @@ pub fn set_floating_window_visible(
 
 #[tauri::command]
 pub fn set_floating_panel_visible(app: AppHandle, visible: bool) -> Result<bool, String> {
+    if visible {
+        crate::ensure_floating_runtime(&app).map_err(|error| error.to_string())?;
+    }
     crate::set_floating_native_panel_visible(&app, visible);
     Ok(true)
 }
@@ -531,20 +534,18 @@ pub fn open_main_window(
 ) -> Result<DesktopUiPrefs, String> {
     let prefs =
         desktop_ui_service::set_launch_mode(&ctx, AppLaunchMode::Main).map_err(to_message)?;
-    crate::mark_main_window_revealed();
-    crate::show_main_window_with_controlled_state_restore(&app, "打开主窗口");
-    if let Some(window) = app.get_webview_window("main") {
-        if let Some(next) = payload.as_ref().and_then(|item| item.nav.clone()) {
-            let _ = window.emit("open-nav", next);
-        }
+    let navigation = payload.as_ref().and_then(|item| item.nav.as_deref());
+    let main_window_activation_applied =
+        crate::request_main_window_activation_after_startup_handoff(
+            &app,
+            &prefs,
+            navigation,
+            "打开主窗口",
+        )?;
+    if !main_window_activation_applied {
+        let _ = app.emit("desktop-ui-prefs-updated", &prefs);
+        return Ok(prefs);
     }
-    if prefs.open_floating_in_main_mode {
-        if let Some(window) = app.get_webview_window("floating") {
-            crate::show_floating_window(&window, false);
-        }
-    }
-    crate::hide_floating_auxiliary_window(&app, "floating-panel");
-    crate::hide_floating_notification_window(&app);
     sync_keep_floating_panel_visible(&app, &prefs);
     let _ = app.emit("desktop-ui-prefs-updated", &prefs);
     Ok(prefs)
@@ -552,6 +553,7 @@ pub fn open_main_window(
 
 #[tauri::command]
 pub fn quit_application(app: AppHandle) -> Result<bool, String> {
+    crate::dismiss_native_startup_splash_for_exit(&app);
     app.exit(0);
     Ok(true)
 }

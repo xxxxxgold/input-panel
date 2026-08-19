@@ -7,3 +7,5 @@ pub mod sqlite;
 pub mod sub2api;
 #[cfg(target_os = "windows")]
 pub mod windows_notification;
+#[cfg(target_os = "windows")]
+pub mod windows_splash;
