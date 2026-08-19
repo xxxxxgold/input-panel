@@ -1,0 +1,3 @@
+# 允许 Vite 构建链依赖的 esbuild 在安装阶段执行平台二进制准备脚本。
+allowBuilds:
+  esbuild: true
