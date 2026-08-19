@@ -2,7 +2,10 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
-const mainWindowApp = readFileSync(new URL("../src/app/MainWindowApp.tsx", import.meta.url), "utf8");
+const mainWindowApp = readFileSync(
+  new URL("../src/app/MainWindowApp.tsx", import.meta.url),
+  "utf8"
+).replace(/\r\n?/g, "\n");
 
 function sourceBetween(start: string, end: string) {
   const startIndex = mainWindowApp.indexOf(start);
@@ -56,7 +59,7 @@ describe("MainWindowApp page continuity wiring", () => {
     expect(modelStats).toContain("error={presentation.lastError}");
     expect(modelStats).toContain('refreshUsageSurfaceSilently("modelStats", { mode: "background" })');
 
-    const subscriptions = sourceBetween('{nav === "subscriptions" && (', '{nav === "keyUsage" && (');
+    const subscriptions = sourceBetween('{nav === "subscriptions" && (', '{nav === "trends" && (');
     expect(subscriptions).toContain("shouldRenderColdPageState(subscriptionsPageDataState, Boolean(selectedAccountId))");
     expect(subscriptions).toContain('<WorkspaceLoadingState\n                  page="subscriptions"');
     expect(subscriptions).toContain("error={subscriptionsPageDataState.lastError}");

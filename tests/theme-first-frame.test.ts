@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { DEFAULT_THEME_ID } from "../src/theme-registry";
+
 const root = resolve(__dirname, "..");
 const htmlEntries = [
   "index.html",
@@ -44,7 +46,7 @@ describe("四窗口主题首帧契约", () => {
     const inlineThemeScript = html.indexOf('localStorage.getItem("input-panel.last-theme")');
     const moduleEntry = html.indexOf('<script type="module"');
 
-    expect(html).toContain('<html lang="zh-CN" class="titan-noir">');
+    expect(html).toContain(`<html lang="zh-CN" class="${DEFAULT_THEME_ID}">`);
     expect(html).toContain("/^[a-z][a-z-]*$/.test(lastTheme)");
     expect(inlineThemeScript).toBeGreaterThan(-1);
     expect(moduleEntry).toBeGreaterThan(inlineThemeScript);
@@ -63,7 +65,7 @@ describe("四窗口主题首帧契约", () => {
 });
 
 describe("主窗口 frontend_ready 显示门禁", () => {
-  it("前端发送就绪信号，Rust 注册 command 并保留三秒兜底", () => {
+  it("前端发送就绪信号，Rust 等待真实 reveal 完成并只记录超时诊断", () => {
     const mainWindowSource = readProjectFile("src/app/MainWindowApp.tsx");
     const commandSource = readProjectFile("src-tauri/src/adapters/desktop/commands.rs");
     const rustSource = readProjectFile("src-tauri/src/lib.rs");
@@ -75,11 +77,13 @@ describe("主窗口 frontend_ready 显示门禁", () => {
       "|| theme !== normalizeThemeId(desktopUi.prefs.theme)"
     );
     expect(mainWindowSource).toContain('invoke("frontend_ready")');
-    expect(commandSource).toContain("pub fn frontend_ready(app: AppHandle)");
-    expect(commandSource).toContain("reveal_main_window_on_frontend_ready(&app)");
-    expect(rustSource).toContain("MAIN_WINDOW_REVEAL_FALLBACK_MS: u64 = 3_000");
-    expect(rustSource).toContain("MAIN_WINDOW_REVEALED.swap(true, Ordering::SeqCst)");
-    expect(rustSource).toContain("schedule_main_window_reveal_fallback(app_handle.clone())");
+    expect(commandSource).toContain("pub async fn frontend_ready(app: AppHandle) -> Result<(), String>");
+    expect(commandSource).toContain("crate::reveal_main_window_on_frontend_ready(&app).await");
+    expect(rustSource).toContain("const FRONTEND_READY_TIMEOUT_MS: u64 = 3_000");
+    expect(rustSource).toContain("fn schedule_frontend_ready_timeout_diagnostic()");
+    expect(rustSource).toContain("frontend_ready 超时，保留原生启动窗并等待后续恢复");
+    expect(rustSource).toContain("pub(crate) async fn reveal_main_window_on_frontend_ready");
+    expect(rustSource).toContain("完成后才回复 IPC");
     expect(rustSource).toContain("adapters::desktop::commands::frontend_ready");
   });
 });

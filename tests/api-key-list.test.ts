@@ -36,7 +36,7 @@ describe("ApiKeyList summary style", () => {
     expect(html.indexOf("status-pill ready")).toBeLessThan(html.indexOf("CodeX Plus 年度"));
   });
 
-  it("renders the overview all-api-keys panel with the same summary row style", () => {
+  it("renders the overview all-account keys panel with the same summary row style", () => {
     const overview = {
       sites: [],
       accounts: [
@@ -112,13 +112,14 @@ describe("ApiKeyList summary style", () => {
         currentAccountStats: visibleSnapshot.stats,
         currentAccountSubscriptions: visibleSnapshot.subscriptions,
         subscriptionSummary: null,
-        currentAccountKeys: visibleSnapshot.keys,
+        allAccountKeys: visibleSnapshot.keys,
         currentAccountRecentUsage: visibleSnapshot.recentUsage,
-        usageStats: null
+        usageStats: null,
+        usageStatsMode: "all-accounts"
       })
     );
 
-    expect(html).toContain("全部 API Keys");
+    expect(html).toContain("全部密钥");
     expect(html).toContain("api-key-summary-row");
     expect(html).toContain("codex++");
     expect(html).toContain("CodeX Plus 年度");

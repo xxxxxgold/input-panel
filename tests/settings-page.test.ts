@@ -64,19 +64,27 @@ describe("SettingsPage site detail panel", () => {
         filteredSites: [site],
         accounts: [account],
         selectedSite: site,
+        selectedAccountId: account.id,
         currentAccountBalance: account.cacheView?.balance ?? null,
         currentAccountTotalKeys: account.cacheView?.stats.totalApiKeys ?? 0,
         currentAccountActiveKeys: account.cacheView?.stats.activeApiKeys ?? 0,
         currentAccountSubscriptions: account.cacheView?.subscriptions ?? [],
-        currentAccountKeys: account.cacheView?.keys ?? [],
-        currentAccountSyncStatuses: [],
+        currentAccountSyncStatusPresentation: {
+          accountId: account.id,
+          hasSnapshot: true,
+          initialLoading: false,
+          statuses: [],
+          lastError: null
+        },
         onOpenNewSite: () => {},
         onSelectSite: () => {},
         onOpenSiteAccountManager: () => {},
         onOpenEditSite: () => {},
         onRemoveSite: () => {},
         onOpenNewAccount: () => {},
-        onOpenAccountManager: () => {},
+        onSelectAccount: () => {},
+        onEditAccount: () => {},
+        onRemoveAccount: () => {},
         handleActionKey: () => {}
       })
     );

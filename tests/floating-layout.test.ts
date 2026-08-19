@@ -35,7 +35,7 @@ describe("floating layout", () => {
       y: 620
     });
 
-    expect(placement.x).toBe(-FLOATING_EDGE_HIDE);
+    expect(Math.abs(placement.x + FLOATING_EDGE_HIDE)).toBe(0);
     expect(placement.x + FLOATING_ORB_SIZE / 2).toBeGreaterThan(0);
   });
 

@@ -1,145 +1,112 @@
-import { createElement } from "react";
+import { createElement, type ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { FloatingPanelWindow } from "../src/app/FloatingPanelWindow";
-import type { NotificationInboxItem } from "../src/features/overview/components/AlertInboxModal";
-import type { OverviewPayload } from "../src/types";
+import {
+  FloatingPanelWindow,
+  type FloatingQuickSwitchSnapshot
+} from "../src/app/FloatingPanelWindow";
+import type { AccountRuntime, UsageStatsRecord } from "../src/types";
 
-const overview: OverviewPayload = {
-  sites: [],
-  accounts: [],
-  totals: {
-    balance: 42.5,
-    totalSites: 1,
-    totalAccounts: 1,
-    totalApiKeys: 14,
-    activeApiKeys: 10,
-    todayRequests: 379,
-    totalRequests: 0,
-    todayActualCost: 0,
-    totalActualCost: 0,
-    todayTokens: 111_200_000,
-    totalTokens: 0
-  },
-  alerts: [],
-  platformSeries: [],
-  trend: [],
-  recentUsage: [],
-  subscriptions: [],
-  keys: [],
-  generatedAt: "2026-06-14T10:00:00.000Z"
+const account: AccountRuntime = {
+  id: "account-1",
+  siteId: "site-1",
+  label: "主账号",
+  email: "main@example.com",
+  balanceWarning: -1,
+  lastLoginAt: null,
+  createdAt: "2026-06-14T10:00:00.000Z",
+  updatedAt: "2026-06-14T10:00:00.000Z",
+  site: null,
+  sessionState: "ready",
+  lastError: null,
+  cacheView: null
 };
 
+const dashboardStats: UsageStatsRecord = {
+  totalRequests: 379,
+  totalInputTokens: 111_200_000,
+  totalOutputTokens: 2_500_000,
+  totalCacheTokens: 6_800_000,
+  totalCacheCreationTokens: 3_100_000,
+  totalCacheReadTokens: 3_700_000,
+  totalTokens: 120_500_000,
+  totalCost: 42.5,
+  totalActualCost: 42.5,
+  averageDurationMs: 367,
+  rpm: 84.1,
+  tpm: 1_540_000
+};
+
+const quickSwitchSnapshot: FloatingQuickSwitchSnapshot = {
+  managedKeys: [],
+  groups: [],
+  subscriptionDetails: []
+};
+
+function renderFloatingPanel(overrides: Partial<ComponentProps<typeof FloatingPanelWindow>> = {}) {
+  return renderToStaticMarkup(
+    createElement(FloatingPanelWindow, {
+      currentAccountId: account.id,
+      currentSiteId: account.siteId,
+      currentAccountLabel: account.label,
+      accounts: [account],
+      selectionState: "resolved",
+      selectionError: null,
+      dashboardStats,
+      dashboardStatsLoading: false,
+      dashboardStatsError: null,
+      dashboardStatsUpdatedAt: "2026-06-15T12:00:00.000Z",
+      currentAccountSubscriptionDetails: [],
+      currentAccountRecentUsage: [],
+      managedKeys: [],
+      groups: [],
+      loading: false,
+      keepVisible: false,
+      floatingPanelOpacity: 0.82,
+      onRefresh: () => {},
+      onAccountSelect: async () => {},
+      onValidateQuickSwitch: async () => quickSwitchSnapshot,
+      onSubmitQuickSwitch: async () => ({ kind: "succeeded", snapshot: quickSwitchSnapshot }),
+      onReloadQuickSwitchData: async () => quickSwitchSnapshot,
+      ...overrides
+    })
+  );
+}
+
 describe("FloatingPanelWindow", () => {
-  const notificationItems: NotificationInboxItem[] = [
-    {
-      notificationKey: "service-status:status-1",
-      source: "service-status",
-      id: "status-1",
-      severity: "critical",
-      title: "检测到服务状态不可用",
-      detail: "服务状态自动刷新发现异常: gpt-5.5 探测失败, probe timeout",
-      createdAt: "2026-06-15T12:00:00.000Z",
-      models: ["gpt-5.5"]
-    }
-  ];
+  it("renders the right-side command panel and current overview metrics", () => {
+    const html = renderFloatingPanel();
 
-  it("renders right-side icon rail with tooltip copy and bubble preview shell", () => {
-    const html = renderToStaticMarkup(
-      createElement(FloatingPanelWindow, {
-        overview,
-        currentAccountLabel: "主账号",
-        currentSiteName: "AI INPUT",
-        currentAccountBalance: 42.5,
-        currentAccountSubscriptions: [],
-        currentAccountRecentUsage: [],
-        notificationItems,
-        loading: false,
-        keepVisible: false,
-        floatingPanelOpacity: 0.82,
-        onRefresh: () => {}
-      })
-    );
-
-    expect(html).toContain("floating-panel-window-preview");
-    expect(html).toContain("floating-panel-window-menu");
-    expect(html).toContain("floating-menu-card visible dock-right");
-    expect(html).toContain("floating-menu-tooltip dock-right");
     expect(html).toContain("floating-panel-window dock-right visible");
-    expect(html).not.toContain("floating-preview-bubble-tail");
-    expect(html).toContain('aria-label="实时总览"');
-    expect(html).toContain('title="实时总览 · 余额、请求、Token"');
+    expect(html).toContain("floating-command-panel dock-right");
+    expect(html).toContain("floating-command-tab selected");
+    expect(html).toContain('aria-label="刷新悬浮面板"');
+    expect(html).toContain("实时总览");
     expect(html).toContain("今日请求");
     expect(html).toContain("379");
   });
 
-  it("keeps the icon rail and default overview metrics when not switched", () => {
-    const html = renderToStaticMarkup(
-      createElement(FloatingPanelWindow, {
-        overview: {
-          ...overview,
-          alerts: []
-        },
-        currentAccountLabel: "主账号",
-        currentSiteName: "AI INPUT",
-        currentAccountBalance: 42.5,
-        currentAccountSubscriptions: [],
-        currentAccountRecentUsage: [],
-        notificationItems,
-        loading: false,
-        keepVisible: false,
-        floatingPanelOpacity: 0.82,
-        onRefresh: () => {}
-      })
-    );
+  it("keeps the overview metric shell when dashboard data has not loaded", () => {
+    const html = renderFloatingPanel({ dashboardStats: null });
 
     expect(html).toContain("实时总览");
-    expect(html).toContain("今日 Tokens");
-    expect(html).toContain("floating-menu-item-icon");
+    expect(html).toContain("今日 Token");
+    expect(html).toContain("等待统计");
+    expect(html).toContain("floating-command-tab");
   });
 
   it("stays visible when keepVisible is enabled", () => {
-    const html = renderToStaticMarkup(
-      createElement(FloatingPanelWindow, {
-        overview,
-        currentAccountLabel: "主账号",
-        currentSiteName: "AI INPUT",
-        currentAccountBalance: 42.5,
-        currentAccountSubscriptions: [],
-        currentAccountRecentUsage: [],
-        notificationItems,
-        loading: false,
-        keepVisible: true,
-        floatingPanelOpacity: 0.82,
-        onRefresh: () => {},
-        initialPanel: "alerts"
-      })
-    );
+    const html = renderFloatingPanel({ keepVisible: true });
 
     expect(html).toContain("floating-panel-window dock-right visible");
     expect(html).toContain("pinned-glass");
   });
 
-  it("renders service status notifications inside the alerts panel", () => {
-    const html = renderToStaticMarkup(
-      createElement(FloatingPanelWindow, {
-        overview,
-        currentAccountLabel: "主账号",
-        currentSiteName: "AI INPUT",
-        currentAccountBalance: 42.5,
-        currentAccountSubscriptions: [],
-        currentAccountRecentUsage: [],
-        notificationItems,
-        loading: false,
-        keepVisible: true,
-        floatingPanelOpacity: 0.82,
-        onRefresh: () => {},
-        initialPanel: "alerts"
-      })
-    );
+  it("renders the quick-switch empty state for the subscriptions panel", () => {
+    const html = renderFloatingPanel({ initialPanel: "subscriptions" });
 
-    expect(html).toContain("优先告警");
-    expect(html).toContain("检测到服务状态不可用");
+    expect(html).toContain("快速切换");
+    expect(html).toContain("暂无可切换密钥");
   });
 });

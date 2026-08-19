@@ -1,8 +1,8 @@
-import { readFileSync } from "node:fs";
-
 import { describe, expect, it } from "vitest";
 
-const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+import { readBundledStyles } from "./helpers/styles";
+
+const styles = readBundledStyles();
 
 describe("motion style hooks", () => {
   it("keeps shell page transition classes and reduced-motion fallback", () => {
@@ -10,9 +10,11 @@ describe("motion style hooks", () => {
     expect(styles).toContain("@media (prefers-reduced-motion: reduce)");
   });
 
-  it("defines rail active pill and floating orb motion hooks", () => {
+  it("defines the rail active pill and drag-safe floating orb hooks", () => {
     expect(styles).toContain(".rail-item-active-pill");
-    expect(styles).toContain(".floating-orb-button.menu-open");
-    expect(styles).toContain("@keyframes floating-orb-breathe");
+    expect(styles).toContain(`.floating-orb-button {
+  position: relative;`);
+    expect(styles).toContain("cursor: grab;");
+    expect(styles).toContain("touch-action: none;");
   });
 });

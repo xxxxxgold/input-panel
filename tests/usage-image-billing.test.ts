@@ -1,7 +1,8 @@
-import { createElement, createRef } from "react";
+import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import { createEmptyUsageFilterDraft } from "../src/features/usage/usage-filter-draft";
 import { UsagePage } from "../src/pages/UsagePage";
 
 describe("UsagePage image billing presentation", () => {
@@ -9,9 +10,12 @@ describe("UsagePage image billing presentation", () => {
     const html = renderToStaticMarkup(
       createElement(UsagePage, {
         managedKeys: null,
-        usageApiKeyFilter: "",
-        setUsageApiKeyFilter: () => {},
-        usageRangePickerRef: createRef<HTMLDivElement>(),
+        usageFilterDraft: createEmptyUsageFilterDraft(),
+        setUsageFilterDraft: () => {},
+        usageFacetPages: {},
+        usageFacetLoadingFields: [],
+        loadUsageFacet: async () => null,
+        usageRangePickerRef: { current: null },
         usageRangePickerOpen: false,
         toggleUsageRangePicker: () => {},
         usageRangeLabel: "今天",
@@ -21,6 +25,7 @@ describe("UsagePage image billing presentation", () => {
         setUsageDraftRange: () => ({ startDate: "2026-06-28", endDate: "2026-06-28" }),
         applyUsageRange: async () => {},
         usageStats: null,
+        usageExtremes: null,
         usageModelSummaries: [],
         usageModelSummariesLoading: false,
         usageRecords: {
@@ -63,17 +68,21 @@ describe("UsagePage image billing presentation", () => {
               groupName: "CodeX Plus 月度"
             }
           ],
-          page: 1,
           pageSize: 20,
+          nextCursor: null,
+          previousCursor: null,
+          hasNext: false,
+          hasPrevious: false,
           total: 1,
-          pages: 1
         },
         usagePageSize: 20,
         usagePageSizeOptions: [10, 20, 50, 100],
-        usageScopeRows: [],
         handleUsageSearch: async () => {},
-        handleUsagePageChange: async () => {},
+        handleUsageFilterReset: async () => {},
+        handleUsagePreviousPage: async () => {},
+        handleUsageNextPage: async () => {},
         handleUsagePageSizeChange: async () => {},
+        usageCursorDepth: 0,
         usageTrend: null,
         usageModels: null
       })

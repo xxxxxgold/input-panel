@@ -14,9 +14,10 @@ describe("RailNav motion markup", () => {
         onOpenOverview: () => {},
         onToggleRail: () => {},
         onNavChange: () => {},
-        theme: "light",
-        setTheme: () => {},
-        projectLogo: "/logo.png"
+        projectLogo: "/logo.png",
+        selectedAccount: null,
+        accounts: [],
+        onAccountSelect: () => {}
       })
     );
 

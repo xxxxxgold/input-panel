@@ -11,7 +11,7 @@ import { formatDateTimeFull } from "../src/shared/lib/formatters";
 import type { ServiceStatusPayload } from "../src/types";
 
 describe("ServiceStatusTerminal", () => {
-  it("renders local service cards and keeps the original page escape hatch", () => {
+  it("renders current service metrics and analysis for local service records", () => {
     const lastSyncedAt = new Date("2026-06-14T23:05:09+08:00").getTime();
     const status: ServiceStatusPayload = {
       allOk: true,
@@ -55,34 +55,25 @@ describe("ServiceStatusTerminal", () => {
     const html = renderToStaticMarkup(
       createElement(ServiceStatusTerminal, {
         status,
-        loading: false,
-        refreshing: false,
-        lastError: null,
-        lastSyncedAt,
-        enabled: true,
-        refreshIntervalSeconds: 9,
-        onRefresh: () => {}
+        lastSyncedAt
       })
     );
 
-    expect(html).toContain("AI.INPUT.IM 服务状态");
-    expect(html).toContain("监控INPUT的可用状态");
-    expect(html).toContain("打开原页面");
-    expect(html).toContain("按全部模型平均值, 悬浮查看分小时明细");
-    expect(html).toContain("所有模型分小时可用率");
-    expect(html).toContain("模型平均可用率");
-    expect(html).toContain("06/14 22:00 - 22:59");
-    expect(html).toContain("06/14 21:00 - 21:59");
-    expect(html).toContain("gpt-5.5 · 37 次");
-    expect(html).toContain("gpt-5.4-mini · 37 次");
+    expect(html).toContain("服务数");
+    expect(html).toContain("在线1/2");
+    expect(html).toContain("最低延迟");
+    expect(html).toContain("总可用率");
+    expect(html).toContain("最近同步时间");
+    expect(html).toContain(formatDateTimeFull(new Date(lastSyncedAt).toISOString()));
+    expect(html).toContain("模型探测概览");
+    expect(html).toContain("服务图表分析");
+    expect(html).toContain("响应延迟趋势");
+    expect(html).toContain("模型可用率排行");
+    expect(html).toContain("模型分析表");
+    expect(html).toContain("失败采样");
     expect(html).toContain("gpt-5.5");
     expect(html).toContain("gpt-5.4-mini");
     expect(html).toContain("probe timeout");
-    expect(html).toContain("polling every 9s");
-    expect(html).toContain(`Last synced: ${formatDateTimeFull(new Date(lastSyncedAt).toISOString())}`);
-    expect(html).toContain("Latest probe result");
-    expect(html).toContain("status-history-bar ok");
-    expect(html).toContain("status-history-bar bad");
   });
 
   it("builds a single-service failure toast message for auto refresh", () => {
@@ -106,7 +97,7 @@ describe("ServiceStatusTerminal", () => {
 
     expect(issue).toEqual({
       signature: "gpt-5.5:probe timeout",
-      message: "服务状态自动刷新发现异常: gpt-5.5 探测失败, probe timeout",
+      message: "gpt-5.5 当前无法使用, 请打开服务状态查看详情",
       failingModels: ["gpt-5.5"]
     });
   });
@@ -154,7 +145,7 @@ describe("ServiceStatusTerminal", () => {
 
     expect(issue).toEqual({
       signature: "gpt-5.4-mini:probe_failed|gpt-5.5:probe timeout",
-      message: "服务状态自动刷新发现异常: gpt-5.5, gpt-5.4-mini 探测失败",
+      message: "gpt-5.5, gpt-5.4-mini 当前无法使用, 请打开服务状态查看详情",
       failingModels: ["gpt-5.5", "gpt-5.4-mini"]
     });
   });

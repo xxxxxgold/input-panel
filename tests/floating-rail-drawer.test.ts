@@ -624,7 +624,7 @@ describe("FloatingRailDrawer", () => {
     expect(styles).toContain("font-size: 14px;");
     expect(styles).toMatch(/\.floating-rail-drawer-tab \.topbar-subscription-dots\s*\{\s*bottom: -7px;/);
     expect(styles).toMatch(
-      /\.workspace-floating-rail-host > \.workspace-window-shell > \.workspace\s*\{[^}]*padding-right:\s*0;/
+      /\.workspace-floating-rail-host > \.workspace-window-shell > \.workspace\s*\{[^}]*padding-right:\s*48px;/
     );
     expect(styles).toMatch(
       /\.workspace-floating-rail-host \.workspace-subtitle\s*\{[\s\S]*white-space: normal;/

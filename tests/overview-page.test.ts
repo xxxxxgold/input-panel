@@ -6,7 +6,7 @@ import { OverviewPage } from "../src/pages/OverviewPage";
 import type { OverviewPayload, SubscriptionSummaryPayload } from "../src/types";
 
 describe("OverviewPage metric hints", () => {
-  it("shows the richest account in card hints and does not render an alert metric card", () => {
+  it("shows the selected account balance detail and does not render an alert metric card", () => {
     const overview = {
       sites: [],
       accounts: [
@@ -128,6 +128,8 @@ describe("OverviewPage metric hints", () => {
     const html = renderToStaticMarkup(
       createElement(OverviewPage, {
         overview,
+        currentAccount: overview.accounts[0],
+        currentAccountBalance: 42.5,
         currentAccountStats: overview.accounts[0].cacheView?.stats ?? null,
         currentAccountSubscriptions: overview.accounts[0].cacheView?.subscriptions ?? [],
         subscriptionSummary: null,
@@ -137,13 +139,15 @@ describe("OverviewPage metric hints", () => {
       })
     );
 
-    expect(html).toContain("主账号 $42.50");
+    expect(html).toContain("当前账号余额");
+    expect(html).toContain("主账号");
+    expect(html).toContain("$42.50");
     expect(html).not.toContain("异常数");
     expect(html).not.toContain("最新: 主账号 余额已耗尽");
     expect(html).not.toContain("主账号 余额偏低, 需要尽快补充避免影响后续调用");
   });
 
-  it("renders the shared trend section with all-account subtitle", () => {
+  it("renders the shared trend section for all-account scope", () => {
     const overview = {
       sites: [],
       accounts: [],
@@ -189,11 +193,12 @@ describe("OverviewPage metric hints", () => {
         subscriptionSummary: null,
         currentAccountKeys: [],
         currentAccountRecentUsage: [],
-        usageStats: null
+        usageStats: null,
+        usageStatsMode: "all-accounts"
       })
     );
 
-    expect(html).toContain("对齐 dashboard/trend 接口, 聚合全部账号的成本、请求与缓存表现");
+    expect(html).toContain("Token 使用趋势");
     expect(html).toContain("echart-card-shell");
   });
 
@@ -516,7 +521,7 @@ describe("OverviewPage metric hints", () => {
     expect(html).toContain("33.9%");
   });
 
-  it("renders keys and recent usage when overview account data comes through snapshot compatibility", () => {
+  it("renders keys, model distribution, and endpoint insights for selected-account data", () => {
     const overview = {
       sites: [],
       accounts: [],
@@ -618,6 +623,15 @@ describe("OverviewPage metric hints", () => {
             subscriptionType: "subscription"
           }
         ],
+        modelSeries: [
+          {
+            model: "gpt-5.4",
+            requests: 1,
+            totalTokens: 94351,
+            actualCost: 0.034639,
+            totalCost: 0.034639
+          }
+        ],
         usageStats: null
       })
     );
@@ -627,12 +641,11 @@ describe("OverviewPage metric hints", () => {
     expect(html).not.toContain("还没有 Key 数据");
     expect(html).toContain("gpt-5.4");
     expect(html).toContain("/responses");
-    expect(html).toContain("recent-usage-pill");
-    expect(html).toContain("时间 06/28 11:43");
+    expect(html).toContain("overview-usage-insights-grid");
     expect(html).not.toContain("还没有账号数据");
   });
 
-  it("renders recent usage as a standalone full-width section", () => {
+  it("keeps recent usage within the current overview insight cards", () => {
     const overview = {
       sites: [],
       accounts: [],
@@ -672,6 +685,7 @@ describe("OverviewPage metric hints", () => {
 
     expect(html).toContain("overview-layout");
     expect(html).toContain("overview-column");
-    expect(html).toContain("<h3>最近使用</h3>");
+    expect(html).toContain("用量洞察");
+    expect(html).not.toContain("<h3>最近使用</h3>");
   });
 });

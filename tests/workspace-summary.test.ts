@@ -96,7 +96,8 @@ describe("buildWorkspaceSummaryTexts", () => {
         ]
       },
       { key: "totalTokens", label: "总 Token 864.2M" },
-      { key: "sync", label: "最近同步 08:00:00" }
+      { key: "todayActualCost", label: "今日消费 $0.0000" },
+      { key: "sync", label: "快照生成 08:00:00" }
     ]);
   });
 

@@ -2,25 +2,33 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
-const mainWindowApp = readFileSync(new URL("../src/app/MainWindowApp.tsx", import.meta.url), "utf8");
-const mainWindowChrome = readFileSync(new URL("../src/app/MainWindowChrome.tsx", import.meta.url), "utf8");
+const mainWindowApp = readFileSync(
+  new URL("../src/app/MainWindowApp.tsx", import.meta.url),
+  "utf8"
+).replace(/\r\n?/g, "\n");
+const mainWindowChrome = readFileSync(
+  new URL("../src/app/MainWindowChrome.tsx", import.meta.url),
+  "utf8"
+).replace(/\r\n?/g, "\n");
 
 describe("MainWindowApp overview refresh boundary", () => {
-  it("uses one shared bounded executor for realtime snapshots and all-account key hydration", () => {
+  it("uses one shared bounded executor for realtime snapshots, all-account keys, and balances", () => {
     expect(mainWindowApp).toContain("OVERVIEW_UPSTREAM_REQUEST_CONCURRENCY = 3");
     expect(mainWindowApp).toContain("createBoundedExecutor(OVERVIEW_UPSTREAM_REQUEST_CONCURRENCY)");
-    expect(mainWindowApp.match(/overviewUpstreamRequestExecutor\.map\(/g)).toHaveLength(2);
+    expect(mainWindowApp.match(/overviewUpstreamRequestExecutor\.map\(/g)).toHaveLength(3);
     expect(mainWindowApp.match(/overviewUpstreamRequestExecutor\.run\(/g)).toHaveLength(4);
+    expect(mainWindowApp).toContain("const loadOverviewAllAccountBalances = useStableCallback");
+    expect(mainWindowApp).toContain("overviewAllAccountBalancesCache.load(");
   });
 
   it("keeps each all-account realtime snapshot atomic under the bounded account mapper", () => {
     const realtimeLoaderStart = mainWindowApp.indexOf("const rows = await overviewUpstreamRequestExecutor.map(");
     const realtimeLoaderEnd = mainWindowApp.indexOf("usageStatsRows: rows", realtimeLoaderStart);
     const realtimeLoader = mainWindowApp.slice(realtimeLoaderStart, realtimeLoaderEnd);
-    const dashboardIndex = realtimeLoader.indexOf("await getOverviewDashboardStats(readyAccount.id)");
-    const trendIndex = realtimeLoader.indexOf("await getDashboardTrend(readyAccount.id, { days: 7, ...range })");
-    const modelIndex = realtimeLoader.indexOf("await getDashboardModels(readyAccount.id, { days: 7, ...range })");
-    const insightsIndex = realtimeLoader.indexOf("await getUsageInsights(readyAccount.id, { days: 7, ...range })");
+    const dashboardIndex = realtimeLoader.indexOf("await getOverviewDashboardStats(readyAccount.id, forceUpstream)");
+    const trendIndex = realtimeLoader.indexOf("await getDashboardTrend(readyAccount.id, range)");
+    const modelIndex = realtimeLoader.indexOf("await getDashboardModels(readyAccount.id, range)");
+    const insightsIndex = realtimeLoader.indexOf("await getUsageInsights(readyAccount.id, range)");
 
     expect(dashboardIndex).toBeGreaterThan(-1);
     expect(trendIndex).toBeGreaterThan(dashboardIndex);
@@ -59,7 +67,7 @@ describe("MainWindowApp overview refresh boundary", () => {
     expect(staleRefreshSource).not.toContain('scope: "core"');
   });
 
-  it("refreshes the visible usage workspace only after a confirmed full sync succeeds", () => {
+  it("refreshes the visible usage workspace after a confirmed full sync without redundant upstream work", () => {
     const fullSyncStart = mainWindowApp.indexOf("const refreshedFullSyncRunRef");
     const fullSyncEnd = mainWindowApp.indexOf("const resolvedOverviewSelection", fullSyncStart);
     const fullSyncSource = mainWindowApp.slice(fullSyncStart, fullSyncEnd);
@@ -68,10 +76,10 @@ describe("MainWindowApp overview refresh boundary", () => {
     expect(fullSyncEnd).toBeGreaterThan(fullSyncStart);
     expect(fullSyncSource).toContain('if (fullStatus?.state !== "succeeded") {');
     expect(fullSyncSource).toContain("refreshedFullSyncRunRef.current === runKey");
-    expect(fullSyncSource).toContain("invalidateUsageAccount(selectedAccountId)");
     expect(fullSyncSource).toContain('loadOverview({ source: "shell" })');
-    expect(fullSyncSource).toContain("accountDataWorkspace.refreshAccountData({ force: true })");
+    expect(fullSyncSource).toContain('force: false,\n      mode: "background"');
     expect(fullSyncSource).toContain('refreshUsageWorkspaceSilently({ mode: "background" })');
+    expect(fullSyncSource).not.toContain("invalidateUsageAccount(selectedAccountId)");
   });
 
   it("restricts full-source overview loads to explicit live refresh so background warmup cannot storm upstream", () => {

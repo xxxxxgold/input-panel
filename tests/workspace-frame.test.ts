@@ -147,12 +147,14 @@ body,
 }`);
   });
 
-  it("keeps every workspace title and subtitle on a single line", () => {
+  it("keeps every workspace title and contextual hint compact", () => {
     const html = renderFrame({ title: "密钥", subtitle: "AI INPUT / 主账号", navKey: "keys" });
 
     expect(html).toContain("workspace-header-main");
-    expect(html).toContain("<h2>密钥</h2><p class=\"workspace-subtitle\">AI INPUT / 主账号</p>");
-    expect(styles).toContain(`.workspace-header-main > div {
+    expect(html).toContain('<div class="title-with-hint"><h2>密钥</h2>');
+    expect(html).toContain('aria-label="查看密钥说明"');
+    expect(html).not.toContain('<p class="workspace-subtitle">');
+    expect(styles).toContain(`.workspace-header-main > .title-with-hint {
   display: flex;
   align-items: baseline;
   gap: 10px;
@@ -160,13 +162,6 @@ body,
     expect(styles).toContain(`.workspace-header h2 {
   flex: 0 0 auto;
   line-height: 1.1;
-  white-space: nowrap;
-}`);
-    expect(styles).toContain(`.workspace-subtitle {
-  margin: 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }`);
   });

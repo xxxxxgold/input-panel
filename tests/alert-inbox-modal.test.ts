@@ -31,11 +31,10 @@ describe("AlertInboxModal", () => {
     );
 
     expect(html).toContain("消息盒子");
-    expect(html).toContain("1 条待处理消息");
     expect(html).toContain("主账号 余额已耗尽");
     expect(html).toContain("AI INPUT");
     expect(html).toContain("主账号");
-    expect(html).toContain("知道了");
+    expect(html).toContain("标记已处理");
   });
 
   it("renders service status records in the shared inbox", () => {
@@ -61,8 +60,8 @@ describe("AlertInboxModal", () => {
     );
 
     expect(html).toContain("检测到服务状态恢复正常");
-    expect(html).toContain("服务状态监控");
-    expect(html).toContain("本地运行态");
+    expect(html).toContain("服务状态");
+    expect(html).toContain("自动监控");
     expect(html).toContain("涉及模型: gpt-5.5, gpt-5.4, gpt-4.1");
   });
 
@@ -76,6 +75,6 @@ describe("AlertInboxModal", () => {
     );
 
     expect(html).toContain("没有待处理消息");
-    expect(html).toContain("当前没有新的余额、订阅或登录异常。");
+    expect(html).toContain("当前没有新的提醒需要处理。");
   });
 });

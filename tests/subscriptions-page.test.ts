@@ -46,16 +46,18 @@ describe("SubscriptionsPage layout", () => {
     };
 
     const html = renderToStaticMarkup(
-      createElement(SubscriptionsPage, {
-        subscriptions,
-        subscriptionSummary
+        createElement(SubscriptionsPage, {
+          subscriptions,
+          subscriptionSummary,
+          selectedAccountId: "account-1",
+          managedKeys: []
       })
     );
 
     expect(html).toContain("subscriptions-page-layout");
     expect(html).toContain("subscription-summary-lead");
     expect(html).toContain("subscriptions-content-grid");
-    expect(html.indexOf(">订阅摘要</h3>")).toBeLessThan(html.indexOf(">订阅视图</h3>"));
+    expect(html.indexOf(">订阅摘要</h3>")).toBeLessThan(html.indexOf(">订阅列表</h3>"));
     expect(html).not.toContain(">订阅明细</h3>");
   });
 
@@ -107,13 +109,15 @@ describe("SubscriptionsPage layout", () => {
     };
 
     const html = renderToStaticMarkup(
-      createElement(SubscriptionsPage, {
-        subscriptions,
-        subscriptionSummary
+        createElement(SubscriptionsPage, {
+          subscriptions,
+          subscriptionSummary,
+          selectedAccountId: "account-1",
+          managedKeys: []
       })
     );
 
-    expect(html).toContain("点击任意订阅卡片, 弹出该订阅的每日、每周、每月额度与到期详情");
+    expect(html).toContain("点击任意订阅卡片, 查看这个订阅更详细的额度和到期信息。");
     expect(html).toContain("查看 CodeX Plus 月度 的订阅详情");
     expect(html).toContain("subscription-card-button");
     expect(html).not.toContain("改为按订阅弹窗查看");
@@ -160,9 +164,11 @@ describe("SubscriptionsPage layout", () => {
     };
 
     const html = renderToStaticMarkup(
-      createElement(SubscriptionsPage, {
-        subscriptions,
-        subscriptionSummary
+        createElement(SubscriptionsPage, {
+          subscriptions,
+          subscriptionSummary,
+          selectedAccountId: "account-1",
+          managedKeys: []
       })
     );
 

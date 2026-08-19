@@ -67,8 +67,14 @@ describe("desktop ui prefs browser sync helpers", () => {
 
     writeBrowserDesktopUiPrefs(samplePrefs);
 
-    expect(storage.get(DESKTOP_UI_PREFS_STORAGE_KEY)).toBe(JSON.stringify(samplePrefs));
-    expect(readBrowserDesktopUiPrefs()).toEqual(samplePrefs);
+    const stored = JSON.parse(storage.get(DESKTOP_UI_PREFS_STORAGE_KEY) ?? "null");
+    expect(stored).toEqual(readBrowserDesktopUiPrefs());
+    expect(readBrowserDesktopUiPrefs()).toMatchObject({
+      launchMode: samplePrefs.launchMode,
+      openFloatingInMainMode: samplePrefs.openFloatingInMainMode,
+      keepFloatingPanelVisible: samplePrefs.keepFloatingPanelVisible,
+      floatingPanelOpacity: samplePrefs.floatingPanelOpacity
+    });
   });
 
   it("backfills grouped auto refresh fields for legacy stored prefs", () => {

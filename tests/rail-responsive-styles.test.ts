@@ -1,8 +1,8 @@
-import { readFileSync } from "node:fs";
-
 import { describe, expect, it } from "vitest";
 
-const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+import { readBundledStyles } from "./helpers/styles";
+
+const styles = readBundledStyles();
 
 describe("mobile rail responsive styles", () => {
   it("keeps collapsed and expanded shell tracks distinct under the 960px breakpoint", () => {
