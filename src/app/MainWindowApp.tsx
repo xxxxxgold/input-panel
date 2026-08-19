@@ -104,6 +104,10 @@ import { useSettingsWorkspace } from "../features/settings/useSettingsWorkspace"
 import { getDashboardModels, getDashboardTrend, getUsageInsights } from "../features/usage/client";
 import { useUsageWorkspace } from "../features/usage/useUsageWorkspace";
 import { useDesktopUiPrefs } from "../features/desktop-ui/useDesktopUiPrefs";
+import {
+  resolveFloatingNotificationSoundFailureMessage,
+  type FloatingNotificationSoundAction
+} from "../features/desktop-ui/notification-sound-ui";
 import { useDatabaseStorageWorkspace } from "../features/database-storage/useDatabaseStorageWorkspace";
 import {
   isAccountDataStaleForToday,
@@ -647,9 +651,8 @@ export function MainWindowApp() {
     pushToast
   });
   const [clearRuntimeDataLoading, setClearRuntimeDataLoading] = useState(false);
-  const [floatingNotificationSoundAction, setFloatingNotificationSoundAction] = useState<
-    "select" | "preview" | "restore" | null
-  >(null);
+  const [floatingNotificationSoundAction, setFloatingNotificationSoundAction] =
+    useState<FloatingNotificationSoundAction | null>(null);
   const [selectionBootstrapDone, setSelectionBootstrapDone] = useState(false);
   const [mainWindowChromeReady, setMainWindowChromeReady] = useState(false);
   const [startupRevealRetryVersion, setStartupRevealRetryVersion] = useState(0);
@@ -2046,10 +2049,7 @@ export function MainWindowApp() {
     } catch (cause) {
       pushToast({
         tone: "error",
-        message:
-          cause instanceof Error && cause.message.trim()
-            ? cause.message
-            : "提示音文件导入失败，请重试。"
+        message: resolveFloatingNotificationSoundFailureMessage("select", cause)
       });
     } finally {
       setFloatingNotificationSoundAction(null);
@@ -2062,18 +2062,15 @@ export function MainWindowApp() {
     }
     setFloatingNotificationSoundAction("preview");
     try {
-      await desktopUi.handlePreviewFloatingNotificationSound();
+      const played = await desktopUi.handlePreviewFloatingNotificationSound();
       pushToast({
         tone: "info",
-        message: "已按当前音量试听提示音。"
+        message: played ? "已按当前音量试听提示音。" : "当前提示音已静音，未播放试听。"
       });
     } catch (cause) {
       pushToast({
         tone: "error",
-        message:
-          cause instanceof Error && cause.message.trim()
-            ? cause.message
-            : "提示音试听失败，请重试。"
+        message: resolveFloatingNotificationSoundFailureMessage("preview", cause)
       });
     } finally {
       setFloatingNotificationSoundAction(null);
@@ -2094,10 +2091,70 @@ export function MainWindowApp() {
     } catch (cause) {
       pushToast({
         tone: "error",
-        message:
-          cause instanceof Error && cause.message.trim()
-            ? cause.message
-            : "恢复默认提示音失败，请重试。"
+        message: resolveFloatingNotificationSoundFailureMessage("restore", cause)
+      });
+    } finally {
+      setFloatingNotificationSoundAction(null);
+    }
+  }
+
+  async function handleUseSystemFloatingNotificationSound() {
+    if (floatingNotificationSoundAction !== null) {
+      return;
+    }
+    setFloatingNotificationSoundAction("system");
+    try {
+      await desktopUi.handleUseSystemFloatingNotificationSound();
+      pushToast({
+        tone: "success",
+        message: "已切换为 Windows 系统提示音。"
+      });
+    } catch (cause) {
+      pushToast({
+        tone: "error",
+        message: resolveFloatingNotificationSoundFailureMessage("system", cause)
+      });
+    } finally {
+      setFloatingNotificationSoundAction(null);
+    }
+  }
+
+  async function handleUseSavedFloatingNotificationCustomSound() {
+    if (floatingNotificationSoundAction !== null) {
+      return;
+    }
+    setFloatingNotificationSoundAction("custom");
+    try {
+      await desktopUi.handleUseSavedFloatingNotificationCustomSound();
+      pushToast({
+        tone: "success",
+        message: "已恢复已保存的自定义提示音。"
+      });
+    } catch (cause) {
+      pushToast({
+        tone: "error",
+        message: resolveFloatingNotificationSoundFailureMessage("custom", cause)
+      });
+    } finally {
+      setFloatingNotificationSoundAction(null);
+    }
+  }
+
+  async function handleMuteFloatingNotificationSound() {
+    if (floatingNotificationSoundAction !== null) {
+      return;
+    }
+    setFloatingNotificationSoundAction("mute");
+    try {
+      await desktopUi.handleMuteFloatingNotificationSound();
+      pushToast({
+        tone: "success",
+        message: "已静音悬浮消息提示音。"
+      });
+    } catch (cause) {
+      pushToast({
+        tone: "error",
+        message: resolveFloatingNotificationSoundFailureMessage("mute", cause)
       });
     } finally {
       setFloatingNotificationSoundAction(null);
@@ -2957,6 +3014,13 @@ export function MainWindowApp() {
               onRestoreDefaultFloatingNotificationSound={() =>
                 void handleRestoreDefaultFloatingNotificationSound()
               }
+              onUseSystemFloatingNotificationSound={() =>
+                void handleUseSystemFloatingNotificationSound()
+              }
+              onUseSavedFloatingNotificationCustomSound={() =>
+                void handleUseSavedFloatingNotificationCustomSound()
+              }
+              onMuteFloatingNotificationSound={() => void handleMuteFloatingNotificationSound()}
               onCloseBehaviorChange={(value) => void desktopUi.handleRememberCloseBehavior(value)}
               onAutoRefreshEnabledChange={(value) => void desktopUi.patchPrefs({ autoRefreshEnabled: value })}
               onServiceStatusAutoRefreshEnabledChange={(value) =>

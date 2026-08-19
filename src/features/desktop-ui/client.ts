@@ -45,6 +45,27 @@ export function restoreDefaultFloatingNotificationSound() {
   );
 }
 
+export function setSystemFloatingNotificationSound() {
+  return requireNativeDesktopCapability<DesktopUiPrefs>("use_system_floating_notification_sound");
+}
+
+export function muteFloatingNotificationSound() {
+  return requireNativeDesktopCapability<DesktopUiPrefs>("mute_floating_notification_sound");
+}
+
+export function setSavedFloatingNotificationCustomSound() {
+  return requireNativeDesktopCapability<DesktopUiPrefs>(
+    "use_saved_floating_notification_custom_sound"
+  );
+}
+
+/** 仅由悬浮通知窗口在卡片进入首帧后领取一次原生播放资格。 */
+export function requestFloatingNotificationSound(notificationId: string) {
+  return requireNativeDesktopCapability<boolean>("request_floating_notification_sound", {
+    notificationId
+  });
+}
+
 export function switchAppMode(launchMode: DesktopUiPrefs["launchMode"]) {
   return requireNativeDesktopCapability<DesktopUiPrefs>("switch_app_mode", { launchMode });
 }

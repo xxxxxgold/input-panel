@@ -14,17 +14,21 @@ import {
   normalizeFloatingNotificationMaxVisible,
   type FloatingNotificationDensity
 } from "../../shared/lib/floating-notification-layout";
+import { normalizeCustomNotificationSoundFileName } from "./notification-sound-ui";
 import type { CloseBehavior, DesktopUiPrefs, DesktopUiPrefsPatch } from "../../types";
 import { isTauriRuntime } from "../../shared/transport/runtime";
 import {
   getDesktopUiPrefs,
+  muteFloatingNotificationSound,
   openMainWindow,
   previewFloatingNotificationSound,
   quitApplication,
   restoreDefaultFloatingNotificationSound,
   selectFloatingNotificationSound,
   setFloatingWindowVisible,
+  setSavedFloatingNotificationCustomSound,
   switchAppMode,
+  setSystemFloatingNotificationSound,
   updateDesktopUiPrefs
 } from "./client";
 import {
@@ -68,6 +72,8 @@ export const MIN_FLOATING_NOTIFICATION_DURATION_MS = 3000;
 export const MAX_FLOATING_NOTIFICATION_DURATION_MS = 30000;
 export const MIN_FLOATING_NOTIFICATION_SOUND_VOLUME = 0;
 export const MAX_FLOATING_NOTIFICATION_SOUND_VOLUME = 100;
+const CUSTOM_NOTIFICATION_SOUND_STORAGE_KEY_PATTERN =
+  /^notification-sound-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.(?:mp3|wav)$/;
 
 export function normalizeFloatingPanelOpacity(value: number) {
   if (!Number.isFinite(value)) {
@@ -106,6 +112,11 @@ export function normalizeFloatingNotificationSoundVolume(value: number) {
   );
 }
 
+function normalizeCustomNotificationSoundStorageKey(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  return trimmed && CUSTOM_NOTIFICATION_SOUND_STORAGE_KEY_PATTERN.test(trimmed) ? trimmed : null;
+}
+
 export const DESKTOP_UI_PREFS_STORAGE_KEY = "input-panel.desktop-ui-prefs";
 
 export function isDesktopUiPrefsPayload(value: unknown): value is DesktopUiPrefs {
@@ -130,7 +141,9 @@ export function isDesktopUiPrefsPayload(value: unknown): value is DesktopUiPrefs
       typeof candidate.floatingNotificationMaxVisible === "number") &&
     (candidate.floatingNotificationSoundSource === undefined ||
       candidate.floatingNotificationSoundSource === "default" ||
-      candidate.floatingNotificationSoundSource === "custom") &&
+      candidate.floatingNotificationSoundSource === "custom" ||
+      candidate.floatingNotificationSoundSource === "system" ||
+      candidate.floatingNotificationSoundSource === "muted") &&
     (candidate.floatingNotificationSoundFileName === undefined ||
       candidate.floatingNotificationSoundFileName === null ||
       typeof candidate.floatingNotificationSoundFileName === "string") &&
@@ -176,12 +189,25 @@ function normalizeDesktopUiPrefs(prefs: Partial<DesktopUiPrefs> & {
     autoRefreshKeysEnabled: prefs.autoRefreshKeysEnabled ?? prefs.autoRefreshAccountScopedEnabled ?? defaultPrefs.autoRefreshKeysEnabled,
     autoRefreshKeysIntervalSeconds: prefs.autoRefreshKeysIntervalSeconds ?? prefs.autoRefreshAccountScopedIntervalSeconds ?? defaultPrefs.autoRefreshKeysIntervalSeconds
   };
-  const hasCustomSound =
+  const customSoundFileName = normalizeCustomNotificationSoundFileName(
+    merged.floatingNotificationSoundFileName
+  );
+  const customSoundStorageKey = normalizeCustomNotificationSoundStorageKey(
+    merged.floatingNotificationSoundStorageKey
+  );
+  const hasCustomSoundMetadata =
+    customSoundFileName !== null && customSoundStorageKey !== null;
+  const floatingNotificationSoundSource =
     merged.floatingNotificationSoundSource === "custom"
-    && typeof merged.floatingNotificationSoundFileName === "string"
-    && Boolean(merged.floatingNotificationSoundFileName.trim())
-    && typeof merged.floatingNotificationSoundStorageKey === "string"
-    && Boolean(merged.floatingNotificationSoundStorageKey.trim());
+      ? hasCustomSoundMetadata
+        ? "custom"
+        : "default"
+      : merged.floatingNotificationSoundSource === "system" ||
+          merged.floatingNotificationSoundSource === "muted"
+        ? merged.floatingNotificationSoundSource
+        : "default";
+  const preserveCustomSoundMetadata =
+    hasCustomSoundMetadata && floatingNotificationSoundSource !== "default";
 
   return {
     ...merged,
@@ -195,13 +221,9 @@ function normalizeDesktopUiPrefs(prefs: Partial<DesktopUiPrefs> & {
     floatingNotificationMaxVisible: normalizeFloatingNotificationMaxVisible(
       merged.floatingNotificationMaxVisible
     ),
-    floatingNotificationSoundSource: hasCustomSound ? "custom" : "default",
-    floatingNotificationSoundFileName: hasCustomSound
-      ? merged.floatingNotificationSoundFileName?.trim() ?? null
-      : null,
-    floatingNotificationSoundStorageKey: hasCustomSound
-      ? merged.floatingNotificationSoundStorageKey?.trim() ?? null
-      : null,
+    floatingNotificationSoundSource,
+    floatingNotificationSoundFileName: preserveCustomSoundMetadata ? customSoundFileName : null,
+    floatingNotificationSoundStorageKey: preserveCustomSoundMetadata ? customSoundStorageKey : null,
     floatingNotificationSoundVolume: normalizeFloatingNotificationSoundVolume(
       merged.floatingNotificationSoundVolume
     ),
@@ -488,6 +510,27 @@ export function useDesktopUiPrefs(windowLabel: "main" | "floating" | "floating-p
     return normalized;
   }
 
+  async function handleUseSystemFloatingNotificationSound() {
+    prefsLoadRevisionRef.current += 1;
+    const normalized = normalizeDesktopUiPrefs(await setSystemFloatingNotificationSound());
+    prefsSaveQueue.acceptConfirmed(normalized, { persistToBrowser: true });
+    return normalized;
+  }
+
+  async function handleMuteFloatingNotificationSound() {
+    prefsLoadRevisionRef.current += 1;
+    const normalized = normalizeDesktopUiPrefs(await muteFloatingNotificationSound());
+    prefsSaveQueue.acceptConfirmed(normalized, { persistToBrowser: true });
+    return normalized;
+  }
+
+  async function handleUseSavedFloatingNotificationCustomSound() {
+    prefsLoadRevisionRef.current += 1;
+    const normalized = normalizeDesktopUiPrefs(await setSavedFloatingNotificationCustomSound());
+    prefsSaveQueue.acceptConfirmed(normalized, { persistToBrowser: true });
+    return normalized;
+  }
+
   return {
     prefs,
     confirmedPrefs,
@@ -507,6 +550,9 @@ export function useDesktopUiPrefs(windowLabel: "main" | "floating" | "floating-p
     handleOpenMain,
     handleSelectFloatingNotificationSound,
     handlePreviewFloatingNotificationSound,
-    handleRestoreDefaultFloatingNotificationSound
+    handleRestoreDefaultFloatingNotificationSound,
+    handleUseSystemFloatingNotificationSound,
+    handleMuteFloatingNotificationSound,
+    handleUseSavedFloatingNotificationCustomSound
   };
 }

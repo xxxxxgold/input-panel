@@ -1124,7 +1124,7 @@ export type CloseBehavior = "ask" | "switch_to_floating" | "exit_app";
 
 export type FloatingNotificationDensity = "compact" | "standard" | "relaxed";
 
-export type FloatingNotificationSoundSource = "default" | "custom";
+export type FloatingNotificationSoundSource = "default" | "custom" | "system" | "muted";
 
 export interface DesktopUiPrefs {
   version: number;

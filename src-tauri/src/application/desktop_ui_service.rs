@@ -131,13 +131,6 @@ pub(crate) fn normalize_floating_notification_sound_volume(value: i64) -> i64 {
 fn normalize_floating_notification_sound_config(prefs: &mut DesktopUiPrefs) {
     prefs.floating_notification_sound_volume =
         normalize_floating_notification_sound_volume(prefs.floating_notification_sound_volume);
-    if prefs.floating_notification_sound_source != FloatingNotificationSoundSource::Custom {
-        prefs.floating_notification_sound_source = FloatingNotificationSoundSource::Default;
-        prefs.floating_notification_sound_file_name = None;
-        prefs.floating_notification_sound_storage_key = None;
-        return;
-    }
-
     let storage_key = prefs
         .floating_notification_sound_storage_key
         .as_deref()
@@ -151,13 +144,25 @@ fn normalize_floating_notification_sound_config(prefs: &mut DesktopUiPrefs) {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
-    match (storage_key, display_name) {
-        (Some(storage_key), Some(display_name)) => {
+    match (
+        prefs.floating_notification_sound_source.clone(),
+        storage_key.zip(display_name),
+    ) {
+        (FloatingNotificationSoundSource::Custom, Some((storage_key, display_name))) => {
             prefs.floating_notification_sound_storage_key = Some(storage_key);
             prefs.floating_notification_sound_file_name = Some(display_name);
         }
-        _ => {
+        (FloatingNotificationSoundSource::Custom, None) => {
             prefs.floating_notification_sound_source = FloatingNotificationSoundSource::Default;
+            prefs.floating_notification_sound_file_name = None;
+            prefs.floating_notification_sound_storage_key = None;
+        }
+        (_, Some((storage_key, display_name))) => {
+            // 切换系统提示音或静音时保留已导入副本，方便随后继续使用自定义音。
+            prefs.floating_notification_sound_storage_key = Some(storage_key);
+            prefs.floating_notification_sound_file_name = Some(display_name);
+        }
+        (_, None) => {
             prefs.floating_notification_sound_file_name = None;
             prefs.floating_notification_sound_storage_key = None;
         }
@@ -192,9 +197,52 @@ fn normalize_auto_refresh_interval_seconds(value: i64) -> i64 {
     value.max(MIN_AUTO_REFRESH_INTERVAL_SECONDS)
 }
 
+/// 旧版本或异常写入的声音字段不能让整份桌面偏好回退默认值。
+fn parse_persisted_desktop_ui_prefs(value: &str) -> Option<DesktopUiPrefs> {
+    let mut value = serde_json::from_str::<serde_json::Value>(value).ok()?;
+    let object = value.as_object_mut()?;
+    const SOURCE_KEY: &str = "floatingNotificationSoundSource";
+    const FILE_NAME_KEY: &str = "floatingNotificationSoundFileName";
+    const STORAGE_KEY: &str = "floatingNotificationSoundStorageKey";
+    const VOLUME_KEY: &str = "floatingNotificationSoundVolume";
+
+    let source_is_invalid = object.contains_key(SOURCE_KEY)
+        && !matches!(
+            object.get(SOURCE_KEY).and_then(serde_json::Value::as_str),
+            Some("default" | "custom" | "system" | "muted")
+        );
+    if source_is_invalid {
+        object.insert(
+            SOURCE_KEY.to_string(),
+            serde_json::Value::String("default".to_string()),
+        );
+    }
+
+    for key in [FILE_NAME_KEY, STORAGE_KEY] {
+        let value_is_invalid = object
+            .get(key)
+            .is_some_and(|field| !field.is_null() && !field.is_string());
+        if value_is_invalid {
+            object.insert(key.to_string(), serde_json::Value::Null);
+        }
+    }
+
+    let volume_is_invalid = object
+        .get(VOLUME_KEY)
+        .is_some_and(|field| field.as_i64().is_none());
+    if volume_is_invalid {
+        object.insert(
+            VOLUME_KEY.to_string(),
+            serde_json::Value::from(DEFAULT_FLOATING_NOTIFICATION_SOUND_VOLUME),
+        );
+    }
+
+    serde_json::from_value(value).ok()
+}
+
 pub fn get_desktop_ui_prefs(ctx: &AppContext) -> Result<DesktopUiPrefs> {
     let prefs = repositories::get_setting(&ctx.db, DESKTOP_UI_PREFS_KEY)?
-        .and_then(|value| serde_json::from_str::<DesktopUiPrefs>(&value).ok())
+        .and_then(|value| parse_persisted_desktop_ui_prefs(&value))
         .map(normalize_prefs)
         .unwrap_or_default();
     Ok(prefs)
@@ -362,27 +410,120 @@ pub fn restore_default_floating_notification_sound(ctx: &AppContext) -> Result<D
     Ok(prefs)
 }
 
-/// 读取当前桌面偏好并安排非阻塞播放；任何播放故障不会影响消息生命周期。
-pub fn schedule_floating_notification_sound(app: &AppHandle) -> Result<()> {
+/// 当前声音启动结果。系统提示音由 Windows 异步排队，无需持有 Rodio 会话。
+pub(crate) enum FloatingNotificationSoundStart {
+    Audio(notification_sound::ActiveNotificationSound),
+    System,
+    Muted,
+}
+
+/// 仅切换不依赖文件路径的来源，保留受控自定义副本供用户之后继续使用。
+fn set_floating_notification_non_custom_sound_source(
+    ctx: &AppContext,
+    source: FloatingNotificationSoundSource,
+) -> Result<DesktopUiPrefs> {
+    debug_assert!(matches!(
+        source,
+        FloatingNotificationSoundSource::System | FloatingNotificationSoundSource::Muted
+    ));
+    let _update_guard = desktop_ui_prefs_update_lock()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("桌面偏好更新锁不可用"))?;
+    let mut prefs = get_desktop_ui_prefs(ctx)?;
+    prefs.floating_notification_sound_source = source;
+    prefs = normalize_prefs(prefs);
+    repositories::set_setting(
+        &ctx.db,
+        DESKTOP_UI_PREFS_KEY,
+        &serde_json::to_string(&prefs)?,
+    )?;
+    Ok(prefs)
+}
+
+pub fn use_system_floating_notification_sound(ctx: &AppContext) -> Result<DesktopUiPrefs> {
+    set_floating_notification_non_custom_sound_source(ctx, FloatingNotificationSoundSource::System)
+}
+
+pub fn mute_floating_notification_sound(ctx: &AppContext) -> Result<DesktopUiPrefs> {
+    set_floating_notification_non_custom_sound_source(ctx, FloatingNotificationSoundSource::Muted)
+}
+
+/// 恢复仍保存在应用受控目录中的自定义提示音，不依赖原始选择文件。
+pub fn use_saved_floating_notification_custom_sound(ctx: &AppContext) -> Result<DesktopUiPrefs> {
+    let _update_guard = desktop_ui_prefs_update_lock()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("桌面偏好更新锁不可用"))?;
+    let mut prefs = get_desktop_ui_prefs(ctx)?;
+    let storage_key = prefs
+        .floating_notification_sound_storage_key
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("没有已保存的自定义提示音"))?;
+    let custom_path = notification_sound::custom_notification_sound_path(&ctx.paths, storage_key)?;
+    if !custom_path.is_file() {
+        anyhow::bail!("已保存的自定义提示音不可用");
+    }
+
+    prefs.floating_notification_sound_source = FloatingNotificationSoundSource::Custom;
+    prefs = normalize_prefs(prefs);
+    repositories::set_setting(
+        &ctx.db,
+        DESKTOP_UI_PREFS_KEY,
+        &serde_json::to_string(&prefs)?,
+    )?;
+    Ok(prefs)
+}
+
+/// 启动当前来源和音量的提示音，并把文件音播放会话交给调用方持续持有。
+pub(crate) fn start_floating_notification_sound(
+    app: &AppHandle,
+) -> Result<FloatingNotificationSoundStart> {
     let ctx = app.state::<AppContext>();
     let prefs = get_desktop_ui_prefs(&ctx)?;
+    let source = prefs.floating_notification_sound_source.clone();
+    let volume_percent =
+        normalize_floating_notification_sound_volume(prefs.floating_notification_sound_volume);
+    if volume_percent == 0 || source == FloatingNotificationSoundSource::Muted {
+        return Ok(FloatingNotificationSoundStart::Muted);
+    }
+    if source == FloatingNotificationSoundSource::System {
+        notification_sound::request_windows_system_notification_sound()?;
+        return Ok(FloatingNotificationSoundStart::System);
+    }
+
     let default_path = notification_sound::default_notification_sound_path(app)?;
-    let custom_path = if prefs.floating_notification_sound_source
-        == FloatingNotificationSoundSource::Custom
-    {
+    let custom_path = if source == FloatingNotificationSoundSource::Custom {
         prefs
             .floating_notification_sound_storage_key
             .as_deref()
-            .map(|storage_key| notification_sound::custom_notification_sound_path(&ctx.paths, storage_key))
+            .map(|storage_key| {
+                notification_sound::custom_notification_sound_path(&ctx.paths, storage_key)
+            })
             .transpose()?
     } else {
         None
     };
-    notification_sound::schedule_notification_sound_playback(
-        default_path,
-        custom_path,
-        prefs.floating_notification_sound_volume,
-    )
+    match notification_sound::start_notification_sound(default_path, custom_path, volume_percent)? {
+        Some(playback) => Ok(FloatingNotificationSoundStart::Audio(playback)),
+        None => Ok(FloatingNotificationSoundStart::Muted),
+    }
+}
+
+fn play_floating_notification_sound(app: &AppHandle) -> Result<()> {
+    match start_floating_notification_sound(app)? {
+        FloatingNotificationSoundStart::Audio(playback) => playback.wait_until_end(),
+        FloatingNotificationSoundStart::System | FloatingNotificationSoundStart::Muted => {}
+    }
+    Ok(())
+}
+
+/// 将新消息的声音准备与播放完全转入后台，不能阻塞 mailbox 或通知窗口同步。
+pub fn schedule_floating_notification_sound(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(error) = play_floating_notification_sound(&app) {
+            log::warn!("[notification-sound] 新悬浮消息提示音播放失败: {error}");
+        }
+    });
 }
 
 pub fn set_launch_mode(ctx: &AppContext, launch_mode: AppLaunchMode) -> Result<DesktopUiPrefs> {
@@ -413,12 +554,14 @@ mod tests {
     use super::*;
     use std::{
         collections::HashMap,
+        fs,
         sync::{Arc, Barrier},
         thread,
     };
 
     use crate::{
         application::{resource_coordinator::ResourceCoordinator, AppContext},
+        contracts::DEFAULT_FLOATING_NOTIFICATION_SOUND_VOLUME,
         infrastructure::{
             files::AppPaths,
             sqlite::{repositories, Database},
@@ -595,6 +738,44 @@ mod tests {
     }
 
     #[test]
+    fn invalid_persisted_sound_fields_do_not_reset_unrelated_preferences() {
+        let ctx = build_test_context();
+        let persisted = DesktopUiPrefs {
+            launch_mode: AppLaunchMode::Floating,
+            keep_floating_panel_visible: true,
+            auto_refresh_enabled: false,
+            auto_refresh_usage_interval_seconds: 27,
+            theme: "ember-circuit".into(),
+            ..DesktopUiPrefs::default()
+        };
+        let mut raw = serde_json::to_value(persisted).expect("serialize preferences");
+        raw["floatingNotificationSoundSource"] = serde_json::json!("future-source");
+        raw["floatingNotificationSoundFileName"] = serde_json::json!({ "invalid": true });
+        raw["floatingNotificationSoundStorageKey"] = serde_json::json!(42);
+        raw["floatingNotificationSoundVolume"] = serde_json::Value::Null;
+        repositories::set_setting(&ctx.db, DESKTOP_UI_PREFS_KEY, &raw.to_string())
+            .expect("store invalid sound preferences");
+
+        let prefs = get_desktop_ui_prefs(&ctx).expect("read compatible preferences");
+
+        assert_eq!(prefs.launch_mode, AppLaunchMode::Floating);
+        assert!(prefs.keep_floating_panel_visible);
+        assert!(!prefs.auto_refresh_enabled);
+        assert_eq!(prefs.auto_refresh_usage_interval_seconds, 27);
+        assert_eq!(prefs.theme, "ember-circuit");
+        assert_eq!(
+            prefs.floating_notification_sound_source,
+            FloatingNotificationSoundSource::Default
+        );
+        assert_eq!(prefs.floating_notification_sound_file_name, None);
+        assert_eq!(prefs.floating_notification_sound_storage_key, None);
+        assert_eq!(
+            prefs.floating_notification_sound_volume,
+            DEFAULT_FLOATING_NOTIFICATION_SOUND_VOLUME
+        );
+    }
+
+    #[test]
     fn legacy_notification_prefs_are_backfilled_and_rewritten_as_normalized_json() {
         let ctx = build_test_context();
         repositories::set_setting(
@@ -732,5 +913,138 @@ mod tests {
         )
         .expect("persist maximum notification sound");
         assert_eq!(updated.floating_notification_sound_volume, 100);
+    }
+
+    #[test]
+    fn system_and_muted_sound_sources_preserve_a_valid_custom_selection() {
+        let ctx = build_test_context();
+        let storage_key = "notification-sound-550e8400-e29b-41d4-a716-446655440000.mp3";
+        let custom_prefs = DesktopUiPrefs {
+            floating_notification_sound_source: FloatingNotificationSoundSource::Custom,
+            floating_notification_sound_file_name: Some("custom-tone.mp3".into()),
+            floating_notification_sound_storage_key: Some(storage_key.into()),
+            ..DesktopUiPrefs::default()
+        };
+        repositories::set_setting(
+            &ctx.db,
+            DESKTOP_UI_PREFS_KEY,
+            &serde_json::to_string(&custom_prefs).expect("serialize custom preferences"),
+        )
+        .expect("store custom preferences");
+
+        let system = use_system_floating_notification_sound(&ctx)
+            .expect("switch to system notification sound");
+        assert_eq!(
+            system.floating_notification_sound_source,
+            FloatingNotificationSoundSource::System
+        );
+        assert_eq!(
+            system.floating_notification_sound_storage_key.as_deref(),
+            Some(storage_key)
+        );
+
+        let muted = mute_floating_notification_sound(&ctx).expect("mute notification sound");
+        assert_eq!(
+            muted.floating_notification_sound_source,
+            FloatingNotificationSoundSource::Muted
+        );
+        assert_eq!(
+            muted.floating_notification_sound_file_name.as_deref(),
+            Some("custom-tone.mp3")
+        );
+
+        let volume_updated = update_desktop_ui_prefs(
+            &ctx,
+            DesktopUiPrefsPatch {
+                floating_notification_sound_volume: Some(67),
+                ..DesktopUiPrefsPatch::default()
+            },
+        )
+        .expect("update muted notification volume");
+        assert_eq!(
+            volume_updated.floating_notification_sound_source,
+            FloatingNotificationSoundSource::Muted
+        );
+        assert_eq!(volume_updated.floating_notification_sound_volume, 67);
+    }
+
+    #[test]
+    fn saved_custom_sound_can_be_restored_after_system_and_muted() {
+        let ctx = build_test_context();
+        let storage_key = "notification-sound-550e8400-e29b-41d4-a716-446655440000.mp3";
+        let controlled_path =
+            notification_sound::custom_notification_sound_path(&ctx.paths, storage_key)
+                .expect("resolve controlled custom sound path");
+        fs::create_dir_all(controlled_path.parent().expect("controlled sound parent"))
+            .expect("create controlled sound directory");
+        fs::write(
+            &controlled_path,
+            include_bytes!("../../resources/sounds/manbo.mp3"),
+        )
+        .expect("retain controlled custom sound copy");
+        let custom_prefs = DesktopUiPrefs {
+            floating_notification_sound_source: FloatingNotificationSoundSource::Custom,
+            floating_notification_sound_file_name: Some("custom-tone.mp3".into()),
+            floating_notification_sound_storage_key: Some(storage_key.into()),
+            ..DesktopUiPrefs::default()
+        };
+        repositories::set_setting(
+            &ctx.db,
+            DESKTOP_UI_PREFS_KEY,
+            &serde_json::to_string(&custom_prefs).expect("serialize custom preferences"),
+        )
+        .expect("store custom preferences");
+
+        use_system_floating_notification_sound(&ctx).expect("switch to system sound");
+        mute_floating_notification_sound(&ctx).expect("mute notification sound");
+        let restored = use_saved_floating_notification_custom_sound(&ctx)
+            .expect("restore retained custom sound without the original file");
+
+        assert_eq!(
+            restored.floating_notification_sound_source,
+            FloatingNotificationSoundSource::Custom
+        );
+        assert_eq!(
+            restored.floating_notification_sound_file_name.as_deref(),
+            Some("custom-tone.mp3")
+        );
+        assert_eq!(
+            restored.floating_notification_sound_storage_key.as_deref(),
+            Some(storage_key)
+        );
+        assert!(controlled_path.is_file());
+    }
+
+    #[test]
+    fn missing_saved_custom_sound_keeps_the_current_non_custom_source() {
+        let ctx = build_test_context();
+        let storage_key = "notification-sound-550e8400-e29b-41d4-a716-446655440000.mp3";
+        let custom_prefs = DesktopUiPrefs {
+            floating_notification_sound_source: FloatingNotificationSoundSource::Custom,
+            floating_notification_sound_file_name: Some("missing-tone.mp3".into()),
+            floating_notification_sound_storage_key: Some(storage_key.into()),
+            ..DesktopUiPrefs::default()
+        };
+        repositories::set_setting(
+            &ctx.db,
+            DESKTOP_UI_PREFS_KEY,
+            &serde_json::to_string(&custom_prefs).expect("serialize custom preferences"),
+        )
+        .expect("store custom preferences");
+        mute_floating_notification_sound(&ctx).expect("mute notification sound");
+
+        let error = use_saved_floating_notification_custom_sound(&ctx)
+            .expect_err("missing controlled custom sound must not switch source");
+        let persisted = get_desktop_ui_prefs(&ctx).expect("read retained muted preference");
+
+        assert!(error.to_string().contains("不可用"));
+        assert_eq!(
+            persisted.floating_notification_sound_source,
+            FloatingNotificationSoundSource::Muted
+        );
+        assert_eq!(
+            persisted.floating_notification_sound_storage_key.as_deref(),
+            Some(storage_key)
+        );
     }
 }

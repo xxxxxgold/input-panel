@@ -1,16 +1,22 @@
 import {
+  BellRing,
   Database,
   FolderOpen,
   Minus,
   Plus,
   RefreshCw,
   RotateCcw,
-  Volume2
+  Volume2,
+  VolumeX
 } from "lucide-react";
 import { useEffect, useState, type CSSProperties } from "react";
 
 import { MIN_AUTO_REFRESH_INTERVAL_SECONDS } from "../app/refresh-policy";
 import { DatabaseMigrationConfirmDialog } from "../features/database-storage/DatabaseMigrationConfirmDialog";
+import {
+  normalizeCustomNotificationSoundFileName,
+  type FloatingNotificationSoundAction
+} from "../features/desktop-ui/notification-sound-ui";
 import { THEME_OPTIONS, type ThemeId, type ThemeOption } from "../shared/lib/theme";
 import { Modal } from "../shared/ui/Modal";
 import { TitleHint } from "../shared/ui/TitleHint";
@@ -208,6 +214,9 @@ export function SystemSettingsPage({
   onSelectFloatingNotificationSound,
   onPreviewFloatingNotificationSound,
   onRestoreDefaultFloatingNotificationSound,
+  onUseSystemFloatingNotificationSound = () => {},
+  onUseSavedFloatingNotificationCustomSound = () => {},
+  onMuteFloatingNotificationSound = () => {},
   onCloseBehaviorChange,
   onAutoRefreshEnabledChange,
   onServiceStatusAutoRefreshEnabledChange,
@@ -261,10 +270,13 @@ export function SystemSettingsPage({
   onFloatingNotificationDensityChange: (value: FloatingNotificationDensity) => void;
   onFloatingNotificationMaxVisibleChange: (value: number) => void;
   onFloatingNotificationSoundVolumeChange: (value: number) => void;
-  floatingNotificationSoundAction: "select" | "preview" | "restore" | null;
+  floatingNotificationSoundAction: FloatingNotificationSoundAction | null;
   onSelectFloatingNotificationSound: () => void;
   onPreviewFloatingNotificationSound: () => void;
   onRestoreDefaultFloatingNotificationSound: () => void;
+  onUseSystemFloatingNotificationSound?: () => void;
+  onUseSavedFloatingNotificationCustomSound?: () => void;
+  onMuteFloatingNotificationSound?: () => void;
   onCloseBehaviorChange: (value: CloseBehavior) => void;
   onAutoRefreshEnabledChange: (value: boolean) => void;
   onServiceStatusAutoRefreshEnabledChange: (value: boolean) => void;
@@ -313,6 +325,14 @@ export function SystemSettingsPage({
   const nativeWindowControlsDisabled = desktopUiLoading || !nativeWindowControlsAvailable;
   const floatingNotificationSoundControlsDisabled =
     nativeWindowControlsDisabled || floatingNotificationSoundAction !== null;
+  const floatingNotificationSoundMuted =
+    desktopUiPrefs.floatingNotificationSoundSource === "muted" ||
+    desktopUiPrefs.floatingNotificationSoundVolume === 0;
+  const floatingNotificationSoundPreviewDisabled =
+    floatingNotificationSoundControlsDisabled || floatingNotificationSoundMuted;
+  const hasSavedCustomNotificationSound =
+    normalizeCustomNotificationSoundFileName(desktopUiPrefs.floatingNotificationSoundFileName) !== null
+    && Boolean(desktopUiPrefs.floatingNotificationSoundStorageKey);
   const schedulerControlsDisabled = schedulerConfigLoading || Boolean(schedulerLoadError);
   const runtimeCoordinationControlsDisabled =
     runtimeCoordinationConfigLoading || Boolean(runtimeCoordinationLoadError);
@@ -587,12 +607,24 @@ export function SystemSettingsPage({
               <strong>
                 {desktopUiPrefs.floatingNotificationSoundSource === "custom"
                   ? "自定义提示音"
-                  : "内置默认提示音"}
+                  : desktopUiPrefs.floatingNotificationSoundSource === "system"
+                    ? "Windows 系统提示音"
+                    : desktopUiPrefs.floatingNotificationSoundSource === "muted"
+                      ? "静音"
+                      : "内置默认提示音"}
               </strong>
               <small>
                 {desktopUiPrefs.floatingNotificationSoundSource === "custom"
-                  ? `当前文件: ${desktopUiPrefs.floatingNotificationSoundFileName ?? "自定义提示音"}`
-                  : "当前使用应用内置提示音。"}
+                  ? `当前文件: ${
+                    normalizeCustomNotificationSoundFileName(
+                      desktopUiPrefs.floatingNotificationSoundFileName
+                    ) ?? "自定义提示音"
+                  }`
+                  : desktopUiPrefs.floatingNotificationSoundSource === "system"
+                    ? "当前使用 Windows 声音方案中的系统提示音。"
+                    : desktopUiPrefs.floatingNotificationSoundSource === "muted"
+                      ? "当前不会播放提示音。"
+                      : "当前使用应用内置提示音。"}
               </small>
               <div className="inline-actions wrap-actions">
                 <button
@@ -604,14 +636,55 @@ export function SystemSettingsPage({
                   <FolderOpen size={15} />
                   <span>{floatingNotificationSoundAction === "select" ? "正在选择..." : "选择文件"}</span>
                 </button>
+                {hasSavedCustomNotificationSound &&
+                  desktopUiPrefs.floatingNotificationSoundSource !== "custom" && (
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={onUseSavedFloatingNotificationCustomSound}
+                      disabled={floatingNotificationSoundControlsDisabled}
+                    >
+                      <Volume2 size={15} />
+                      <span>
+                        {floatingNotificationSoundAction === "custom"
+                          ? "正在恢复..."
+                          : "使用已保存的自定义提示音"}
+                      </span>
+                    </button>
+                  )}
                 <button
                   type="button"
                   className="ghost-button"
                   onClick={onPreviewFloatingNotificationSound}
-                  disabled={floatingNotificationSoundControlsDisabled}
+                  disabled={floatingNotificationSoundPreviewDisabled}
+                  title={floatingNotificationSoundMuted ? "当前处于静音状态" : undefined}
                 >
                   <Volume2 size={15} />
                   <span>{floatingNotificationSoundAction === "preview" ? "正在试听..." : "试听"}</span>
+                </button>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={onUseSystemFloatingNotificationSound}
+                  disabled={
+                    floatingNotificationSoundControlsDisabled
+                    || desktopUiPrefs.floatingNotificationSoundSource === "system"
+                  }
+                >
+                  <BellRing size={15} />
+                  <span>{floatingNotificationSoundAction === "system" ? "正在切换..." : "使用系统提示音"}</span>
+                </button>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={onMuteFloatingNotificationSound}
+                  disabled={
+                    floatingNotificationSoundControlsDisabled
+                    || desktopUiPrefs.floatingNotificationSoundSource === "muted"
+                  }
+                >
+                  <VolumeX size={15} />
+                  <span>{floatingNotificationSoundAction === "mute" ? "正在静音..." : "静音"}</span>
                 </button>
                 <button
                   type="button"
@@ -632,10 +705,14 @@ export function SystemSettingsPage({
               <div className="range-field settings-range-field">
                 <input
                   type="range"
+                  className="floating-notification-sound-volume-range"
                   min={0}
                   max={100}
                   step={1}
                   value={desktopUiPrefs.floatingNotificationSoundVolume}
+                  style={{
+                    ["--floating-notification-sound-volume-fill" as string]: `${desktopUiPrefs.floatingNotificationSoundVolume}%`
+                  }}
                   onChange={(event) =>
                     onFloatingNotificationSoundVolumeChange(Number(event.target.value))
                   }
@@ -644,7 +721,11 @@ export function SystemSettingsPage({
                 />
                 <strong>{desktopUiPrefs.floatingNotificationSoundVolume}%</strong>
               </div>
-              <small>0% 保持静音但不会清除选择的文件。默认 100%。</small>
+              <small>
+                {desktopUiPrefs.floatingNotificationSoundSource === "system"
+                  ? "0% 可关闭系统提示音，其余音量由 Windows 声音方案管理。"
+                  : "0% 保持静音但不会清除选择的文件。默认 100%。"}
+              </small>
             </label>
           </fieldset>
           <label className="toggle-field motion-surface-card">
