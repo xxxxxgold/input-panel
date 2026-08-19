@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Input Panel logo</title>
+  <desc id="desc">An input arrow entering a compact control panel.</desc>
+  <circle cx="512" cy="512" r="480" fill="#171a20" />
+  <rect x="344" y="196" width="448" height="632" rx="96" fill="#f7f8f5" />
+  <rect x="534" y="330" width="166" height="64" rx="32" fill="#5cd6c0" />
+  <rect x="534" y="480" width="166" height="64" rx="32" fill="#aeb7bc" />
+  <rect x="534" y="630" width="112" height="64" rx="32" fill="#aeb7bc" />
+  <circle cx="700" cy="662" r="32" fill="#ff6b6b" />
+  <path d="M120 456h260v-88l160 144-160 144v-88H120z" fill="#5cd6c0" />
+</svg>

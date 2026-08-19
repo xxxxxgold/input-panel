@@ -1,0 +1,13 @@
+SQLite 3.45.0 is included through the bundled feature of libsqlite3-sys 0.28.0.
+SQLite is in the public domain: https://www.sqlite.org/copyright.html
+
+The bundled SQLite source begins with the following public-domain dedication:
+
+The author disclaims copyright to this source code. In place of
+a legal notice, here is a blessing:
+
+   May you do good and not evil.
+   May you find forgiveness for yourself and forgive others.
+   May you share freely, never taking more than you give.
+
+Source: libsqlite3-sys-0.28.0/sqlite3/sqlite3.h, SQLite version 3.45.0.
