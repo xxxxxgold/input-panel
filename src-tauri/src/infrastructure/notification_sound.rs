@@ -94,7 +94,10 @@ pub(crate) fn is_valid_custom_notification_sound_storage_key(value: &str) -> boo
 }
 
 /// 将受控存储标识映射到应用配置目录中的单个文件。
-pub(crate) fn custom_notification_sound_path(paths: &AppPaths, storage_key: &str) -> Result<PathBuf> {
+pub(crate) fn custom_notification_sound_path(
+    paths: &AppPaths,
+    storage_key: &str,
+) -> Result<PathBuf> {
     if !is_valid_custom_notification_sound_storage_key(storage_key) {
         bail!("自定义提示音配置无效");
     }
@@ -130,10 +133,7 @@ pub(crate) fn import_custom_notification_sound(
     let storage_dir = paths.config_dir.join(CUSTOM_NOTIFICATION_SOUND_DIRECTORY);
     fs::create_dir_all(&storage_dir).context("无法创建提示音存储目录")?;
     let destination_path = custom_notification_sound_path(paths, &storage_key)?;
-    let staging_path = storage_dir.join(format!(
-        ".{storage_key}.{}.part",
-        Uuid::new_v4()
-    ));
+    let staging_path = storage_dir.join(format!(".{storage_key}.{}.part", Uuid::new_v4()));
 
     let result = (|| -> Result<ImportedNotificationSound> {
         let source = File::open(source_path).context("无法读取选择的提示音文件")?;
@@ -259,7 +259,9 @@ mod tests {
         assert!(is_valid_custom_notification_sound_storage_key(
             "notification-sound-550e8400-e29b-41d4-a716-446655440000.wav"
         ));
-        assert!(!is_valid_custom_notification_sound_storage_key("../manbo.mp3"));
+        assert!(!is_valid_custom_notification_sound_storage_key(
+            "../manbo.mp3"
+        ));
         assert!(!is_valid_custom_notification_sound_storage_key(
             "notification-sound-not-a-uuid.mp3"
         ));
@@ -281,8 +283,11 @@ mod tests {
         let root = test_root();
         let source_path = root.join("picked-tone.MP3");
         fs::create_dir_all(&root).expect("create source directory");
-        fs::write(&source_path, include_bytes!("../../resources/sounds/manbo.mp3"))
-            .expect("write source audio");
+        fs::write(
+            &source_path,
+            include_bytes!("../../resources/sounds/manbo.mp3"),
+        )
+        .expect("write source audio");
         let paths = AppPaths::from_root(root.join("app"));
         paths.ensure().expect("create app paths");
 
@@ -310,12 +315,10 @@ mod tests {
 
         assert!(import_custom_notification_sound(&paths, &source_path).is_err());
         let sound_directory = paths.config_dir.join("notification-sounds");
-        assert!(
-            fs::read_dir(sound_directory)
-                .expect("read controlled sound directory")
-                .next()
-                .is_none()
-        );
+        assert!(fs::read_dir(sound_directory)
+            .expect("read controlled sound directory")
+            .next()
+            .is_none());
 
         let _ = fs::remove_dir_all(root);
     }
