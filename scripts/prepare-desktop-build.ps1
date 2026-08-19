@@ -1,3 +1,4 @@
+# 桌面构建前释放当前仓库 app.exe 的文件锁，避免构建产物被运行实例占用。
 param()
 
 $ErrorActionPreference = "Stop"
