@@ -117,7 +117,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pnpm test
+          TZ=Asia/Shanghai pnpm test
           pnpm lint
           pnpm build
           pnpm check:css
