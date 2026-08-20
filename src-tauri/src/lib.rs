@@ -2361,6 +2361,9 @@ fn toggle_floating_panel_native(shared: &Arc<Mutex<FloatingNativeState>>) {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
+fn toggle_floating_panel_native(_shared: &Arc<Mutex<FloatingNativeState>>) {}
+
 fn resolve_floating_notification_hit_regions_for_items(
     item_heights: &[i32],
     detail_open: bool,
