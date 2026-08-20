@@ -127,4 +127,3 @@ describe("ApiKeyList summary style", () => {
     expect(html).toContain("06/11 20:27");
   });
 });
-

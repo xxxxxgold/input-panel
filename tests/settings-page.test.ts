@@ -141,4 +141,3 @@ describe("SettingsPage site detail panel", () => {
     expect(calls).toEqual([`select:${site.id}`]);
   });
 });
-

@@ -176,4 +176,3 @@ describe("SubscriptionsPage layout", () => {
     expect(html).not.toContain("$13.47 / $500.00");
   });
 });
-
