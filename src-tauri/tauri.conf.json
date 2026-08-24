@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Input面板",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "identifier": "im.input.sub2api.monitor",
   "build": {
     "frontendDist": "../dist",

@@ -3790,6 +3790,8 @@ fn show_floating_panel_native(_shared: &Arc<Mutex<FloatingNativeState>>) {}
 #[cfg(not(target_os = "windows"))]
 fn hide_floating_panel_native(_shared: &Arc<Mutex<FloatingNativeState>>) {}
 #[cfg(not(target_os = "windows"))]
+fn toggle_floating_panel_native(_shared: &Arc<Mutex<FloatingNativeState>>) {}
+#[cfg(not(target_os = "windows"))]
 fn snap_orb_to_edge_native(_shared: &Arc<Mutex<FloatingNativeState>>) {}
 #[cfg(not(target_os = "windows"))]
 fn show_floating_context_menu_native(_shared: &Arc<Mutex<FloatingNativeState>>) {}

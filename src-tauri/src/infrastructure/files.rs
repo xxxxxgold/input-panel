@@ -3,7 +3,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, bail, Context, Result};
+#[cfg(target_os = "windows")]
+use anyhow::anyhow;
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 pub const DATABASE_FILE_NAME: &str = "config.sqlite";
