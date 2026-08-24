@@ -72,7 +72,7 @@ jobs:
         shell: bash
         run: |
           pnpm lint
-          pnpm test
+          TZ=Asia/Shanghai pnpm test
           pnpm check:css
           pnpm build:web
           cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
