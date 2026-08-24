@@ -48,6 +48,7 @@ pub fn apply(conn: &mut Connection) -> Result<()> {
     ensure_supported_user_version(conn)?;
     let usage_user_agent_fts_was_missing = !table_exists(conn, USAGE_USER_AGENT_FTS_TABLE)?;
     create_current_tables(conn)?;
+    migrate_site_retry_count_semantics(conn)?;
     migrate_legacy_subscription_switch_rules(conn)?;
     ensure_subscription_switch_rule_chain_nodes(conn)?;
     let usage_cache_was_rebuilt = ensure_account_usage_row_cache_columns(conn)?;
@@ -101,7 +102,7 @@ fn create_current_tables(conn: &Connection) -> Result<()> {
           name TEXT NOT NULL,
           base_url TEXT NOT NULL,
           failover_cooldown_seconds INTEGER NOT NULL DEFAULT 60,
-          max_attempts_per_address INTEGER NOT NULL DEFAULT 1,
+          retry_count_per_address INTEGER NOT NULL DEFAULT 0,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
@@ -160,6 +161,14 @@ fn create_current_tables(conn: &Connection) -> Result<()> {
           email TEXT NOT NULL,
           balance_warning REAL NOT NULL,
           last_login_at TEXT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS account_alert_preferences (
+          account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+          subscription_quota_alerts_enabled INTEGER NOT NULL DEFAULT 1
+            CHECK (subscription_quota_alerts_enabled IN (0, 1)),
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
@@ -1904,6 +1913,39 @@ fn load_table_columns(conn: &Connection, table_name: &str) -> Result<HashSet<Str
         .collect())
 }
 
+/// 将旧的“总访问次数”列等价迁移为“不含首次请求的重试次数”。
+fn migrate_site_retry_count_semantics(conn: &mut Connection) -> Result<()> {
+    let columns = load_table_columns(conn, "sites")?;
+    let has_legacy_column = columns.contains("max_attempts_per_address");
+    let has_retry_column = columns.contains("retry_count_per_address");
+
+    match (has_legacy_column, has_retry_column) {
+        (false, false) | (false, true) => Ok(()),
+        (true, true) => bail!(
+            "数据库结构冲突：sites 同时存在 max_attempts_per_address 和 retry_count_per_address"
+        ),
+        (true, false) => {
+            let transaction = conn.transaction()?;
+            transaction.execute(
+                "ALTER TABLE sites
+                 ADD COLUMN retry_count_per_address INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            transaction.execute(
+                "UPDATE sites
+                 SET retry_count_per_address = CASE
+                   WHEN max_attempts_per_address > 0 THEN max_attempts_per_address - 1
+                   ELSE 0
+                 END",
+                [],
+            )?;
+            transaction.execute("ALTER TABLE sites DROP COLUMN max_attempts_per_address", [])?;
+            transaction.commit()?;
+            Ok(())
+        }
+    }
+}
+
 fn table_exists(conn: &Connection, table_name: &str) -> Result<bool> {
     let exists: i64 = conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -2812,17 +2854,96 @@ mod tests {
         assert!(columns.contains("last_error"));
         let site_columns = load_table_columns(&conn, "sites").expect("read repaired site columns");
         assert!(site_columns.contains("failover_cooldown_seconds"));
-        assert!(site_columns.contains("max_attempts_per_address"));
+        assert!(site_columns.contains("retry_count_per_address"));
+        assert!(!site_columns.contains("max_attempts_per_address"));
         assert!(table_exists(&conn, "site_fallback_base_urls").expect("check fallback table"));
 
         let defaults: (i64, i64) = conn
             .query_row(
-                "SELECT failover_cooldown_seconds, max_attempts_per_address FROM sites LIMIT 1",
+                "SELECT failover_cooldown_seconds, retry_count_per_address FROM sites LIMIT 1",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .expect("read migrated site defaults");
-        assert_eq!(defaults, (60, 1));
+        assert_eq!(defaults, (60, 0));
+    }
+
+    #[test]
+    fn apply_migrates_legacy_site_attempt_budget_once() {
+        let mut conn = Connection::open_in_memory().expect("open sqlite");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE sites (
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              base_url TEXT NOT NULL,
+              failover_cooldown_seconds INTEGER NOT NULL DEFAULT 60,
+              max_attempts_per_address INTEGER NOT NULL DEFAULT 1,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+            INSERT INTO sites (
+              id, name, base_url, max_attempts_per_address, created_at, updated_at
+            ) VALUES
+              ('zero', 'Zero', 'https://zero.test', 0, '2026-08-19 00:00:00', '2026-08-19 00:00:00'),
+              ('one', 'One', 'https://one.test', 1, '2026-08-19 00:00:00', '2026-08-19 00:00:00'),
+              ('three', 'Three', 'https://three.test', 3, '2026-08-19 00:00:00', '2026-08-19 00:00:00');
+            "#,
+        )
+        .expect("seed legacy site attempt budget");
+
+        apply(&mut conn).expect("migrate legacy site attempt budget");
+        apply(&mut conn).expect("repeat site retry migration idempotently");
+
+        let columns = load_table_column_contracts(&conn, "sites").expect("read site columns");
+        assert!(!columns
+            .iter()
+            .any(|column| column.name == "max_attempts_per_address"));
+        let retry_column = columns
+            .iter()
+            .find(|column| column.name == "retry_count_per_address")
+            .expect("retry count column");
+        assert_eq!(retry_column.default_value.as_deref(), Some("0"));
+
+        let values = ["zero", "one", "three"]
+            .into_iter()
+            .map(|id| {
+                conn.query_row(
+                    "SELECT retry_count_per_address FROM sites WHERE id = ?1",
+                    [id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("read migrated retry count")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(values, vec![0, 0, 2]);
+    }
+
+    #[test]
+    fn apply_rejects_conflicting_site_retry_columns() {
+        let mut conn = Connection::open_in_memory().expect("open sqlite");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE sites (
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              base_url TEXT NOT NULL,
+              failover_cooldown_seconds INTEGER NOT NULL DEFAULT 60,
+              max_attempts_per_address INTEGER NOT NULL DEFAULT 1,
+              retry_count_per_address INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+            "#,
+        )
+        .expect("seed conflicting site columns");
+
+        let error = apply(&mut conn).expect_err("conflicting retry columns must fail");
+        assert!(error.to_string().contains("同时存在"));
+        let columns =
+            load_table_columns(&conn, "sites").expect("read preserved conflicting columns");
+        assert!(columns.contains("max_attempts_per_address"));
+        assert!(columns.contains("retry_count_per_address"));
     }
 
     #[test]

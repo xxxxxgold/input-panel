@@ -507,8 +507,11 @@ pub fn claim_due_subscription_quota_alert_channel(
          FROM subscription_quota_alert_events AS events
          JOIN subscription_quota_alert_subjects AS subjects
            ON subjects.subject_id = events.subject_id
+         LEFT JOIN account_alert_preferences AS preferences
+           ON preferences.account_id = subjects.account_id
          WHERE events.completed_at IS NULL
            {account_filter}
+           AND COALESCE(preferences.subscription_quota_alerts_enabled, 1) <> 0
            AND (
              (events.{status} = 'pending'
                AND (events.{next_attempt} IS NULL OR events.{next_attempt} <= ?1))
@@ -637,6 +640,40 @@ pub fn mark_subscription_quota_alert_channel_failed(
         &sql,
         params![error, next_attempt_at, updated_at, event_id, lease_id],
     )? == 1)
+}
+
+/// 在账号级总开关关闭后终止已认领但尚未调用外部通道的投递。
+pub fn mark_subscription_quota_alert_channel_unsupported(
+    db: &Database,
+    event_id: &str,
+    channel: SubscriptionQuotaAlertChannel,
+    lease_id: &str,
+    updated_at: &str,
+) -> Result<bool> {
+    let mut conn = db.connect()?;
+    let tx = conn.transaction()?;
+    let columns = channel_columns(channel);
+    let sql = format!(
+        "UPDATE subscription_quota_alert_events
+         SET {status} = 'unsupported',
+             {lease_id_column} = NULL,
+             {lease_until} = NULL,
+             {next_attempt} = NULL,
+             {last_error} = NULL,
+             updated_at = ?1
+         WHERE id = ?2 AND {status} = 'delivering' AND {lease_id_column} = ?3",
+        status = columns.status,
+        lease_id_column = columns.lease_id,
+        lease_until = columns.lease_until,
+        next_attempt = columns.next_attempt,
+        last_error = columns.last_error,
+    );
+    let updated = tx.execute(&sql, params![updated_at, event_id, lease_id])? == 1;
+    if updated {
+        mark_event_completed_if_terminal(&tx, event_id, updated_at)?;
+    }
+    tx.commit()?;
+    Ok(updated)
 }
 
 pub fn prune_completed_subscription_quota_alert_events_before(

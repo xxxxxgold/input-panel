@@ -34,18 +34,20 @@ pub async fn flush_due(
         account_id,
         SubscriptionQuotaAlertChannel::Business,
         &mut report,
-    )?;
+    )
+    .await?;
     flush_channel(
         app,
         &ctx,
         account_id,
         SubscriptionQuotaAlertChannel::Windows,
         &mut report,
-    )?;
+    )
+    .await?;
     Ok(report)
 }
 
-fn flush_channel(
+async fn flush_channel(
     app: &AppHandle,
     ctx: &super::AppContext,
     account_id: Option<&str>,
@@ -53,6 +55,11 @@ fn flush_channel(
     report: &mut SubscriptionQuotaAlertDispatchReport,
 ) -> Result<()> {
     for _ in 0..MAX_CHANNELS_PER_FLUSH {
+        // 必须先于 claim 获取，确保删除/清理提交后不会使用旧 payload 外发。
+        let _delivery_guard = ctx
+            .live_resources
+            .acquire_subscription_quota_alert_delivery_read_gate()
+            .await;
         let now = Utc::now();
         let now_storage = format_storage_timestamp(now);
         let lease_until = format_storage_timestamp(now + Duration::seconds(DELIVERY_LEASE_SECONDS));
@@ -68,6 +75,26 @@ fn flush_channel(
         else {
             break;
         };
+        // 与账号设置保存共用 gate。保存返回后，不能再调用任何外部投递通道。
+        let _gate = ctx
+            .live_resources
+            .acquire_subscription_quota_alert_account_gate(&claim.account_id)
+            .await;
+        match repositories::subscription_quota_alerts_enabled(&ctx.db, &claim.account_id)? {
+            Some(true) => {}
+            Some(false) => {
+                repositories::mark_subscription_quota_alert_channel_unsupported(
+                    &ctx.db,
+                    &claim.event_id,
+                    channel,
+                    &claim.lease_id,
+                    &now_storage_timestamp(),
+                )?;
+                continue;
+            }
+            // 账号已删除时，外键级联已移除 event；绝不能再使用已认领的 payload 外发。
+            None => continue,
+        }
         let dispatch_result = match channel {
             SubscriptionQuotaAlertChannel::Business => dispatch_business(app, ctx, &claim),
             SubscriptionQuotaAlertChannel::Windows => dispatch_windows(app, &claim),
@@ -163,8 +190,7 @@ fn dispatch_windows(app: &AppHandle, claim: &ClaimedSubscriptionQuotaAlertChanne
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (app, title, body);
-        bail!("当前平台不支持 Windows 通知。")
+        super::desktop_ui_service::show_non_windows_notification_with_sound(app, &title, &body)
     }
 }
 

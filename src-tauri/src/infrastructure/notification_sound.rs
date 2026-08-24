@@ -58,11 +58,6 @@ pub(crate) fn request_windows_system_notification_sound() -> Result<()> {
     request_windows_system_notification_sound_with(|style| unsafe { MessageBeep(style) })
 }
 
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn request_windows_system_notification_sound() -> Result<()> {
-    bail!("当前系统不支持 Windows 系统提示音")
-}
-
 /// 解析随应用打包的默认提示音，运行时不依赖开发机文件路径。
 pub(crate) fn default_notification_sound_path(app: &AppHandle) -> Result<PathBuf> {
     let path = app

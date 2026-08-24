@@ -26,6 +26,10 @@ describe("Topbar interaction source", () => {
     expect(floatingRailDrawerSource).toContain("function handleDrawerTabClick(panel: FloatingRailDrawerPanelKey)");
     expect(floatingRailDrawerSource).toContain("onClick={() => handleDrawerTabClick(item.key)}");
     expect(floatingRailDrawerStyles).toContain(".floating-rail-drawer.open .floating-rail-drawer-panel");
+    expect(floatingRailDrawerStyles).toMatch(/\.floating-rail-drawer\s*\{[^}]*pointer-events:\s*none;/);
+    expect(floatingRailDrawerStyles).toMatch(/\.floating-rail-drawer-tabs\s*\{[^}]*pointer-events:\s*auto;/);
+    expect(floatingRailDrawerStyles).toMatch(/\.floating-rail-drawer-panel\s*\{[^}]*pointer-events:\s*none;/);
+    expect(floatingRailDrawerStyles).toMatch(/\.floating-rail-drawer\.open \.floating-rail-drawer-panel\s*\{[^}]*pointer-events:\s*auto;/);
     expect(floatingRailDrawerStyles).not.toContain(".floating-rail-drawer:hover .floating-rail-drawer-panel");
     expect(floatingRailDrawerStyles).not.toContain(".floating-rail-drawer:focus-within");
   });

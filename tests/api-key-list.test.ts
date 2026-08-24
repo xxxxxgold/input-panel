@@ -4,20 +4,21 @@ import { describe, expect, it } from "vitest";
 
 import { ApiKeyList } from "../src/features/keys/components/ApiKeyList";
 import { OverviewPage } from "../src/pages/OverviewPage";
-import type { KeyRecord, OverviewPayload } from "../src/types";
-
-const sampleKey: KeyRecord = {
+import type { ManagedKeyRecord, OverviewPayload } from "../src/types";
+const sampleKey: ManagedKeyRecord = {
   id: "key-1",
   name: "codex++",
   groupId: 3,
   groupName: "CodeX Plus 年度",
   platform: "openai",
   status: "active",
-  lastUsedAt: "2026-06-11T20:27:00+08:00"
+  lastUsedAt: "2026-06-11T20:27:00+08:00",
+  rawKey: "sk-test-placeholder-not-a-real-key-00000000000000000000000000000000",
+  accountLabel: "主账号"
 };
 
 describe("ApiKeyList summary style", () => {
-  it("removes duplicated raw status fields and keeps status plus group info on the secondary row", () => {
+  it("keeps name and context on the first row, then renders masked raw key plus copy action on the second row", () => {
     const html = renderToStaticMarkup(
       createElement(ApiKeyList, {
         keys: [sampleKey]
@@ -27,16 +28,39 @@ describe("ApiKeyList summary style", () => {
     expect(html).toContain("api-key-summary-row");
     expect(html).toContain("status-pill ready");
     expect(html).toContain("codex++");
+    expect(html).toContain("api-key-summary-account-pill");
+    expect(html).toContain("主账号");
     expect(html).toContain("CodeX Plus 年度");
     expect(html).toContain("key-platform-pill openai");
+    expect(html).toContain("sk-tes...0000");
+    expect(html).toContain("api-key-summary-copy-button");
+    expect(html).toContain(">复制</button>");
     expect(html).toContain("最后使用时间：06/11 20:27");
     expect(html).not.toContain(">active</small>");
     expect(html).not.toContain(">active</span>");
+    expect(html).not.toContain("密钥 ID key-1");
     expect(html.indexOf("codex++")).toBeLessThan(html.indexOf("status-pill ready"));
-    expect(html.indexOf("status-pill ready")).toBeLessThan(html.indexOf("CodeX Plus 年度"));
+    expect(html.indexOf("status-pill ready")).toBeLessThan(html.indexOf("主账号"));
+    expect(html.indexOf("主账号")).toBeLessThan(html.indexOf("CodeX Plus 年度"));
+    expect(html.indexOf("CodeX Plus 年度")).toBeLessThan(html.indexOf("sk-tes...0000"));
+    expect(html.indexOf("sk-tes...0000")).toBeLessThan(html.indexOf(">复制</button>"));
   });
 
-  it("renders the overview all-account keys panel with the same summary row style", () => {
+  it("does not use the record id as a fake secret when rawKey is missing", () => {
+    const { rawKey: _rawKey, ...keyWithoutRawKey } = sampleKey;
+    const html = renderToStaticMarkup(
+      createElement(ApiKeyList, {
+        keys: [keyWithoutRawKey]
+      })
+    );
+
+    expect(html).toContain("原始密钥未返回");
+    expect(html).toContain("disabled=\"\"");
+    expect(html).not.toContain("密钥 ID key-1");
+    expect(html).not.toContain("sk-tes...0000");
+  });
+
+  it("renders the overview all-api-keys panel with the same summary row style", () => {
     const overview = {
       sites: [],
       accounts: [
@@ -112,10 +136,9 @@ describe("ApiKeyList summary style", () => {
         currentAccountStats: visibleSnapshot.stats,
         currentAccountSubscriptions: visibleSnapshot.subscriptions,
         subscriptionSummary: null,
-        allAccountKeys: visibleSnapshot.keys,
+        currentAccountKeys: visibleSnapshot.keys,
         currentAccountRecentUsage: visibleSnapshot.recentUsage,
-        usageStats: null,
-        usageStatsMode: "all-accounts"
+        usageStats: null
       })
     );
 
@@ -123,6 +146,9 @@ describe("ApiKeyList summary style", () => {
     expect(html).toContain("api-key-summary-row");
     expect(html).toContain("codex++");
     expect(html).toContain("CodeX Plus 年度");
+    expect(html).toContain("sk-tes...0000");
+    expect(html).toContain("api-key-summary-copy-button");
+    expect(html).not.toContain("密钥 ID key-1");
     expect(html).not.toContain(">active</span>");
     expect(html).toContain("06/11 20:27");
   });

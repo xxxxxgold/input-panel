@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import type {
+  AccountAlertPreferences,
+  AccountUpdateInput,
   AccountSyncStatusPayload,
   AccountInput,
   AccountRuntime,
@@ -101,30 +103,37 @@ export function listSiteFailoverTransitions(afterRevision: number) {
 }
 
 export function createAccount(payload: AccountInput) {
-  if (isTauriRuntime()) {
-    return invoke<AccountRuntime>("create_account", { payload });
-  }
-  return request<AccountRuntime>("/api/accounts", {
-    method: "POST",
-    body: JSON.stringify(payload)
+  return desktopOrHttp<AccountRuntime>({
+    command: "create_account",
+    args: { payload },
+    url: "/api/accounts",
+    init: {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
   });
 }
 
-export function updateAccount(
-  accountId: string,
-  payload: Partial<Omit<AccountInput, "siteId">>
-) {
-  if (isTauriRuntime()) {
-    return invoke<AccountRuntime>("update_account", {
-      accountId,
-      label: payload.label,
-      email: payload.email,
-      balanceWarning: payload.balanceWarning
-    });
-  }
-  return request<AccountRuntime>(`/api/accounts/${accountId}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload)
+export function updateAccount(accountId: string, payload: AccountUpdateInput) {
+  return desktopOrHttp<AccountRuntime>({
+    command: "update_account",
+    args: { accountId, payload },
+    url: `/api/accounts/${accountId}`,
+    init: {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }
+  });
+}
+
+export function queryAccountAlertPreferences(accountId: string) {
+  return desktopOrHttp<AccountAlertPreferences>({
+    command: "query_account_alert_preferences",
+    args: { accountId },
+    url: `/api/accounts/${accountId}/alert-preferences/query`,
+    init: {
+      method: "POST"
+    }
   });
 }
 

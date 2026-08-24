@@ -1,14 +1,16 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  DISABLED_BALANCE_WARNING,
-  normalizeBalanceWarning
+  DEFAULT_LOW_BALANCE_THRESHOLD,
+  alertPreferencesFromLegacyBalanceWarning
 } from "../../account-warning";
 import type { SaveFeedbackHandler } from "../../shared/lib/save-feedback";
 import type {
+  AccountAlertPreferences,
   AccountInput,
   AccountRuntime,
   AccountSyncStatusRecord,
+  AccountUpdateInput,
   SiteEndpointTestResult,
   SiteFailoverStatusPayload,
   SiteRecord
@@ -22,6 +24,7 @@ import {
   getSiteFailoverStatus,
   loginAccount,
   persistAccountCredential,
+  queryAccountAlertPreferences,
   removeAccount,
   removeSite,
   syncAccountData,
@@ -49,11 +52,23 @@ export interface SiteAddressActionState {
   error: string | null;
 }
 
-const defaultAccountForm: AccountInput = {
+/** 账号弹窗的本地草稿始终具备完整提醒偏好，避免兼容输入的可选字段渗入 UI。 */
+export interface AccountFormDraft {
+  siteId: string;
+  label: string;
+  email: string;
+  alertPreferences: AccountAlertPreferences;
+}
+
+const defaultAccountForm: AccountFormDraft = {
   siteId: "",
   label: "",
   email: "",
-  balanceWarning: DISABLED_BALANCE_WARNING
+  alertPreferences: {
+    lowBalanceEnabled: false,
+    lowBalanceThreshold: DEFAULT_LOW_BALANCE_THRESHOLD,
+    subscriptionQuotaAlertsEnabled: true
+  }
 };
 
 export interface AccountLoginModalState {
@@ -130,9 +145,10 @@ export function useAccountWorkspace({
   const [siteFormOpen, setSiteFormOpen] = useState(false);
   const [accountFormOpen, setAccountFormOpen] = useState(false);
   const [accountSitePickerOpen, setAccountSitePickerOpen] = useState(false);
-  const [accountBalanceWarningInput, setAccountBalanceWarningInput] = useState(
-    String(DISABLED_BALANCE_WARNING)
+  const [accountLowBalanceThresholdInput, setAccountLowBalanceThresholdInput] = useState(
+    String(DEFAULT_LOW_BALANCE_THRESHOLD)
   );
+  const [accountPreferencesLoading, setAccountPreferencesLoading] = useState(false);
   const [accountPassword, setAccountPassword] = useState("");
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
   const [accountSearch, setAccountSearch] = useState("");
@@ -148,8 +164,11 @@ export function useAccountWorkspace({
   const [siteStatusServerOffsetMs, setSiteStatusServerOffsetMs] = useState(0);
   const [siteStatusNowMs, setSiteStatusNowMs] = useState(Date.now());
   const [siteAddressActions, setSiteAddressActions] = useState<Record<string, SiteAddressActionState>>({});
-  const [accountForm, setAccountForm] = useState<AccountInput>(defaultAccountForm);
+  const [accountForm, setAccountForm] = useState<AccountFormDraft>(defaultAccountForm);
   const [accountFormSubmitting, setAccountFormSubmitting] = useState(false);
+  const [accountPreferencesReady, setAccountPreferencesReady] = useState(true);
+  const [accountPreferencesLoadError, setAccountPreferencesLoadError] = useState<string | null>(null);
+  const [accountPreferencesValidationError, setAccountPreferencesValidationError] = useState<string | null>(null);
   const siteFormRef = useRef(siteForm);
   const siteRequestGenerationRef = useRef(0);
   const siteStatusRequestSequenceRef = useRef(0);
@@ -157,6 +176,7 @@ export function useAccountWorkspace({
   const siteExpiredStatusRefreshKeyRef = useRef<string | null>(null);
   const siteFormSubmitInFlightRef = useRef(false);
   const accountFormSubmitInFlightRef = useRef(false);
+  const accountPreferencesRequestSequenceRef = useRef(0);
   siteFormRef.current = siteForm;
   const updateSiteFormState: typeof setSiteForm = (value) => {
     setSiteFormError(null);
@@ -482,51 +502,103 @@ export function useAccountWorkspace({
   }
 
   function openNewAccount(siteId?: string) {
+    accountPreferencesRequestSequenceRef.current += 1;
     setEditingAccount(null);
     setAccountSitePickerOpen(false);
     setAccountPassword("");
     const nextForm = {
       ...defaultAccountForm,
-      siteId: siteId ?? selectedSiteId ?? sites[0]?.id ?? ""
+      siteId: siteId ?? selectedSiteId ?? sites[0]?.id ?? "",
+      alertPreferences: { ...defaultAccountForm.alertPreferences }
     };
     setAccountForm(nextForm);
-    setAccountBalanceWarningInput(String(nextForm.balanceWarning));
+    setAccountLowBalanceThresholdInput(String(DEFAULT_LOW_BALANCE_THRESHOLD));
+    setAccountPreferencesReady(true);
+    setAccountPreferencesLoadError(null);
+    setAccountPreferencesValidationError(null);
+    setAccountPreferencesLoading(false);
     setAccountFormOpen(true);
   }
 
-  function openEditAccount(account: AccountRuntime) {
+  async function openEditAccount(account: AccountRuntime) {
+    const requestSequence = accountPreferencesRequestSequenceRef.current + 1;
+    accountPreferencesRequestSequenceRef.current = requestSequence;
     setEditingAccount(account);
     setAccountSitePickerOpen(false);
     setAccountPassword("");
+    setAccountPreferencesReady(false);
+    setAccountPreferencesLoadError(null);
+    setAccountPreferencesValidationError(null);
+    setAccountPreferencesLoading(true);
     const nextForm = {
       siteId: account.siteId,
       label: account.label,
       email: account.email,
-      balanceWarning: account.balanceWarning
+      alertPreferences: alertPreferencesFromLegacyBalanceWarning(account.balanceWarning)
     };
     setAccountForm(nextForm);
-    setAccountBalanceWarningInput(String(nextForm.balanceWarning));
+    setAccountLowBalanceThresholdInput(String(nextForm.alertPreferences.lowBalanceThreshold));
     setAccountFormOpen(true);
+    try {
+      const preferences = await queryAccountAlertPreferences(account.id);
+      if (requestSequence !== accountPreferencesRequestSequenceRef.current) {
+        return;
+      }
+      setAccountForm((previous) => ({ ...previous, alertPreferences: preferences }));
+      setAccountLowBalanceThresholdInput(String(preferences.lowBalanceThreshold));
+      setAccountPreferencesReady(true);
+    } catch (cause) {
+      if (requestSequence !== accountPreferencesRequestSequenceRef.current) {
+        return;
+      }
+      setAccountPreferencesLoadError((cause as Error).message);
+    } finally {
+      if (requestSequence === accountPreferencesRequestSequenceRef.current) {
+        setAccountPreferencesLoading(false);
+      }
+    }
   }
 
   function closeAccountForm() {
     if (accountFormSubmitting) {
       return;
     }
+    accountPreferencesRequestSequenceRef.current += 1;
     setAccountFormOpen(false);
     setAccountSitePickerOpen(false);
+    setAccountPreferencesLoading(false);
+    setAccountPreferencesLoadError(null);
+    setAccountPreferencesValidationError(null);
   }
 
-  function handleBalanceWarningInput(value: string) {
-    setAccountBalanceWarningInput(value);
+  function handleLowBalanceThresholdInput(value: string) {
+    setAccountLowBalanceThresholdInput(value);
+    setAccountPreferencesValidationError(null);
     if (value.trim() === "" || value === "-" || value === "." || value === "-.") {
       return;
     }
     const parsed = Number(value);
-    if (!Number.isFinite(parsed)) {
+    if (!Number.isFinite(parsed) || parsed < 0) {
       return;
     }
-    setAccountForm((prev) => ({ ...prev, balanceWarning: normalizeBalanceWarning(parsed) }));
+    setAccountForm((prev) => ({
+      ...prev,
+      alertPreferences: {
+        ...prev.alertPreferences,
+        lowBalanceThreshold: parsed
+      }
+    }));
+  }
+
+  function updateAccountAlertPreferences(update: Partial<AccountAlertPreferences>) {
+    setAccountPreferencesValidationError(null);
+    setAccountForm((previous) => ({
+      ...previous,
+      alertPreferences: {
+        ...previous.alertPreferences,
+        ...update
+      }
+    }));
   }
 
   function openAccountManager(account?: AccountRuntime | null) {
@@ -653,6 +725,25 @@ export function useAccountWorkspace({
       return;
     }
 
+    if (accountPreferencesLoading || !accountPreferencesReady) {
+      if (!accountPreferencesLoadError) {
+        setAccountPreferencesValidationError("提醒偏好尚未准备完成，请稍后重试。");
+      }
+      return;
+    }
+    const alertPreferences = accountForm.alertPreferences;
+    const threshold = Number(accountLowBalanceThresholdInput);
+    if (
+      alertPreferences.lowBalanceEnabled &&
+      (!Number.isFinite(threshold) || threshold < 0 || accountLowBalanceThresholdInput.trim() === "")
+    ) {
+      setAccountPreferencesValidationError("低余额提醒阈值必须是大于等于 0 的有限数字。");
+      return;
+    }
+    const normalizedAlertPreferences = {
+      ...alertPreferences,
+      lowBalanceThreshold: alertPreferences.lowBalanceEnabled ? threshold : alertPreferences.lowBalanceThreshold
+    };
     accountFormSubmitInFlightRef.current = true;
     setAccountFormSubmitting(true);
     const password = accountPassword.trim();
@@ -666,11 +757,12 @@ export function useAccountWorkspace({
     setError(null);
     try {
       if (editingAccount) {
-        await updateAccount(editingAccount.id, {
+        const payload: AccountUpdateInput = {
           label: accountForm.label,
           email: accountForm.email,
-          balanceWarning: accountForm.balanceWarning
-        });
+          alertPreferences: normalizedAlertPreferences
+        };
+        await updateAccount(editingAccount.id, payload);
         let credentialError: string | null = null;
         if (password) {
           try {
@@ -693,7 +785,11 @@ export function useAccountWorkspace({
           message: password ? "账号信息和本地密码已更新。" : "账号信息已更新。"
         });
       } else {
-        const created = await createAccount(accountForm);
+        const payload: AccountInput = {
+          ...accountForm,
+          alertPreferences: normalizedAlertPreferences
+        };
+        const created = await createAccount(payload);
         let followupError: string | null = null;
         setSelectedAccountId(created.id);
         setSelectedSiteId(created.siteId);
@@ -927,8 +1023,12 @@ export function useAccountWorkspace({
     selectedAccountSite,
     accountPassword,
     setAccountPassword,
-    accountBalanceWarningInput,
-    handleBalanceWarningInput,
+    accountLowBalanceThresholdInput,
+    handleLowBalanceThresholdInput,
+    updateAccountAlertPreferences,
+    accountPreferencesLoading,
+    accountPreferencesReady,
+    accountPreferencesError: accountPreferencesLoadError ?? accountPreferencesValidationError,
     accountManagerOpen,
     accountSearch,
     setAccountSearch,

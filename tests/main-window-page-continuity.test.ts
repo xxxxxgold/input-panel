@@ -2,10 +2,7 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
-const mainWindowApp = readFileSync(
-  new URL("../src/app/MainWindowApp.tsx", import.meta.url),
-  "utf8"
-).replace(/\r\n?/g, "\n");
+const mainWindowApp = readFileSync(new URL("../src/app/MainWindowApp.tsx", import.meta.url), "utf8");
 
 function sourceBetween(start: string, end: string) {
   const startIndex = mainWindowApp.indexOf(start);
@@ -40,6 +37,13 @@ describe("MainWindowApp page continuity wiring", () => {
   });
 
   it("keeps cold account and usage pages local, with an error-aware retry for their own resources", () => {
+    expect(mainWindowApp).toContain('primaryResources: readonly AccountDataResourceKey[]');
+    expect(mainWindowApp).toContain('diagnosticResources: readonly AccountDataResourceKey[] = primaryResources');
+    expect(mainWindowApp).toContain('const primaryEntries = primaryResources.map((resource) => resourcePresentation[resource]);');
+    expect(mainWindowApp).toContain('const diagnosticEntries = diagnosticResources.map((resource) => resourcePresentation[resource]);');
+    expect(mainWindowApp).toContain('["managedKeys"],\n    KEYS_PAGE_RESOURCES');
+    expect(mainWindowApp).toContain('["subscriptions"],\n    SUBSCRIPTIONS_PAGE_RESOURCES');
+
     const keys = sourceBetween('{nav === "keys" && (', '{nav === "usage" && (');
     expect(keys).toContain("shouldRenderColdPageState(keysPageDataState, Boolean(selectedAccountId))");
     expect(keys).toContain('<WorkspaceLoadingState\n                  page="keys"');
@@ -52,12 +56,14 @@ describe("MainWindowApp page continuity wiring", () => {
     expect(usage).toContain('<WorkspaceLoadingState\n                  page="usage"');
     expect(usage).toContain("error={presentation.lastError}");
     expect(usage).toContain('refreshUsageWorkspaceSilently({ mode: "background" })');
+    expect(usage).toContain("usageModelSummariesLoading={usageModelSummariesInitialLoading}");
 
     const modelStats = sourceBetween('{nav === "modelStats" && (', '{nav === "subscriptions" && (');
     expect(modelStats).toContain("shouldRenderColdPageState(presentation, Boolean(selectedAccountId))");
     expect(modelStats).toContain('<WorkspaceLoadingState\n                  page="modelStats"');
     expect(modelStats).toContain("error={presentation.lastError}");
     expect(modelStats).toContain('refreshUsageSurfaceSilently("modelStats", { mode: "background" })');
+    expect(modelStats).toContain("loading={usageModelSummariesInitialLoading}");
 
     const subscriptions = sourceBetween('{nav === "subscriptions" && (', '{nav === "trends" && (');
     expect(subscriptions).toContain("shouldRenderColdPageState(subscriptionsPageDataState, Boolean(selectedAccountId))");
@@ -65,6 +71,11 @@ describe("MainWindowApp page continuity wiring", () => {
     expect(subscriptions).toContain("error={subscriptionsPageDataState.lastError}");
     expect(subscriptions).toContain("accountDataWorkspace.refreshResources(");
     expect(subscriptions).toContain('{ force: true, mode: "background" }');
+    expect(subscriptions).toContain("subscriptionQuotaAlerts: true");
+    expect(subscriptions).toContain("subscriptionQuotaAlerts={accountDataWorkspace.subscriptionQuotaAlerts}");
+    expect(subscriptions).toContain("onRefreshSubscriptionQuotaAlerts={async (saved, accountId) => {");
+    expect(subscriptions).toContain("applySubscriptionQuotaAlertConfig(accountId, saved)");
+    expect(subscriptions).toContain("{ subscriptionQuotaAlerts: true }");
   });
 
   it("does not add an artificial cold data gate to system settings or the service-status terminal", () => {
@@ -79,12 +90,26 @@ describe("MainWindowApp page continuity wiring", () => {
     expect(systemSettings).not.toContain("WorkspaceLoadingState");
   });
 
+  it("does not retain a standalone key usage page or route", () => {
+    expect(mainWindowApp).not.toContain("KeyUsagePage");
+    expect(mainWindowApp).not.toContain('{nav === "keyUsage" && (');
+  });
+
   it("keeps retained-snapshot failures actionable without a normal refresh banner", () => {
     const workspaceFrame = sourceBetween("          <WorkspaceFrame", "            onRetry={() => void retryCurrentWorkspaceSurface({");
 
     expect(workspaceFrame).not.toContain("refreshing={");
     expect(workspaceFrame).toContain("refreshError={workspaceHasRetainedSnapshot ? resolveWorkspaceRefreshError({");
     expect(workspaceFrame).toContain("}) : null}");
+  });
+
+  it("renders a retryable page-local error when the overview fails before its first snapshot", () => {
+    const overview = sourceBetween('{nav === "overview" && overview && (', '{nav === "serviceStatus" && (');
+
+    expect(overview).toContain('nav === "overview" && !overview && !loading && overviewLastError');
+    expect(overview).toContain('<WorkspaceLoadingState\n          page="overview"');
+    expect(overview).toContain("error={overviewLastError}");
+    expect(overview).toContain("retryOverviewForCurrentScope().catch(() => undefined)");
   });
 
   it("lets the public service-status snapshot clear the frame loading overlay independently", () => {

@@ -31,9 +31,9 @@ use crate::contracts::{
     SubscriptionQuotaAlertUpsertInput, SubscriptionRecord, SubscriptionSummaryPayload,
     SubscriptionSwitchEvaluationResult, SubscriptionSwitchRuleRecord,
     SubscriptionSwitchRuleUpsertInput, SyncAccountDataInput, SyncFailureResponse,
-    TransportErrorPayload, UpstreamNetworkConfigPayload, UsageAnalyticsPayload, UsageCursorPage, UsageExtremesPayload,
-    UsageFacetPage, UsageFacetRequest, UsageFilter, UsageInsightsPayload, UsageListRequest,
-    UsageRow, UsageStatsRecord, UsageTrendPayload, UserProfileRecord,
+    TransportErrorPayload, UpstreamNetworkConfigPayload, UsageAnalyticsPayload, UsageCursorPage,
+    UsageExtremesPayload, UsageFacetPage, UsageFacetRequest, UsageFilter, UsageInsightsPayload,
+    UsageListRequest, UsageRow, UsageStatsRecord, UsageTrendPayload, UserProfileRecord,
 };
 
 fn sync_keep_floating_panel_visible(app: &AppHandle, prefs: &DesktopUiPrefs) {
@@ -133,7 +133,9 @@ pub async fn get_overview_shell_lite(
 }
 
 #[tauri::command]
-pub async fn get_service_status(ctx: State<'_, AppContext>) -> Result<ServiceStatusPayload, String> {
+pub async fn get_service_status(
+    ctx: State<'_, AppContext>,
+) -> Result<ServiceStatusPayload, String> {
     service_status_service::get_service_status(&ctx)
         .await
         .map_err(to_message)
@@ -399,12 +401,13 @@ pub fn switch_app_mode(
     let mut main_window_activation_applied = false;
     match launch_mode {
         AppLaunchMode::Main => {
-            main_window_activation_applied = crate::request_main_window_activation_after_startup_handoff(
-                &app,
-                &prefs,
-                None,
-                "切换到主窗口模式",
-            )?;
+            main_window_activation_applied =
+                crate::request_main_window_activation_after_startup_handoff(
+                    &app,
+                    &prefs,
+                    None,
+                    "切换到主窗口模式",
+                )?;
         }
         AppLaunchMode::Floating => {
             if let Some(window) = &main {
@@ -633,8 +636,10 @@ pub fn update_site(
 }
 
 #[tauri::command]
-pub fn remove_site(ctx: State<'_, AppContext>, site_id: String) -> Result<bool, String> {
-    site_service::remove_site(&ctx, &site_id).map_err(to_message)
+pub async fn remove_site(ctx: State<'_, AppContext>, site_id: String) -> Result<bool, String> {
+    site_service::remove_site(&ctx, &site_id)
+        .await
+        .map_err(to_message)
 }
 
 /// 读取站点主备地址的共享运行状态。
@@ -692,28 +697,82 @@ pub fn create_account(
 }
 
 #[tauri::command]
-pub fn update_account(
+pub async fn update_account(
+    app: AppHandle,
     ctx: State<'_, AppContext>,
     account_id: String,
-    label: Option<String>,
-    email: Option<String>,
-    balance_warning: Option<f64>,
+    payload: crate::contracts::AccountUpdateInput,
 ) -> Result<AccountRuntime, String> {
-    account_service::update_account(&ctx, &account_id, label, email, balance_warning)
+    let outcome = account_service::update_account(&ctx, &account_id, payload)
+        .await
+        .map_err(to_message)?;
+    if matches!(
+        outcome.subscription_quota_alert_transition,
+        crate::infrastructure::sqlite::repositories::SubscriptionQuotaAlertPreferenceTransition::Enabled
+    ) {
+        match subscription_snapshot_service::refresh_and_process(
+            &ctx,
+            &account_id,
+            false,
+            crate::application::upstream_service::UpstreamRequestPolicy::ReadOnly,
+            SubscriptionSnapshotOrigin::ConfigSave,
+            subscription_quota_alert_reenable_capabilities(),
+        )
+        .await
+        {
+            Ok(_) => {
+                if let Err(error) =
+                    subscription_quota_alert_dispatcher::flush_due(&app, Some(&account_id)).await
+                {
+                    log::warn!(
+                        "[desktop] 账号 {} 重新开启额度提醒后的投递失败，将在后续刷新重试: {}",
+                        account_id,
+                        error
+                    );
+                }
+            }
+            Err(error) => log::warn!(
+                "[desktop] 账号 {} 已重新开启额度提醒，但即时重新评估失败，将在后续刷新重试: {}",
+                account_id,
+                error
+            ),
+        }
+    }
+    Ok(outcome.account)
+}
+
+/// 重新开启额度提醒只消费额度状态机，不得顺带执行候补订阅切换。
+fn subscription_quota_alert_reenable_capabilities() -> SubscriptionProcessingCapabilities {
+    SubscriptionProcessingCapabilities::desktop(false)
+}
+
+/// 读取账号表单所需的显式提醒偏好。
+#[tauri::command]
+pub fn query_account_alert_preferences(
+    ctx: State<'_, AppContext>,
+    account_id: String,
+) -> Result<crate::contracts::AccountAlertPreferences, String> {
+    account_service::query_account_alert_preferences(&ctx, &account_id).map_err(to_message)
+}
+
+#[tauri::command]
+pub async fn remove_account(
+    ctx: State<'_, AppContext>,
+    account_id: String,
+) -> Result<bool, String> {
+    account_service::remove_account(&ctx, &account_id)
+        .await
         .map_err(to_message)
 }
 
 #[tauri::command]
-pub fn remove_account(ctx: State<'_, AppContext>, account_id: String) -> Result<bool, String> {
-    account_service::remove_account(&ctx, &account_id).map_err(to_message)
-}
-
-#[tauri::command]
-pub fn clear_runtime_data(
+pub async fn clear_runtime_data(
     ctx: State<'_, AppContext>,
     remove_sites_and_accounts: bool,
 ) -> Result<bool, String> {
-    maintenance_service::clear_runtime_data(&ctx, remove_sites_and_accounts).map_err(to_message)
+    maintenance_service::clear_runtime_data(&ctx, remove_sites_and_accounts)
+        .await
+        .map_err(to_message)
 }
 
 #[tauri::command]
@@ -1434,7 +1493,7 @@ fn map_codex_radar_command_result<T>(result: anyhow::Result<T>) -> Result<T, Str
 mod tests {
     use super::{
         desktop_ui_prefs_require_floating_notification_reconfigure, map_codex_radar_command_result,
-        to_transport_error,
+        subscription_quota_alert_reenable_capabilities, to_transport_error,
     };
     use crate::application::site_failover_service::{SiteFailoverError, SiteFailoverErrorCode};
     use crate::contracts::{
@@ -1532,6 +1591,14 @@ mod tests {
                 ..DesktopUiPrefsPatch::default()
             }
         ));
+    }
+
+    #[test]
+    fn reenable_quota_alerts_does_not_evaluate_subscription_switch_rules() {
+        let capabilities = subscription_quota_alert_reenable_capabilities();
+
+        assert!(capabilities.evaluate_quota_alerts);
+        assert!(!capabilities.evaluate_switch_rules);
     }
 
     #[test]

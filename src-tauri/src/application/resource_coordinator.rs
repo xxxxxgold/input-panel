@@ -5,7 +5,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
-use tokio::sync::{oneshot, Mutex, OwnedMutexGuard, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{
+    oneshot, Mutex, OwnedMutexGuard, OwnedRwLockReadGuard, OwnedRwLockWriteGuard,
+    OwnedSemaphorePermit, RwLock, Semaphore,
+};
 
 const DEFAULT_RESOURCE_TTL: Duration = Duration::from_secs(30);
 pub(crate) const MAX_USAGE_PAGE_SLOTS: usize = 16;
@@ -54,6 +57,7 @@ pub struct ResourceCoordinator {
     usage_account_gates: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     subscription_switch_account_gates: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     subscription_quota_alert_account_gates: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    subscription_quota_alert_delivery_gate: Arc<RwLock<()>>,
     completed_usage_sync_accounts: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -74,6 +78,7 @@ impl ResourceCoordinator {
             usage_account_gates: Arc::new(Mutex::new(HashMap::new())),
             subscription_switch_account_gates: Arc::new(Mutex::new(HashMap::new())),
             subscription_quota_alert_account_gates: Arc::new(Mutex::new(HashMap::new())),
+            subscription_quota_alert_delivery_gate: Arc::new(RwLock::new(())),
             completed_usage_sync_accounts: Arc::new(Mutex::new(HashSet::new())),
         }
     }
@@ -154,6 +159,24 @@ impl ResourceCoordinator {
         self.subscription_quota_alert_account_gate(account_id)
             .await
             .lock_owned()
+            .await
+    }
+
+    /// 将额度提醒的单次认领和投递视为可等待的读操作。
+    pub async fn acquire_subscription_quota_alert_delivery_read_gate(
+        &self,
+    ) -> OwnedRwLockReadGuard<()> {
+        Arc::clone(&self.subscription_quota_alert_delivery_gate)
+            .read_owned()
+            .await
+    }
+
+    /// 在删除站点或清理运行数据期间阻止新的额度提醒投递。
+    pub async fn acquire_subscription_quota_alert_delivery_write_gate(
+        &self,
+    ) -> OwnedRwLockWriteGuard<()> {
+        Arc::clone(&self.subscription_quota_alert_delivery_gate)
+            .write_owned()
             .await
     }
 
@@ -681,6 +704,69 @@ mod tests {
             .try_acquire_subscription_switch_account_gate("account-1")
             .await
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn quota_alert_delivery_lifecycle_waits_for_dispatch_and_blocks_new_dispatches() {
+        let coordinator = ResourceCoordinator::default();
+        let dispatch_guard = coordinator
+            .acquire_subscription_quota_alert_delivery_read_gate()
+            .await;
+        let concurrent_dispatch_guard = tokio::time::timeout(
+            Duration::from_secs(1),
+            coordinator.acquire_subscription_quota_alert_delivery_read_gate(),
+        )
+        .await
+        .expect("independent deliveries share the lifecycle read gate");
+        drop(concurrent_dispatch_guard);
+        let (writer_acquired_sender, mut writer_acquired_receiver) =
+            tokio::sync::oneshot::channel();
+        let (release_writer_sender, release_writer_receiver) = tokio::sync::oneshot::channel();
+        let writer = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move {
+                let _writer_guard = coordinator
+                    .acquire_subscription_quota_alert_delivery_write_gate()
+                    .await;
+                let _ = writer_acquired_sender.send(());
+                let _ = release_writer_receiver.await;
+            })
+        };
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut writer_acquired_receiver,)
+                .await
+                .is_err()
+        );
+
+        drop(dispatch_guard);
+        tokio::time::timeout(Duration::from_secs(1), &mut writer_acquired_receiver)
+            .await
+            .expect("destructive writer acquires after active dispatch completes")
+            .expect("destructive writer signals acquisition");
+
+        let mut late_dispatch = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move {
+                let _dispatch_guard = coordinator
+                    .acquire_subscription_quota_alert_delivery_read_gate()
+                    .await;
+            })
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut late_dispatch)
+                .await
+                .is_err()
+        );
+
+        release_writer_sender
+            .send(())
+            .expect("release destructive writer");
+        writer.await.expect("destructive writer task");
+        tokio::time::timeout(Duration::from_secs(1), &mut late_dispatch)
+            .await
+            .expect("new dispatch resumes after destructive write")
+            .expect("new dispatch task");
     }
 
     #[tokio::test]

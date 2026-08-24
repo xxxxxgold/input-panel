@@ -2,7 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createElement } from "react";
+import { createElement, useState } from "react";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -216,6 +216,43 @@ function renderInteractiveDrawer(overrides: Partial<Parameters<typeof FloatingRa
       ...overrides
     })
   );
+}
+
+function renderStatefulDrawer(overrides: Partial<Parameters<typeof FloatingRailDrawer>[0]> = {}) {
+  function DrawerHarness() {
+    const [activePanel, setActivePanel] = useState<FloatingRailDrawerPanelKey | null>(null);
+
+    return createElement(FloatingRailDrawer, {
+      activePanel,
+      onActivePanelChange: setActivePanel,
+      selectedSite,
+      sitePublicEndpoints,
+      sitePublicEndpointsLoading: false,
+      sitePublicEndpointsSyncing: false,
+      sitePublicEndpointsPinging: false,
+      sitePublicEndpointsLastError: null,
+      serviceStatus,
+      serviceStatusLoading: false,
+      serviceStatusRequestInFlight: false,
+      serviceStatusLastError: null,
+      serviceStatusRefreshIntervalSeconds: 9,
+      codexRadarModelIq,
+      codexRadarModelIqLoading: false,
+      codexRadarModelIqRefreshing: false,
+      codexRadarModelIqIsStale: false,
+      codexRadarModelIqLastError: null,
+      usageStatusLabel: "1 个有效订阅",
+      subscriptionCount: 1,
+      subscriptionPreviewRecords: subscriptions,
+      onRefreshServiceStatus: () => {},
+      onRefreshCodexRadarModelIq: () => {},
+      onOpenServiceStatus: () => {},
+      onOpenSubscriptions: () => {},
+      ...overrides
+    });
+  }
+
+  return render(createElement(DrawerHarness));
 }
 
 afterEach(() => {
@@ -584,6 +621,11 @@ describe("FloatingRailDrawer", () => {
     expect(styles).toContain("--floating-rail-panel-width");
     expect(styles).toContain("transform: translateX(100%);");
     expect(styles).toContain(".floating-rail-drawer.open .floating-rail-drawer-panel");
+    expect(styles).toMatch(/\.floating-rail-drawer\s*\{[^}]*pointer-events:\s*none;/);
+    expect(styles).toMatch(/\.floating-rail-drawer-tabs\s*\{[^}]*pointer-events:\s*auto;/);
+    expect(styles).toMatch(/\.floating-rail-drawer-tab\s*\{[^}]*pointer-events:\s*auto;/);
+    expect(styles).toMatch(/\.floating-rail-drawer-panel\s*\{[^}]*pointer-events:\s*none;/);
+    expect(styles).toMatch(/\.floating-rail-drawer\.open \.floating-rail-drawer-panel\s*\{[^}]*pointer-events:\s*auto;/);
     expect(styles).toContain("justify-content: flex-start;");
     expect(styles).toMatch(/\.floating-rail-drawer-panel-scroll\s*\{[\s\S]*padding: 10px;[\s\S]*gap: 8px;/);
     expect(styles).toContain(".topbar-endpoint-latency-dot.fast");
@@ -626,6 +668,10 @@ describe("FloatingRailDrawer", () => {
     expect(styles).toMatch(
       /\.workspace-floating-rail-host > \.workspace-window-shell > \.workspace\s*\{[^}]*padding-right:\s*48px;/
     );
+    expect(styles).toMatch(/\.floating-rail-drawer-panel-scroll\s*\{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/);
+    expect(styles).toMatch(/@media \(max-width: 760px\)[\s\S]*?\.topbar-service-status-title-row\s*\{[^}]*flex-wrap:\s*wrap;/);
+    expect(styles).toMatch(/@media \(max-width: 760px\)[\s\S]*?\.topbar-service-status-heading strong\s*\{[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/);
+    expect(styles).toMatch(/@media \(max-width: 760px\)[\s\S]*?\.topbar-service-status-title-row \.topbar-service-status-hint\s*\{[^}]*flex:\s*1 1 100%;[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/);
     expect(styles).toMatch(
       /\.workspace-floating-rail-host \.workspace-subtitle\s*\{[\s\S]*white-space: normal;/
     );
@@ -653,6 +699,62 @@ describe("FloatingRailDrawer", () => {
     expect(source).toContain("DRAWER_SCROLL_REVEAL_DELAY_MS");
     expect(source).toContain("onClick={() => handleDrawerTabClick(item.key)}");
     expect(source).not.toContain("pinnedOpenRef");
+  });
+
+  it("keeps all four collapsed buttons operable while the transparent outer rail is inert", () => {
+    const { getByLabelText, getAllByRole } = renderStatefulDrawer();
+    const drawer = getByLabelText("悬浮导航抽屉");
+    const panel = getByLabelText("快捷详情抽屉");
+    const buttons = getAllByRole("button").filter((button) =>
+      button.getAttribute("aria-controls") === "floating-rail-drawer-panel"
+    );
+
+    expect(buttons).toHaveLength(4);
+    for (const button of buttons) {
+      expect(button.getAttribute("aria-expanded")).toBe("false");
+      expect(button.getAttribute("aria-controls")).toBe("floating-rail-drawer-panel");
+    }
+
+    fireEvent.mouseEnter(buttons[1]);
+
+    expect(drawer.classList.contains("open")).toBe(true);
+    expect(panel.getAttribute("aria-hidden")).toBe("false");
+    expect(buttons[1].getAttribute("aria-expanded")).toBe("true");
+
+    fireEvent.pointerLeave(drawer, { relatedTarget: document.body });
+    expect(drawer.classList.contains("open")).toBe(false);
+
+    fireEvent.click(buttons[2]);
+    expect(drawer.classList.contains("open")).toBe(true);
+    expect(buttons[2].getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("keeps the drawer open while moving from a button into the panel and closes after pointer leave", () => {
+    const { getByLabelText, getByRole } = renderStatefulDrawer();
+    const drawer = getByLabelText("悬浮导航抽屉");
+    const panel = getByLabelText("快捷详情抽屉");
+    const button = getByRole("button", { name: "服务状态详情" });
+
+    fireEvent.mouseEnter(button);
+    fireEvent.pointerEnter(panel, { relatedTarget: button });
+    expect(drawer.classList.contains("open")).toBe(true);
+
+    fireEvent.pointerLeave(drawer, { relatedTarget: document.body });
+    expect(drawer.classList.contains("open")).toBe(false);
+    expect(panel.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("supports keyboard focus and closes when focus leaves the drawer", () => {
+    const { getByLabelText, getByRole } = renderStatefulDrawer();
+    const drawer = getByLabelText("悬浮导航抽屉");
+    const button = getByRole("button", { name: "订阅使用情况详情" });
+
+    fireEvent.focus(button);
+    expect(drawer.classList.contains("open")).toBe(true);
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+
+    fireEvent.blur(button, { relatedTarget: document.body });
+    expect(drawer.classList.contains("open")).toBe(false);
   });
 
   it("waits for the drawer reveal before smoothly scrolling the matching card into view", () => {

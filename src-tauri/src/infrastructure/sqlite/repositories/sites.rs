@@ -9,7 +9,7 @@ pub fn insert_site(db: &Database, site: &SiteRecord) -> Result<()> {
     let transaction = conn.transaction()?;
     transaction.execute(
         "INSERT INTO sites (
-            id, name, base_url, failover_cooldown_seconds, max_attempts_per_address,
+            id, name, base_url, failover_cooldown_seconds, retry_count_per_address,
             created_at, updated_at
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
@@ -17,7 +17,7 @@ pub fn insert_site(db: &Database, site: &SiteRecord) -> Result<()> {
             site.name,
             site.base_url,
             i64::from(site.failover_cooldown_seconds),
-            i64::from(site.max_attempts_per_address),
+            i64::from(site.retry_count_per_address),
             site.created_at,
             site.updated_at
         ],
@@ -35,7 +35,7 @@ pub fn update_site(db: &Database, site: &SiteRecord) -> Result<()> {
          SET name = ?2,
              base_url = ?3,
              failover_cooldown_seconds = ?4,
-             max_attempts_per_address = ?5,
+             retry_count_per_address = ?5,
              updated_at = ?6
          WHERE id = ?1",
         params![
@@ -43,7 +43,7 @@ pub fn update_site(db: &Database, site: &SiteRecord) -> Result<()> {
             site.name,
             site.base_url,
             i64::from(site.failover_cooldown_seconds),
-            i64::from(site.max_attempts_per_address),
+            i64::from(site.retry_count_per_address),
             site.updated_at
         ],
     )?;
@@ -63,7 +63,7 @@ pub fn find_site(db: &Database, site_id: &str) -> Result<Option<SiteRecord>> {
     let mut stmt = conn.prepare(
         "SELECT
             s.id, s.name, s.base_url, s.failover_cooldown_seconds,
-            s.max_attempts_per_address, s.created_at, s.updated_at, f.base_url
+            s.retry_count_per_address, s.created_at, s.updated_at, f.base_url
          FROM sites s
          LEFT JOIN site_fallback_base_urls f ON f.site_id = s.id
          WHERE s.id = ?1
@@ -78,7 +78,7 @@ pub fn list_sites(db: &Database) -> Result<Vec<SiteRecord>> {
     let mut stmt = conn.prepare(
         "SELECT
             s.id, s.name, s.base_url, s.failover_cooldown_seconds,
-            s.max_attempts_per_address, s.created_at, s.updated_at, f.base_url
+            s.retry_count_per_address, s.created_at, s.updated_at, f.base_url
          FROM sites s
          LEFT JOIN site_fallback_base_urls f ON f.site_id = s.id
          ORDER BY s.created_at ASC, s.id ASC, f.position ASC",
@@ -132,7 +132,7 @@ where
 {
     let mut sites = Vec::new();
     for row in rows {
-        let (id, name, base_url, cooldown, attempts, created_at, updated_at, fallback) = row?;
+        let (id, name, base_url, cooldown, retry_count, created_at, updated_at, fallback) = row?;
         let is_new_site = sites
             .last()
             .map(|site: &SiteRecord| site.id != id)
@@ -144,7 +144,7 @@ where
                 base_url,
                 fallback_base_urls: Vec::new(),
                 failover_cooldown_seconds: positive_u32(cooldown, "failover_cooldown_seconds")?,
-                max_attempts_per_address: positive_u32(attempts, "max_attempts_per_address")?,
+                retry_count_per_address: non_negative_u32(retry_count, "retry_count_per_address")?,
                 created_at,
                 updated_at,
             });
@@ -167,6 +167,10 @@ fn positive_u32(value: i64, column: &str) -> Result<u32> {
         return Err(anyhow!("站点配置字段 {column} 必须大于 0。"));
     }
     Ok(value)
+}
+
+fn non_negative_u32(value: i64, column: &str) -> Result<u32> {
+    u32::try_from(value).map_err(|_| anyhow!("站点配置字段 {column} 超出可表示范围。"))
 }
 
 #[cfg(test)]
@@ -193,7 +197,7 @@ mod tests {
             base_url: format!("https://{id}.example.test"),
             fallback_base_urls: fallbacks.iter().map(|value| (*value).to_string()).collect(),
             failover_cooldown_seconds: 75,
-            max_attempts_per_address: 3,
+            retry_count_per_address: 0,
             created_at: "2026-08-10 10:00:00".to_string(),
             updated_at: "2026-08-10 10:00:00".to_string(),
         }
@@ -226,7 +230,7 @@ mod tests {
         assert_eq!(actual.base_url, expected.base_url);
         assert_eq!(actual.fallback_base_urls, expected.fallback_base_urls);
         assert_eq!(actual.failover_cooldown_seconds, 75);
-        assert_eq!(actual.max_attempts_per_address, 3);
+        assert_eq!(actual.retry_count_per_address, 0);
         drop(db);
         cleanup(path);
     }

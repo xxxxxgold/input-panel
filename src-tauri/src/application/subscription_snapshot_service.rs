@@ -35,6 +35,7 @@ impl SubscriptionSnapshotOrigin {
 pub struct SubscriptionProcessingCapabilities {
     pub evaluate_quota_alerts: bool,
     pub evaluate_switch_rules: bool,
+    /// 历史字段名保留以兼容现有额度事件列；桌面系统通知在 Windows 和 macOS 均可用。
     pub windows_notifications_supported: bool,
 }
 
@@ -43,7 +44,7 @@ impl SubscriptionProcessingCapabilities {
         Self {
             evaluate_quota_alerts: true,
             evaluate_switch_rules,
-            windows_notifications_supported: cfg!(target_os = "windows"),
+            windows_notifications_supported: cfg!(any(target_os = "windows", target_os = "macos")),
         }
     }
 
@@ -357,5 +358,17 @@ mod tests {
         assert_eq!(daily.current, 20.0);
         assert_eq!(daily.limit, 100.0);
         assert_eq!(daily.window_start.as_deref(), Some("raw-window"));
+    }
+
+    #[test]
+    fn desktop_capabilities_enable_system_notifications_on_supported_desktop_platforms() {
+        let desktop = SubscriptionProcessingCapabilities::desktop(false);
+        assert_eq!(
+            desktop.windows_notifications_supported,
+            cfg!(any(target_os = "windows", target_os = "macos"))
+        );
+        assert!(
+            !SubscriptionProcessingCapabilities::headless(false).windows_notifications_supported
+        );
     }
 }

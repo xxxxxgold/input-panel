@@ -147,13 +147,15 @@ body,
 }`);
   });
 
-  it("keeps every workspace title and contextual hint compact", () => {
+  it("moves the workspace subtitle into the title hint trigger", () => {
     const html = renderFrame({ title: "密钥", subtitle: "AI INPUT / 主账号", navKey: "keys" });
 
     expect(html).toContain("workspace-header-main");
-    expect(html).toContain('<div class="title-with-hint"><h2>密钥</h2>');
+    expect(html).toContain('class="title-with-hint"');
     expect(html).toContain('aria-label="查看密钥说明"');
-    expect(html).not.toContain('<p class="workspace-subtitle">');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain("workspace-subtitle");
+    expect(html).not.toContain("AI INPUT / 主账号");
     expect(styles).toContain(`.workspace-header-main > .title-with-hint {
   display: flex;
   align-items: baseline;
@@ -164,6 +166,11 @@ body,
   line-height: 1.1;
   white-space: nowrap;
 }`);
+    expect(styles).toContain(`.title-hint-tooltip {
+  position: fixed;
+  z-index: 96;
+  max-width: min(320px, calc(100vw - 32px));
+`);
   });
 
   it("keeps refresh feedback compact and responsive on narrow screens", () => {

@@ -27,7 +27,8 @@ const DESKTOP_UI_PREF_FIELD_LABELS: Partial<Record<DesktopUiPrefsField, string>>
   autoRefreshKeysIntervalSeconds: "密钥间隔",
   autoRefreshUsageEnabled: "用量刷新",
   autoRefreshUsageIntervalSeconds: "用量间隔",
-  overviewAccountRuntimeTimeoutMs: "总览单账号超时"
+  overviewAccountRuntimeTimeoutMs: "总览单账号超时",
+  completedTaskRetentionMinutes: "已完成任务保留时间"
 };
 
 const SETTINGS_SAVED_TOAST = {

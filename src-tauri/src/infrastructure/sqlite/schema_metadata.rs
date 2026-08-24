@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection};
 
-const SCHEMA_REVISION: i64 = 7;
+const SCHEMA_REVISION: i64 = 9;
 
 #[derive(Clone, Copy)]
 struct ColumnDocumentation {
@@ -68,7 +68,10 @@ const TABLE_DOCUMENTATION: &[TableDocumentation] = &[
             ("name", "站点名称"),
             ("base_url", "站点基础地址"),
             ("failover_cooldown_seconds", "站点地址故障冷却时长秒数"),
-            ("max_attempts_per_address", "单次业务请求每个地址最大访问次数"),
+            (
+                "retry_count_per_address",
+                "单次业务请求每个地址允许的重试次数，不含首次请求"
+            ),
             ("created_at", "创建时间"),
             ("updated_at", "更新时间"),
         ]
@@ -147,6 +150,19 @@ const TABLE_DOCUMENTATION: &[TableDocumentation] = &[
             ("email", "账号邮箱"),
             ("balance_warning", "余额预警阈值; -1 表示关闭余额预警"),
             ("last_login_at", "最近登录时间"),
+            ("created_at", "创建时间"),
+            ("updated_at", "更新时间"),
+        ]
+    ),
+    table_documentation!(
+        "account_alert_preferences",
+        "账号提醒偏好",
+        [
+            ("account_id", "所属账号标识"),
+            (
+                "subscription_quota_alerts_enabled",
+                "账号级订阅额度提醒总开关; 1=启用, 0=关闭"
+            ),
             ("created_at", "创建时间"),
             ("updated_at", "更新时间"),
         ]

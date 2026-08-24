@@ -23,14 +23,6 @@ use serde_json::{json, Value};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct UpdateAccountBody {
-    label: Option<String>,
-    email: Option<String>,
-    balance_warning: Option<f64>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct LoginBody {
     password: String,
 }
@@ -147,6 +139,7 @@ struct DesktopUiPrefsPatchBody {
     auto_refresh_usage_enabled: Option<bool>,
     auto_refresh_usage_interval_seconds: Option<i64>,
     overview_account_runtime_timeout_ms: Option<i64>,
+    completed_task_retention_minutes: Option<i64>,
     theme: Option<String>,
 }
 
@@ -178,6 +171,7 @@ impl DesktopUiPrefsPatchBody {
             auto_refresh_usage_enabled: self.auto_refresh_usage_enabled,
             auto_refresh_usage_interval_seconds: self.auto_refresh_usage_interval_seconds,
             overview_account_runtime_timeout_ms: self.overview_account_runtime_timeout_ms,
+            completed_task_retention_minutes: self.completed_task_retention_minutes,
             theme: self.theme,
             ..crate::contracts::DesktopUiPrefsPatch::default()
         }
@@ -281,6 +275,10 @@ pub fn router(ctx: AppContext) -> Router {
         .route(
             "/api/accounts/:account_id",
             patch(update_account).delete(remove_account),
+        )
+        .route(
+            "/api/accounts/:account_id/alert-preferences/query",
+            post(query_account_alert_preferences),
         )
         .route("/api/accounts/:account_id/login", post(login_account))
         .route(
@@ -577,10 +575,9 @@ async fn clear_runtime_data(
     State(ctx): State<AppContext>,
     Json(payload): Json<ClearRuntimeDataBody>,
 ) -> impl IntoResponse {
-    map_json_result(maintenance_service::clear_runtime_data(
-        &ctx,
-        payload.remove_sites_and_accounts,
-    ))
+    map_async_json_result(
+        maintenance_service::clear_runtime_data(&ctx, payload.remove_sites_and_accounts).await,
+    )
 }
 
 async fn create_site(
@@ -602,7 +599,7 @@ async fn remove_site(
     State(ctx): State<AppContext>,
     Path(site_id): Path<String>,
 ) -> impl IntoResponse {
-    map_json_result(site_service::remove_site(&ctx, &site_id))
+    map_async_json_result(site_service::remove_site(&ctx, &site_id).await)
 }
 
 async fn get_site_failover_status(
@@ -653,14 +650,22 @@ async fn create_account(
 async fn update_account(
     State(ctx): State<AppContext>,
     Path(account_id): Path<String>,
-    Json(body): Json<UpdateAccountBody>,
+    Json(payload): Json<crate::contracts::AccountUpdateInput>,
 ) -> impl IntoResponse {
-    map_json_result(account_service::update_account(
+    map_async_json_result(
+        account_service::update_account(&ctx, &account_id, payload)
+            .await
+            .map(|outcome| outcome.account),
+    )
+}
+
+async fn query_account_alert_preferences(
+    State(ctx): State<AppContext>,
+    Path(account_id): Path<String>,
+) -> impl IntoResponse {
+    map_json_result(account_service::query_account_alert_preferences(
         &ctx,
         &account_id,
-        body.label,
-        body.email,
-        body.balance_warning,
     ))
 }
 
@@ -668,7 +673,7 @@ async fn remove_account(
     State(ctx): State<AppContext>,
     Path(account_id): Path<String>,
 ) -> impl IntoResponse {
-    map_json_result(account_service::remove_account(&ctx, &account_id))
+    map_async_json_result(account_service::remove_account(&ctx, &account_id).await)
 }
 
 async fn login_account(
@@ -981,9 +986,7 @@ async fn list_usage_records(
     Path(account_id): Path<String>,
     Json(request): Json<crate::contracts::UsageListRequest>,
 ) -> impl IntoResponse {
-    map_async_json_result(
-        usage_service::list_usage_records(&ctx, &account_id, request).await,
-    )
+    map_async_json_result(usage_service::list_usage_records(&ctx, &account_id, request).await)
 }
 
 async fn list_usage_facets(
@@ -1375,6 +1378,7 @@ fn map_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
         || message.starts_with("USAGE_")
         || is_database_storage_validation_error(&message)
         || is_runtime_coordination_validation_error(&message)
+        || message.contains("低余额提醒阈值必须是")
         || is_subscription_quota_alert_validation_error(&message)
         || is_subscription_switch_validation_error(&message)
     {
@@ -1492,8 +1496,7 @@ mod tests {
         contracts::{
             AccountRecord, AppLaunchMode, CloseBehavior, CodexRadarInsightsPayload,
             CodexRadarIntelligenceEfficiencyPoint, CodexRadarIntelligencePayload,
-            CodexRadarModelIqEntry, CodexRadarModelIqPayload, SiteRecord, StoredSession,
-            UsageRow,
+            CodexRadarModelIqEntry, CodexRadarModelIqPayload, SiteRecord, StoredSession, UsageRow,
         },
         infrastructure::{
             files::AppPaths,
@@ -1860,6 +1863,44 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_REQUEST);
             assert_eq!(body.0, json!({ "error": message }));
         }
+    }
+
+    #[tokio::test]
+    async fn account_http_rejects_legacy_balance_warning_without_persisting() {
+        let ctx = build_test_context("account-alert-contract");
+        let cleanup_root = ctx.paths.root.clone();
+        let (base_url, shutdown_tx, server) = start_test_http_server(ctx.clone()).await;
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("build direct test client");
+
+        let response = client
+            .post(format!("{base_url}/api/accounts"))
+            .json(&json!({
+                "siteId": "site-1",
+                "label": "测试账号",
+                "email": "account@example.test",
+                "balanceWarning": -1
+            }))
+            .send()
+            .await
+            .expect("submit legacy account payload");
+
+        let status = response.status();
+        let body = response.text().await.expect("read rejected input response");
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "unexpected rejected input response: {body}"
+        );
+        assert!(repositories::list_accounts(&ctx.db)
+            .expect("list accounts after rejected input")
+            .is_empty());
+
+        stop_test_http_server(shutdown_tx, server).await;
+        drop(ctx);
+        let _ = fs::remove_dir_all(cleanup_root);
     }
 
     #[tokio::test]
@@ -2325,7 +2366,14 @@ mod tests {
         seed_usage_http_account(&ctx);
         let (base_url, shutdown_tx, server) = start_test_http_server(ctx).await;
         let client = reqwest::Client::new();
-        let routes = ["stats", "analytics", "extremes", "models", "trend", "insights"];
+        let routes = [
+            "stats",
+            "analytics",
+            "extremes",
+            "models",
+            "trend",
+            "insights",
+        ];
         let filter = json!({
             "startDate": "2026-08-11",
             "endDate": "2026-08-11",
@@ -2438,7 +2486,10 @@ mod tests {
     async fn browser_debug_preferences_persist_without_native_window_fields() {
         let ctx = build_test_context("browser-preferences");
         let (base_url, shutdown_tx, server) = start_test_http_server(ctx.clone()).await;
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("build direct test client");
         let patch = json!({
             "theme": "arctic-relay",
             "autoRefreshEnabled": false,
@@ -2451,6 +2502,7 @@ mod tests {
             "autoRefreshUsageEnabled": false,
             "autoRefreshUsageIntervalSeconds": 14,
             "overviewAccountRuntimeTimeoutMs": 6_000,
+            "completedTaskRetentionMinutes": 22,
         });
 
         let response = client
@@ -2469,6 +2521,7 @@ mod tests {
         assert_eq!(response_body["autoRefreshCoreEnabled"], false);
         assert_eq!(response_body["autoRefreshKeysIntervalSeconds"], 13);
         assert_eq!(response_body["autoRefreshUsageEnabled"], false);
+        assert_eq!(response_body["completedTaskRetentionMinutes"], 22);
 
         let persisted = desktop_ui_service::get_desktop_ui_prefs(&ctx)
             .expect("read persisted browser-debuggable preferences");
@@ -2483,6 +2536,7 @@ mod tests {
         assert!(!persisted.auto_refresh_usage_enabled);
         assert_eq!(persisted.auto_refresh_usage_interval_seconds, 14);
         assert_eq!(persisted.overview_account_runtime_timeout_ms, 6_000);
+        assert_eq!(persisted.completed_task_retention_minutes, 22);
         assert_eq!(persisted.launch_mode, AppLaunchMode::Main);
         assert_eq!(persisted.close_behavior, CloseBehavior::Ask);
         assert!(repositories::get_setting(&ctx.db, DESKTOP_UI_PREFS_KEY)

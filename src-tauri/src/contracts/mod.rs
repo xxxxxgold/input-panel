@@ -2,14 +2,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub const DEFAULT_SITE_FAILOVER_COOLDOWN_SECONDS: u32 = 60;
-pub const DEFAULT_SITE_MAX_ATTEMPTS_PER_ADDRESS: u32 = 1;
+pub const DEFAULT_SITE_RETRY_COUNT_PER_ADDRESS: u32 = 0;
 
 fn default_site_failover_cooldown_seconds() -> u32 {
     DEFAULT_SITE_FAILOVER_COOLDOWN_SECONDS
 }
 
-fn default_site_max_attempts_per_address() -> u32 {
-    DEFAULT_SITE_MAX_ATTEMPTS_PER_ADDRESS
+fn default_site_retry_count_per_address() -> u32 {
+    DEFAULT_SITE_RETRY_COUNT_PER_ADDRESS
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,8 +22,9 @@ pub struct SiteRecord {
     pub fallback_base_urls: Vec<String>,
     #[serde(default = "default_site_failover_cooldown_seconds")]
     pub failover_cooldown_seconds: u32,
-    #[serde(default = "default_site_max_attempts_per_address")]
-    pub max_attempts_per_address: u32,
+    /// 单次业务请求在首次访问失败后，每个地址允许的重试次数。
+    #[serde(default = "default_site_retry_count_per_address")]
+    pub retry_count_per_address: u32,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -36,7 +37,7 @@ impl Default for SiteRecord {
             base_url: String::new(),
             fallback_base_urls: Vec::new(),
             failover_cooldown_seconds: DEFAULT_SITE_FAILOVER_COOLDOWN_SECONDS,
-            max_attempts_per_address: DEFAULT_SITE_MAX_ATTEMPTS_PER_ADDRESS,
+            retry_count_per_address: DEFAULT_SITE_RETRY_COUNT_PER_ADDRESS,
             created_at: String::new(),
             updated_at: String::new(),
         }
@@ -92,6 +93,25 @@ pub struct AccountRecord {
     pub last_login_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// 账号表单使用的显式提醒偏好，不暴露余额预警的历史哨兵值。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccountAlertPreferences {
+    pub low_balance_enabled: bool,
+    pub low_balance_threshold: f64,
+    pub subscription_quota_alerts_enabled: bool,
+}
+
+impl Default for AccountAlertPreferences {
+    fn default() -> Self {
+        Self {
+            low_balance_enabled: false,
+            low_balance_threshold: 0.0,
+            subscription_quota_alerts_enabled: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1416,8 +1436,9 @@ pub struct SiteInput {
     pub fallback_base_urls: Vec<String>,
     #[serde(default = "default_site_failover_cooldown_seconds")]
     pub failover_cooldown_seconds: u32,
-    #[serde(default = "default_site_max_attempts_per_address")]
-    pub max_attempts_per_address: u32,
+    /// 单次业务请求在首次访问失败后，每个地址允许的重试次数。
+    #[serde(default = "default_site_retry_count_per_address")]
+    pub retry_count_per_address: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1427,7 +1448,8 @@ pub struct SitePatchInput {
     pub base_url: Option<String>,
     pub fallback_base_urls: Option<Vec<String>>,
     pub failover_cooldown_seconds: Option<u32>,
-    pub max_attempts_per_address: Option<u32>,
+    /// 单次业务请求在首次访问失败后，每个地址允许的重试次数。
+    pub retry_count_per_address: Option<u32>,
 }
 
 /// 站点地址在故障转移拓扑中的角色。
@@ -1545,12 +1567,59 @@ pub struct TransportErrorPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccountInput {
     pub site_id: String,
     pub label: String,
     pub email: String,
-    pub balance_warning: f64,
+    /// 缺失时采用产品默认提醒偏好，公开输入不接受历史余额哨兵。
+    #[serde(default)]
+    pub alert_preferences: AccountAlertPreferences,
+}
+
+/// 账号编辑的跨传输输入。提醒偏好作为完整对象原子保存。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccountUpdateInput {
+    pub label: Option<String>,
+    pub email: Option<String>,
+    pub alert_preferences: Option<AccountAlertPreferences>,
+}
+
+#[cfg(test)]
+mod account_alert_preference_contract_tests {
+    use super::{AccountAlertPreferences, AccountInput, AccountUpdateInput};
+    use serde_json::json;
+
+    #[test]
+    fn account_input_defaults_explicit_alert_preferences() {
+        let input: AccountInput = serde_json::from_value(json!({
+            "siteId": "site-1",
+            "label": "测试账号",
+            "email": "account@example.test"
+        }))
+        .expect("deserialize input with product defaults");
+
+        assert_eq!(input.alert_preferences, AccountAlertPreferences::default());
+    }
+
+    #[test]
+    fn public_account_inputs_reject_legacy_balance_warning() {
+        let create_error = serde_json::from_value::<AccountInput>(json!({
+            "siteId": "site-1",
+            "label": "测试账号",
+            "email": "account@example.test",
+            "balanceWarning": -1
+        }))
+        .expect_err("legacy balance warning must not be accepted for creation");
+        assert!(create_error.to_string().contains("balanceWarning"));
+
+        let update_error = serde_json::from_value::<AccountUpdateInput>(json!({
+            "balanceWarning": -1
+        }))
+        .expect_err("legacy balance warning must not be accepted for update");
+        assert!(update_error.to_string().contains("balanceWarning"));
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1680,6 +1749,7 @@ pub enum FloatingNotificationSoundSource {
 }
 
 pub const DEFAULT_FLOATING_NOTIFICATION_SOUND_VOLUME: i64 = 100;
+pub const DEFAULT_COMPLETED_TASK_RETENTION_MINUTES: i64 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1738,6 +1808,9 @@ pub struct DesktopUiPrefs {
     pub auto_refresh_usage_interval_seconds: i64,
     #[serde(default = "default_overview_account_runtime_timeout_ms")]
     pub overview_account_runtime_timeout_ms: i64,
+    /// 任务中心终态任务在前端内存中的保留时间，单位为分钟。
+    #[serde(default = "default_completed_task_retention_minutes")]
+    pub completed_task_retention_minutes: i64,
     pub theme: String,
 }
 
@@ -1767,6 +1840,7 @@ impl Default for DesktopUiPrefs {
             auto_refresh_usage_enabled: true,
             auto_refresh_usage_interval_seconds: 9,
             overview_account_runtime_timeout_ms: 4_500,
+            completed_task_retention_minutes: DEFAULT_COMPLETED_TASK_RETENTION_MINUTES,
             theme: "sakura-signal".into(),
         }
     }
@@ -1798,6 +1872,7 @@ pub struct DesktopUiPrefsPatch {
     pub auto_refresh_usage_enabled: Option<bool>,
     pub auto_refresh_usage_interval_seconds: Option<i64>,
     pub overview_account_runtime_timeout_ms: Option<i64>,
+    pub completed_task_retention_minutes: Option<i64>,
     pub theme: Option<String>,
 }
 
@@ -1811,6 +1886,10 @@ fn default_auto_refresh_interval_seconds() -> i64 {
 
 fn default_overview_account_runtime_timeout_ms() -> i64 {
     4_500
+}
+
+fn default_completed_task_retention_minutes() -> i64 {
+    DEFAULT_COMPLETED_TASK_RETENTION_MINUTES
 }
 
 fn default_floating_panel_opacity() -> f64 {

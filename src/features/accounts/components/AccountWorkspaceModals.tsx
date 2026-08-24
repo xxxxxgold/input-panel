@@ -16,8 +16,8 @@ import {
 import { formatAppErrorMessage } from "../../../shared/lib/error-display";
 import { maskEmail } from "../../../shared/lib/formatters";
 import { Modal } from "../../../shared/ui/Modal";
-import type { AccountInput, OverviewPayload, SiteRecord } from "../../../types";
-import type { useAccountWorkspace } from "../useAccountWorkspace";
+import type { OverviewPayload, SiteRecord } from "../../../types";
+import type { AccountFormDraft, useAccountWorkspace } from "../useAccountWorkspace";
 import {
   findSiteFailoverAddressStatus,
   getSiteCooldownRemainingSeconds,
@@ -102,7 +102,7 @@ export function AccountWorkspaceModals({
           onRefresh={(accountId) => void workspace.handleRefreshAccount(accountId)}
           onEdit={(account) => {
             workspace.closeAccountManager();
-            workspace.openEditAccount(account);
+            void workspace.openEditAccount(account);
           }}
           onRemove={(accountId) => void workspace.handleRemoveAccount(accountId)}
         />
@@ -123,8 +123,12 @@ export function AccountWorkspaceModals({
           sites={sites}
           accountPassword={workspace.accountPassword}
           setAccountPassword={workspace.setAccountPassword}
-          accountBalanceWarningInput={workspace.accountBalanceWarningInput}
-          onBalanceWarningInput={workspace.handleBalanceWarningInput}
+          accountLowBalanceThresholdInput={workspace.accountLowBalanceThresholdInput}
+          onLowBalanceThresholdInput={workspace.handleLowBalanceThresholdInput}
+          onAlertPreferencesChange={workspace.updateAccountAlertPreferences}
+          isPreferencesLoading={workspace.accountPreferencesLoading}
+          isPreferencesReady={workspace.accountPreferencesReady}
+          preferencesError={workspace.accountPreferencesError}
           onClose={workspace.closeAccountForm}
           onSubmit={() => void workspace.submitAccountForm()}
           isSubmitting={workspace.accountFormSubmitting}
@@ -284,20 +288,20 @@ export function SiteFormModal({
               />
             </label>
             <label className="field">
-              <span>每地址最大访问次数</span>
+              <span>重试次数</span>
               <input
                 type="number"
-                min="1"
+                min="0"
                 step="1"
                 inputMode="numeric"
-                value={workspace.siteForm.maxAttemptsPerAddress}
+                value={workspace.siteForm.retryCountPerAddress}
                 onChange={(event) =>
                   workspace.setSiteForm((previous) => ({
                     ...previous,
-                    maxAttemptsPerAddress: event.target.value
+                    retryCountPerAddress: event.target.value
                   }))
                 }
-                placeholder="1"
+                placeholder="0"
               />
             </label>
           </div>
@@ -482,29 +486,40 @@ function AccountFormModal({
   sites,
   accountPassword,
   setAccountPassword,
-  accountBalanceWarningInput,
-  onBalanceWarningInput,
+  accountLowBalanceThresholdInput,
+  onLowBalanceThresholdInput,
+  onAlertPreferencesChange,
+  isPreferencesLoading,
+  isPreferencesReady,
+  preferencesError,
   onClose,
   onSubmit,
   isSubmitting
 }: {
   isEditing: boolean;
-  accountForm: AccountInput;
-  setAccountForm: Dispatch<SetStateAction<AccountInput>>;
+  accountForm: AccountFormDraft;
+  setAccountForm: Dispatch<SetStateAction<AccountFormDraft>>;
   accountSitePickerOpen: boolean;
   setAccountSitePickerOpen: Dispatch<SetStateAction<boolean>>;
   selectedAccountSite: SiteRecord | null;
   sites: SiteRecord[];
   accountPassword: string;
   setAccountPassword: Dispatch<SetStateAction<string>>;
-  accountBalanceWarningInput: string;
-  onBalanceWarningInput: (value: string) => void;
+  accountLowBalanceThresholdInput: string;
+  onLowBalanceThresholdInput: (value: string) => void;
+  onAlertPreferencesChange: (update: Partial<AccountFormDraft["alertPreferences"]>) => void;
+  isPreferencesLoading: boolean;
+  isPreferencesReady: boolean;
+  preferencesError: string | null;
   onClose: () => void;
   onSubmit: () => void;
   isSubmitting: boolean;
 }) {
   const submitText = isEditing ? "更新账号" : "创建账号";
   const submittingText = isEditing ? "正在保存账号..." : "正在创建账号...";
+  const alertPreferences = accountForm.alertPreferences;
+  const controlsDisabled = isSubmitting || isPreferencesLoading;
+  const submitDisabled = controlsDisabled || !isPreferencesReady || Boolean(preferencesError);
 
   return (
     <Modal
@@ -519,7 +534,7 @@ function AccountFormModal({
           <button
             className="primary-button account-form-submit-button"
             onClick={onSubmit}
-            disabled={isSubmitting}
+            disabled={submitDisabled}
             aria-busy={isSubmitting}
           >
             {isSubmitting && <LoaderCircle size={16} className="spin" aria-hidden="true" />}
@@ -544,7 +559,22 @@ function AccountFormModal({
           </div>
         </div>
       )}
-      <fieldset className="account-form-fields" disabled={isSubmitting}>
+      {isPreferencesLoading && (
+        <div className="account-form-submitting" role="status" aria-live="polite">
+          <LoaderCircle size={20} className="spin" aria-hidden="true" />
+          <div>
+            <strong>正在读取提醒偏好</strong>
+            <span>请稍候，保存前会加载该账号当前的提醒设置。</span>
+          </div>
+        </div>
+      )}
+      {preferencesError && (
+        <div className="site-form-error" role="alert">
+          <AlertCircle size={16} aria-hidden="true" />
+          <span>{formatAppErrorMessage(preferencesError)}</span>
+        </div>
+      )}
+      <fieldset className="account-form-fields" disabled={controlsDisabled}>
         <label className="field">
           <span>所属站点</span>
           <div className="site-picker">
@@ -622,15 +652,52 @@ function AccountFormModal({
               : "密码只会保存在当前设备, 方便下次自动登录。"}
           </p>
         </label>
-        <label className="field">
-          <span>低余额预警阈值</span>
-          <input
-            type="number"
-            value={accountBalanceWarningInput}
-            onChange={(event) => onBalanceWarningInput(event.target.value)}
-            placeholder="-1"
-          />
-          <p className="field-help">设为 `-1` 表示关闭低余额提醒, 默认值也是 `-1`。</p>
+        <label className="toggle-field">
+          <span>
+            <strong>低余额提醒</strong>
+            <p>开启后，余额严格低于设定阈值时提醒。</p>
+          </span>
+          <span className="system-settings-switch">
+            <input
+              type="checkbox"
+              checked={alertPreferences.lowBalanceEnabled}
+              onChange={(event) => onAlertPreferencesChange({ lowBalanceEnabled: event.target.checked })}
+              aria-label="启用低余额提醒"
+            />
+            <span className="system-settings-switch-track" aria-hidden="true" />
+          </span>
+        </label>
+        {alertPreferences.lowBalanceEnabled && (
+          <label className="field">
+            <span>低余额提醒阈值</span>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              inputMode="decimal"
+              value={accountLowBalanceThresholdInput}
+              onChange={(event) => onLowBalanceThresholdInput(event.target.value)}
+              placeholder="0"
+            />
+            <p className="field-help">余额等于阈值时不提醒；阈值为 0 时只提醒负余额。</p>
+          </label>
+        )}
+        <label className="toggle-field">
+          <span>
+            <strong>订阅额度提醒</strong>
+            <p>仅控制该账号的总开关，不改变各订阅已设置的提醒规则。</p>
+          </span>
+          <span className="system-settings-switch">
+            <input
+              type="checkbox"
+              checked={alertPreferences.subscriptionQuotaAlertsEnabled}
+              onChange={(event) =>
+                onAlertPreferencesChange({ subscriptionQuotaAlertsEnabled: event.target.checked })
+              }
+              aria-label="启用订阅额度提醒"
+            />
+            <span className="system-settings-switch-track" aria-hidden="true" />
+          </span>
         </label>
       </fieldset>
     </Modal>

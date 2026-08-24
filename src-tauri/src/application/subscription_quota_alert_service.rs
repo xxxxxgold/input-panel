@@ -89,17 +89,20 @@ pub async fn evaluate_subscription_quota_alerts(
     ctx: &AppContext,
     account_id: &str,
     subscriptions: &[SubscriptionRecord],
-    windows_notifications_supported: bool,
+    system_notifications_supported: bool,
 ) -> Result<SubscriptionQuotaAlertEvaluationReport> {
     let _gate = ctx
         .live_resources
         .acquire_subscription_quota_alert_account_gate(account_id)
         .await;
+    if !repositories::subscription_quota_alerts_enabled(&ctx.db, account_id)?.unwrap_or(false) {
+        return Ok(SubscriptionQuotaAlertEvaluationReport::default());
+    }
     evaluate_under_gate(
         ctx,
         account_id,
         subscriptions,
-        windows_notifications_supported,
+        system_notifications_supported,
     )
 }
 
@@ -107,7 +110,7 @@ fn evaluate_under_gate(
     ctx: &AppContext,
     account_id: &str,
     subscriptions: &[SubscriptionRecord],
-    windows_notifications_supported: bool,
+    system_notifications_supported: bool,
 ) -> Result<SubscriptionQuotaAlertEvaluationReport> {
     let now = now_storage_timestamp();
     let mut report = SubscriptionQuotaAlertEvaluationReport::default();
@@ -204,7 +207,7 @@ fn evaluate_under_gate(
                 payload_json: serde_json::to_string(&payload)
                     .context("无法序列化订阅额度提醒事件")?,
                 business_status: SubscriptionQuotaAlertDeliveryStatus::Pending,
-                windows_status: if windows_notifications_supported {
+                windows_status: if system_notifications_supported {
                     SubscriptionQuotaAlertDeliveryStatus::Pending
                 } else {
                     SubscriptionQuotaAlertDeliveryStatus::Unsupported
@@ -717,6 +720,97 @@ mod tests {
         )
         .expect("read subject")
         .is_none());
+    }
+
+    #[tokio::test]
+    async fn account_level_preference_blocks_evaluation_and_reenable_preserves_subscription_rule() {
+        let fixture = build_context();
+        let subscriptions = vec![subscription(
+            Some(window(95.0, 100.0, "period-1")),
+            None,
+            None,
+        )];
+        let saved = upsert_subscription_quota_alert_with_snapshot(
+            &fixture.ctx,
+            "account-1",
+            SubscriptionQuotaAlertUpsertInput {
+                subscription_key: "group:42".into(),
+                enabled: true,
+                threshold_mode: SubscriptionQuotaAlertThresholdMode::UsagePercent,
+                threshold_value: 90.0,
+            },
+            &subscriptions,
+        )
+        .await
+        .expect("save per-subscription rule");
+        let subject = repositories::find_subscription_quota_alert_subject_by_key(
+            &fixture.ctx.db,
+            "account-1",
+            "group:42",
+        )
+        .expect("find subject")
+        .expect("subject exists");
+
+        let mut account = repositories::find_account(&fixture.ctx.db, "account-1")
+            .expect("find account")
+            .expect("account exists");
+        account.updated_at = "2026-08-19 00:00:00".into();
+        assert_eq!(
+            repositories::update_account_with_alert_preferences(&fixture.ctx.db, &account, false)
+                .expect("disable account-level alerts"),
+            repositories::SubscriptionQuotaAlertPreferenceTransition::Disabled
+        );
+        assert!(evaluate_subscription_quota_alerts(
+            &fixture.ctx,
+            "account-1",
+            &subscriptions,
+            true,
+        )
+        .await
+        .expect("evaluate disabled account")
+        .event_ids
+        .is_empty());
+        assert!(repositories::list_subscription_quota_alert_window_states(
+            &fixture.ctx.db,
+            &subject.subject_id,
+        )
+        .expect("read no states")
+        .is_empty());
+        assert_eq!(
+            repositories::find_subscription_quota_alert_config(
+                &fixture.ctx.db,
+                &subject.subject_id
+            )
+            .expect("read preserved config")
+            .expect("config exists")
+            .rule,
+            saved.rule
+        );
+
+        account.updated_at = "2026-08-19 00:00:01".into();
+        assert_eq!(
+            repositories::update_account_with_alert_preferences(&fixture.ctx.db, &account, true)
+                .expect("reenable account-level alerts"),
+            repositories::SubscriptionQuotaAlertPreferenceTransition::Enabled
+        );
+        assert_eq!(
+            evaluate_subscription_quota_alerts(&fixture.ctx, "account-1", &subscriptions, true)
+                .await
+                .expect("evaluate reenabled account")
+                .event_ids
+                .len(),
+            1
+        );
+        assert!(evaluate_subscription_quota_alerts(
+            &fixture.ctx,
+            "account-1",
+            &subscriptions,
+            true,
+        )
+        .await
+        .expect("evaluate continuous high usage")
+        .event_ids
+        .is_empty());
     }
 
     #[tokio::test]

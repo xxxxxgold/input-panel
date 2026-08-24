@@ -349,6 +349,36 @@ describe("appendToastDeduped", () => {
     expect(next.toastId).toBe("toast-2");
     expect(next.toasts).toHaveLength(2);
   });
+
+  it("does not dedupe an actionable toast against a message-only toast", () => {
+    const existing: MonitorToast[] = [
+      {
+        id: "toast-1",
+        tone: "error",
+        title: "保存失败",
+        message: "设置保存失败。",
+        durationMs: 4200
+      }
+    ];
+
+    const next = appendToastDeduped(
+      existing,
+      {
+        tone: "error",
+        title: "保存失败",
+        message: "设置保存失败。",
+        durationMs: 4200,
+        action: {
+          label: "重试保存",
+          onClick: () => undefined
+        }
+      },
+      () => "toast-2"
+    );
+
+    expect(next.toastId).toBe("toast-2");
+    expect(next.toasts).toHaveLength(2);
+  });
 });
 
 describe("busy text feedback", () => {

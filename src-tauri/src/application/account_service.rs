@@ -2,8 +2,9 @@ use anyhow::{Context, Result};
 use chrono::Days;
 
 use crate::contracts::{
-    AccountCacheStats, AccountCacheView, AccountInput, AccountRecord, AccountRuntime, KeyRecord,
-    SubscriptionRecord, TrendPoint, UsageRow, UserProfileRecord,
+    AccountAlertPreferences, AccountCacheStats, AccountCacheView, AccountInput, AccountRecord,
+    AccountRuntime, AccountUpdateInput, KeyRecord, SubscriptionRecord, TrendPoint, UsageRow,
+    UserProfileRecord,
 };
 use crate::domain::alerts::build_alerts;
 use crate::infrastructure::datetime::{now_storage_timestamp, shanghai_today};
@@ -14,45 +15,88 @@ use super::{
     upstream_service::UpstreamRequestPolicy, AppContext,
 };
 
+/// 账号保存后供桌面适配层决定是否执行一次即时额度重新评估的内部结果。
+#[derive(Debug)]
+pub struct AccountUpdateOutcome {
+    pub account: AccountRuntime,
+    pub subscription_quota_alert_transition:
+        repositories::SubscriptionQuotaAlertPreferenceTransition,
+}
+
 pub fn create_account(ctx: &AppContext, payload: AccountInput) -> Result<AccountRuntime> {
+    let alert_preferences = validate_alert_preferences(payload.alert_preferences)?;
     let now = now_storage_timestamp();
     let account = AccountRecord {
         id: uuid::Uuid::new_v4().to_string(),
         site_id: payload.site_id,
         label: payload.label.trim().to_string(),
         email: payload.email.trim().to_string(),
-        balance_warning: normalize_balance_warning(payload.balance_warning),
+        balance_warning: balance_warning_from_preferences(&alert_preferences),
         last_login_at: None,
         created_at: now.clone(),
         updated_at: now,
     };
-    repositories::insert_account(&ctx.db, &account)?;
+    repositories::insert_account_with_alert_preferences(
+        &ctx.db,
+        &account,
+        alert_preferences.subscription_quota_alerts_enabled,
+    )?;
     wrap_runtime(ctx, account, None, None)
 }
 
-pub fn update_account(
+/// 更新账号信息和提醒偏好。额度总开关与 evaluator/dispatcher 共用账号 gate。
+pub async fn update_account(
     ctx: &AppContext,
     account_id: &str,
-    label: Option<String>,
-    email: Option<String>,
-    balance_warning: Option<f64>,
-) -> Result<AccountRuntime> {
+    payload: AccountUpdateInput,
+) -> Result<AccountUpdateOutcome> {
+    let _gate = ctx
+        .live_resources
+        .acquire_subscription_quota_alert_account_gate(account_id)
+        .await;
     let mut account = repositories::find_account(&ctx.db, account_id)?.context("账号不存在。")?;
-    if let Some(label) = label {
+    let current_preferences = query_account_alert_preferences_for_account(ctx, &account)?;
+    let alert_preferences = match payload.alert_preferences {
+        Some(preferences) => validate_alert_preferences(preferences)?,
+        None => current_preferences,
+    };
+    if let Some(label) = payload.label {
         account.label = label.trim().to_string();
     }
-    if let Some(email) = email {
+    if let Some(email) = payload.email {
         account.email = email.trim().to_string();
     }
-    if let Some(balance_warning) = balance_warning {
-        account.balance_warning = normalize_balance_warning(balance_warning);
-    }
+    account.balance_warning = balance_warning_from_preferences(&alert_preferences);
     account.updated_at = now_storage_timestamp();
-    repositories::update_account(&ctx.db, &account)?;
-    wrap_runtime(ctx, account, None, None)
+    let subscription_quota_alert_transition = repositories::update_account_with_alert_preferences(
+        &ctx.db,
+        &account,
+        alert_preferences.subscription_quota_alerts_enabled,
+    )?;
+    Ok(AccountUpdateOutcome {
+        account: wrap_runtime(ctx, account, None, None)?,
+        subscription_quota_alert_transition,
+    })
 }
 
-pub fn remove_account(ctx: &AppContext, account_id: &str) -> Result<bool> {
+/// 查询账号表单所需的显式提醒偏好，兼容旧 balance_warning 和缺失的偏好行。
+pub fn query_account_alert_preferences(
+    ctx: &AppContext,
+    account_id: &str,
+) -> Result<AccountAlertPreferences> {
+    let preferences = repositories::find_account_alert_preferences(&ctx.db, account_id)?
+        .context("账号不存在。")?;
+    Ok(account_alert_preferences_from_values(
+        preferences.balance_warning,
+        preferences.subscription_quota_alerts_enabled,
+    ))
+}
+
+pub async fn remove_account(ctx: &AppContext, account_id: &str) -> Result<bool> {
+    let _gate = ctx
+        .live_resources
+        .acquire_subscription_quota_alert_account_gate(account_id)
+        .await;
     repositories::delete_account(&ctx.db, account_id)?;
     Ok(true)
 }
@@ -224,11 +268,49 @@ fn load_usage_cache_snapshot(
     Ok((stats, recent_usage, trend))
 }
 
-pub fn normalize_balance_warning(value: f64) -> f64 {
-    if !value.is_finite() || value < 0.0 {
-        -1.0
+fn validate_alert_preferences(
+    preferences: AccountAlertPreferences,
+) -> Result<AccountAlertPreferences> {
+    if !preferences.low_balance_threshold.is_finite() || preferences.low_balance_threshold < 0.0 {
+        anyhow::bail!("低余额提醒阈值必须是大于等于 0 的有限数字。")
+    }
+    Ok(preferences)
+}
+
+fn balance_warning_from_preferences(preferences: &AccountAlertPreferences) -> f64 {
+    if preferences.low_balance_enabled {
+        preferences.low_balance_threshold
     } else {
-        value
+        -1.0
+    }
+}
+
+fn query_account_alert_preferences_for_account(
+    ctx: &AppContext,
+    account: &AccountRecord,
+) -> Result<AccountAlertPreferences> {
+    let subscription_quota_alerts_enabled =
+        repositories::subscription_quota_alerts_enabled(&ctx.db, &account.id)?
+            .context("账号不存在。")?;
+    Ok(account_alert_preferences_from_values(
+        account.balance_warning,
+        subscription_quota_alerts_enabled,
+    ))
+}
+
+fn account_alert_preferences_from_values(
+    balance_warning: f64,
+    subscription_quota_alerts_enabled: bool,
+) -> AccountAlertPreferences {
+    let low_balance_enabled = balance_warning.is_finite() && balance_warning >= 0.0;
+    AccountAlertPreferences {
+        low_balance_enabled,
+        low_balance_threshold: if low_balance_enabled {
+            balance_warning
+        } else {
+            0.0
+        },
+        subscription_quota_alerts_enabled,
     }
 }
 
@@ -292,5 +374,58 @@ fn fallback_profile(account: &AccountRecord) -> UserProfileRecord {
         identities: std::collections::HashMap::new(),
         auth_bindings: std::collections::HashMap::new(),
         identity_bindings: std::collections::HashMap::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn product_default_preferences_are_valid() {
+        assert_eq!(
+            validate_alert_preferences(AccountAlertPreferences::default())
+                .expect("validate product defaults"),
+            AccountAlertPreferences {
+                low_balance_enabled: false,
+                low_balance_threshold: 0.0,
+                subscription_quota_alerts_enabled: true,
+            }
+        );
+    }
+
+    #[test]
+    fn explicit_low_balance_threshold_must_be_finite_and_non_negative() {
+        for threshold in [-0.01, f64::NAN, f64::INFINITY] {
+            let error = validate_alert_preferences(AccountAlertPreferences {
+                low_balance_enabled: true,
+                low_balance_threshold: threshold,
+                subscription_quota_alerts_enabled: true,
+            })
+            .expect_err("reject invalid threshold");
+            assert!(error
+                .to_string()
+                .contains("低余额提醒阈值必须是大于等于 0 的有限数字"));
+        }
+    }
+
+    #[test]
+    fn explicit_preferences_write_the_legacy_balance_encoding() {
+        assert_eq!(
+            balance_warning_from_preferences(&AccountAlertPreferences {
+                low_balance_enabled: false,
+                low_balance_threshold: 6.0,
+                subscription_quota_alerts_enabled: true,
+            }),
+            -1.0
+        );
+        assert_eq!(
+            balance_warning_from_preferences(&AccountAlertPreferences {
+                low_balance_enabled: true,
+                low_balance_threshold: 0.0,
+                subscription_quota_alerts_enabled: false,
+            }),
+            0.0
+        );
     }
 }

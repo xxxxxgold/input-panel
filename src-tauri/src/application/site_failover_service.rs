@@ -29,11 +29,22 @@ use super::AppContext;
 const FAILOVER_LEASE_WAIT_LIMIT: Duration = Duration::from_secs(25);
 const FAILOVER_LEASE_POLL_MAX: Duration = Duration::from_millis(200);
 const FAILOVER_LEASE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
-const ADDRESS_RETRY_WAIT_LIMIT_MS: u64 = 30_000;
 const ADDRESS_RETRY_BACKOFF_BASE_MS: u64 = 500;
 const ADDRESS_RETRY_BACKOFF_CAP_MS: u64 = 4_000;
 const ADDRESS_RETRY_JITTER_MAX_MS: u64 = 250;
 const TRANSITION_SCAN_MAX_PAGES: usize = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadCandidatePolicy {
+    Normal,
+    AllCoolingSerial,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteProbePolicy {
+    Normal,
+    AllCoolingSerial,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SiteFailoverErrorCode {
@@ -64,18 +75,6 @@ pub struct SiteFailoverError {
 }
 
 impl SiteFailoverError {
-    fn all_cooling(snapshot: &SiteFailoverSnapshot, now_ms: i64) -> Self {
-        let retry_at_ms = snapshot.earliest_cooldown_until_ms(now_ms);
-        Self {
-            code: SiteFailoverErrorCode::AllAddressesCooling,
-            retry_at_ms,
-            retry_after_ms: retry_at_ms
-                .map(|retry_at| u64::try_from(retry_at.saturating_sub(now_ms)).unwrap_or(u64::MAX)),
-            message: "所有站点地址都在冷却中。",
-            source: None,
-        }
-    }
-
     fn exhausted(snapshot: &SiteFailoverSnapshot) -> Self {
         let now_ms = unix_time_ms();
         let all_cooling = all_addresses_cooling(snapshot, now_ms);
@@ -636,9 +635,28 @@ async fn request_confirmed_operation(
             .await?;
         let now_ms = unix_time_ms();
         if all_addresses_cooling(&snapshot, now_ms) {
-            return Err(anyhow::Error::new(SiteFailoverError::all_cooling(
-                &snapshot, now_ms,
-            )));
+            let observed_revision = snapshot.evaluation_revision;
+            let Some(lease) =
+                acquire_evaluation_lease(ctx, &identity, observed_revision, started).await?
+            else {
+                continue;
+            };
+            let serial_candidates = (0..identity.topology().address_keys.len()).collect();
+            return evaluate_read_candidates(
+                ctx,
+                site,
+                &identity,
+                session,
+                operation,
+                snapshot,
+                lease,
+                serial_candidates,
+                already_failed,
+                priority_error,
+                request_slot,
+                ReadCandidatePolicy::AllCoolingSerial,
+            )
+            .await;
         }
         let active_index = address_index(&identity, &snapshot.active_address_key)?;
         let active_state = snapshot
@@ -679,7 +697,7 @@ async fn request_confirmed_operation(
                 active_index,
                 active_state.cooldown_revision,
                 &operation,
-                site.max_attempts_per_address,
+                site.retry_count_per_address,
                 request_slot,
             )
             .await
@@ -719,6 +737,7 @@ async fn request_confirmed_operation(
             already_failed,
             priority_error,
             request_slot,
+            ReadCandidatePolicy::Normal,
         )
         .await;
     }
@@ -750,7 +769,7 @@ async fn evaluate_primary_recovery(
         0,
         primary_state.cooldown_revision,
         &probe,
-        1,
+        0,
         PhysicalRequestSlot::None,
     )
     .await;
@@ -807,6 +826,7 @@ async fn evaluate_read_candidates(
     mut excluded: HashSet<CoordinationKey>,
     mut priority_error: Option<anyhow::Error>,
     request_slot: PhysicalRequestSlot,
+    policy: ReadCandidatePolicy,
 ) -> Result<AddressAttemptSuccess> {
     let mut heartbeat = EvaluationLeaseHeartbeat::start(ctx, lease.clone());
 
@@ -814,7 +834,10 @@ async fn evaluate_read_candidates(
         let Some(address_key) = identity.address_key_at(index) else {
             continue;
         };
-        if excluded.contains(&address_key) || address_is_cooling(&snapshot, &address_key) {
+        if excluded.contains(&address_key)
+            || (policy == ReadCandidatePolicy::Normal
+                && address_is_cooling(&snapshot, &address_key))
+        {
             continue;
         }
         let cooldown_revision = snapshot
@@ -829,7 +852,7 @@ async fn evaluate_read_candidates(
             index,
             cooldown_revision,
             &operation,
-            site.max_attempts_per_address,
+            site.retry_count_per_address,
             request_slot,
         )
         .await
@@ -858,6 +881,16 @@ async fn evaluate_read_candidates(
                     .await?;
             }
         }
+    }
+
+    if policy == ReadCandidatePolicy::AllCoolingSerial {
+        heartbeat.stop().await;
+        let completed = ctx
+            .runtime_coordination
+            .complete_site_failover_evaluation(identity, lease, None)
+            .await?
+            .unwrap_or(snapshot);
+        return Err(anyhow::Error::new(SiteFailoverError::exhausted(&completed)));
     }
 
     let candidate_indices = identity
@@ -903,7 +936,7 @@ async fn evaluate_read_candidates(
                 index,
                 cooldown_revision,
                 &worker_operation,
-                worker_site.max_attempts_per_address,
+                worker_site.retry_count_per_address,
                 request_slot,
             )
             .await;
@@ -970,6 +1003,7 @@ async fn request_non_idempotent_operation(
     let preferred_index = preferred_address_index(&identity, preferred_base_url)?;
     let started = Instant::now();
     let mut excluded = HashSet::new();
+    let mut all_cooling_probe_attempted = HashSet::new();
 
     loop {
         let snapshot = ctx
@@ -977,11 +1011,6 @@ async fn request_non_idempotent_operation(
             .load_site_failover(&identity)
             .await?;
         let now_ms = unix_time_ms();
-        if all_addresses_cooling(&snapshot, now_ms) {
-            return Err(anyhow::Error::new(SiteFailoverError::all_cooling(
-                &snapshot, now_ms,
-            )));
-        }
         let active_index = address_index(&identity, &snapshot.active_address_key)?;
         let active_state = snapshot
             .address(&snapshot.active_address_key)
@@ -1007,7 +1036,7 @@ async fn request_non_idempotent_operation(
                 direct_index,
                 direct_state.cooldown_revision,
                 &operation,
-                1,
+                0,
                 PhysicalRequestSlot::None,
             )
             .await
@@ -1047,14 +1076,21 @@ async fn request_non_idempotent_operation(
         let evaluated_direct_state = evaluated_snapshot
             .address(&evaluated_direct_key)
             .context("共享协调状态缺少写请求最新目标地址。")?;
-        let mut target_index =
-            if excluded.is_empty() && evaluated_direct_state.cooldown_until_ms <= unix_time_ms() {
-                Some(evaluated_direct_index)
-            } else {
-                None
-            };
+        let mut target_index = if excluded.is_empty()
+            && !all_addresses_cooling(&evaluated_snapshot, unix_time_ms())
+            && evaluated_direct_state.cooldown_until_ms <= unix_time_ms()
+        {
+            Some(evaluated_direct_index)
+        } else {
+            None
+        };
 
         loop {
+            let probe_policy = if all_addresses_cooling(&evaluated_snapshot, unix_time_ms()) {
+                WriteProbePolicy::AllCoolingSerial
+            } else {
+                WriteProbePolicy::Normal
+            };
             let index = match target_index.take() {
                 Some(index) => index,
                 None => match select_write_probe_candidate(
@@ -1062,8 +1098,11 @@ async fn request_non_idempotent_operation(
                     site,
                     &identity,
                     session.clone(),
-                    &evaluated_snapshot,
+                    evaluated_snapshot.clone(),
                     &excluded,
+                    &mut all_cooling_probe_attempted,
+                    preferred_index,
+                    probe_policy,
                 )
                 .await
                 {
@@ -1093,7 +1132,7 @@ async fn request_non_idempotent_operation(
                 index,
                 cooldown_revision,
                 &operation,
-                1,
+                0,
                 PhysicalRequestSlot::None,
             )
             .await
@@ -1140,21 +1179,26 @@ async fn select_write_probe_candidate(
     site: &SiteRecord,
     identity: &SiteFailoverIdentity,
     session: Option<StoredSession>,
-    snapshot: &SiteFailoverSnapshot,
+    snapshot: SiteFailoverSnapshot,
     excluded: &HashSet<CoordinationKey>,
+    all_cooling_probe_attempted: &mut HashSet<CoordinationKey>,
+    preferred_index: Option<usize>,
+    policy: WriteProbePolicy,
 ) -> Result<usize> {
-    let candidate_indices = identity
-        .topology()
-        .address_keys
-        .iter()
-        .enumerate()
-        .filter_map(|(index, address_key)| {
-            (!excluded.contains(address_key) && !address_is_cooling(snapshot, address_key))
-                .then_some(index)
+    let candidate_indices = ordered_write_probe_indices(identity, preferred_index)
+        .into_iter()
+        .filter(|index| {
+            identity.address_key_at(*index).is_some_and(|address_key| {
+                !excluded.contains(&address_key)
+                    && (policy == WriteProbePolicy::AllCoolingSerial
+                        || !address_is_cooling(&snapshot, &address_key))
+                    && (policy != WriteProbePolicy::AllCoolingSerial
+                        || !all_cooling_probe_attempted.contains(&address_key))
+            })
         })
         .collect::<Vec<_>>();
     if candidate_indices.is_empty() {
-        return Err(anyhow::Error::new(SiteFailoverError::exhausted(snapshot)));
+        return Err(anyhow::Error::new(SiteFailoverError::exhausted(&snapshot)));
     }
 
     let probe = SiteRequestOperation::Api {
@@ -1162,6 +1206,52 @@ async fn select_write_probe_candidate(
         method: "GET".to_string(),
         payload: None,
     };
+
+    if policy == WriteProbePolicy::AllCoolingSerial {
+        let mut latest_snapshot = snapshot;
+        let mut terminal_error = None;
+        for index in candidate_indices {
+            let address_key = identity
+                .address_key_at(index)
+                .context("写请求串行探测地址身份缺失。")?;
+            all_cooling_probe_attempted.insert(address_key);
+            let cooldown_revision = latest_snapshot
+                .address(&address_key)
+                .context("共享协调状态缺少写请求串行探测地址。")?
+                .cooldown_revision;
+            match attempt_address(
+                ctx,
+                site,
+                identity,
+                session.clone(),
+                index,
+                cooldown_revision,
+                &probe,
+                site.retry_count_per_address,
+                PhysicalRequestSlot::None,
+            )
+            .await
+            {
+                AddressAttemptResult::Success(_) => return Ok(index),
+                AddressAttemptResult::Terminal(error) => {
+                    terminal_error.get_or_insert(error);
+                }
+                AddressAttemptResult::Switchable { .. } => {
+                    latest_snapshot = ctx
+                        .runtime_coordination
+                        .load_site_failover(identity)
+                        .await?;
+                }
+            }
+        }
+        if let Some(error) = terminal_error {
+            return Err(error);
+        }
+        return Err(anyhow::Error::new(SiteFailoverError::exhausted(
+            &latest_snapshot,
+        )));
+    }
+
     let mut workers = JoinSet::new();
     for index in candidate_indices {
         let worker_ctx = ctx.clone();
@@ -1185,7 +1275,7 @@ async fn select_write_probe_candidate(
                 index,
                 cooldown_revision,
                 &worker_probe,
-                worker_site.max_attempts_per_address,
+                worker_site.retry_count_per_address,
                 PhysicalRequestSlot::None,
             )
             .await;
@@ -1223,6 +1313,20 @@ async fn select_write_probe_candidate(
         .load_site_failover(identity)
         .await?;
     Err(anyhow::Error::new(SiteFailoverError::exhausted(&latest)))
+}
+
+fn ordered_write_probe_indices(
+    identity: &SiteFailoverIdentity,
+    preferred_index: Option<usize>,
+) -> Vec<usize> {
+    let mut indices = Vec::with_capacity(identity.topology().address_keys.len());
+    if let Some(index) = preferred_index {
+        indices.push(index);
+    }
+    indices.extend(
+        (0..identity.topology().address_keys.len()).filter(|index| Some(*index) != preferred_index),
+    );
+    indices
 }
 
 fn preferred_address_index(
@@ -1281,7 +1385,7 @@ async fn attempt_address(
     address_index: usize,
     observed_cooldown_revision: i64,
     operation: &SiteRequestOperation,
-    max_attempts: u32,
+    retry_count: u32,
     request_slot: PhysicalRequestSlot,
 ) -> AddressAttemptResult {
     let Some(base_url) = identity.canonical_addresses().get(address_index).cloned() else {
@@ -1305,9 +1409,8 @@ async fn attempt_address(
         Ok(client) => client,
         Err(error) => return AddressAttemptResult::Terminal(error),
     };
-    let attempts = max_attempts.max(1);
-    let mut waited_ms = 0_u64;
-    for attempt in 1..=attempts {
+    let mut retries_used = 0_u32;
+    loop {
         let usage_page_slot = match request_slot {
             PhysicalRequestSlot::None => None,
             PhysicalRequestSlot::UsagePage => {
@@ -1337,13 +1440,11 @@ async fn attempt_address(
                     return AddressAttemptResult::Terminal(error);
                 }
                 let explicit_rate_limit = failure.is_explicit_http_429();
-                if !explicit_rate_limit && attempt < attempts {
-                    let delay_ms = address_retry_delay_ms(attempt);
-                    if delay_ms <= ADDRESS_RETRY_WAIT_LIMIT_MS.saturating_sub(waited_ms) {
-                        waited_ms = waited_ms.saturating_add(delay_ms);
-                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                        continue;
-                    }
+                if !explicit_rate_limit && retries_used < retry_count {
+                    let delay_ms = address_retry_delay_ms(retries_used.saturating_add(1));
+                    retries_used = retries_used.saturating_add(1);
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    continue;
                 }
                 let cooldown_delay_ms = failure
                     .retry_after_ms
@@ -1379,7 +1480,6 @@ async fn attempt_address(
             }
         }
     }
-    AddressAttemptResult::Terminal(anyhow!("站点地址尝试预算异常。"))
 }
 
 fn failover_failure_category(failure: &UpstreamFailure) -> Result<SiteFailoverFailureCategory> {
@@ -2144,9 +2244,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_fails_fast_when_all_addresses_are_cooling() {
+    async fn get_recovers_serially_when_all_addresses_are_cooling() {
         let tracker = Arc::new(WriteConcurrency::default());
-        let primary = MockSiteState::new("primary", Arc::clone(&tracker));
+        let primary = MockSiteState::new("primary", Arc::clone(&tracker))
+            .with_read_status(StatusCode::SERVICE_UNAVAILABLE);
         let fallback = MockSiteState::new("fallback", tracker);
         let primary_server = start_mock_server(primary.clone()).await;
         let fallback_server = start_mock_server(fallback.clone()).await;
@@ -2180,21 +2281,58 @@ mod tests {
                 .expect("record address cooldown");
         }
 
-        let error = SiteFailoverReadClient::new(&ctx, site, test_session())
+        let result = SiteFailoverReadClient::new(&ctx, site.clone(), test_session())
             .get_api("/api/v1/test")
             .await
-            .expect_err("all-cooling request must fail before transport");
-        let failure = error
-            .downcast_ref::<SiteFailoverError>()
-            .expect("structured failover error");
-        assert_eq!(failure.code, SiteFailoverErrorCode::AllAddressesCooling);
-        assert!(failure.retry_at_ms.is_some());
-        assert!(failure.retry_after_ms.is_some_and(|delay| delay > 0));
-        assert_eq!(primary.read_hits(), 0);
-        assert_eq!(fallback.read_hits(), 0);
+            .expect("all-cooling request should recover through the ordered candidates");
+        assert_eq!(result["marker"], "fallback");
+        assert_eq!(primary.read_hits(), 1);
+        assert_eq!(fallback.read_hits(), 1);
 
         primary_server.shutdown().await;
         fallback_server.shutdown().await;
+        cleanup_test_context(ctx, root);
+    }
+
+    #[tokio::test]
+    async fn retry_count_zero_sends_only_the_first_request() {
+        let tracker = Arc::new(WriteConcurrency::default());
+        let primary = MockSiteState::new("primary", Arc::clone(&tracker))
+            .with_read_status(StatusCode::SERVICE_UNAVAILABLE);
+        let primary_server = start_mock_server(primary.clone()).await;
+        let mut site = test_site(primary_server.base_url(), &[]);
+        site.retry_count_per_address = 0;
+        let (ctx, root) = build_test_context("retry-zero");
+
+        let error = SiteFailoverReadClient::new(&ctx, site, test_session())
+            .get_api("/api/v1/test")
+            .await
+            .expect_err("a single failed address should exhaust without retry");
+        assert!(error.downcast_ref::<SiteFailoverError>().is_some());
+        assert_eq!(primary.read_hits(), 1);
+
+        primary_server.shutdown().await;
+        cleanup_test_context(ctx, root);
+    }
+
+    #[tokio::test]
+    async fn retry_count_three_allows_four_physical_requests() {
+        let tracker = Arc::new(WriteConcurrency::default());
+        let primary = MockSiteState::new("primary", Arc::clone(&tracker))
+            .with_read_status(StatusCode::SERVICE_UNAVAILABLE);
+        let primary_server = start_mock_server(primary.clone()).await;
+        let mut site = test_site(primary_server.base_url(), &[]);
+        site.retry_count_per_address = 3;
+        let (ctx, root) = build_test_context("retry-three");
+
+        let error = SiteFailoverReadClient::new(&ctx, site, test_session())
+            .get_api("/api/v1/test")
+            .await
+            .expect_err("the address should exhaust four total attempts");
+        assert!(error.downcast_ref::<SiteFailoverError>().is_some());
+        assert_eq!(primary.read_hits(), 4);
+
+        primary_server.shutdown().await;
         cleanup_test_context(ctx, root);
     }
 
@@ -2362,6 +2500,153 @@ mod tests {
         primary_server.shutdown().await;
         fast_server.shutdown().await;
         slow_server.shutdown().await;
+        cleanup_test_context(ctx, root);
+    }
+
+    #[tokio::test]
+    async fn all_cooling_write_probes_each_address_once_before_safe_429_replay() {
+        let tracker = Arc::new(WriteConcurrency::default());
+        let primary = MockSiteState::new("primary", Arc::clone(&tracker))
+            .with_probe_status(StatusCode::SERVICE_UNAVAILABLE);
+        let fallback = MockSiteState::new("fallback", Arc::clone(&tracker))
+            .with_write_status(StatusCode::TOO_MANY_REQUESTS);
+        let final_fallback = MockSiteState::new("final", Arc::clone(&tracker));
+        let primary_server = start_mock_server(primary.clone()).await;
+        let fallback_server = start_mock_server(fallback.clone()).await;
+        let final_server = start_mock_server(final_fallback.clone()).await;
+        let site = test_site(
+            primary_server.base_url(),
+            &[fallback_server.base_url(), final_server.base_url()],
+        );
+        let (ctx, root) = build_test_context("all-cooling-write");
+        let identity = ctx
+            .runtime_coordination
+            .site_failover_identity(&site.base_url, &site.fallback_base_urls)
+            .expect("derive test topology");
+        cool_all_addresses(&ctx, &identity).await;
+        let payload = serde_json::json!({ "name": "one-safe-replay" });
+
+        let result = request_api(
+            &ctx,
+            &site,
+            Some(test_session()),
+            "/api/v1/test",
+            "POST",
+            Some(payload.clone()),
+        )
+        .await
+        .expect("429 should permit one serially probed next address");
+
+        assert_eq!(result.value["marker"], "final");
+        assert_eq!(primary.probe_hits(), 1);
+        assert_eq!(fallback.probe_hits(), 1);
+        assert_eq!(final_fallback.probe_hits(), 1);
+        assert_eq!(primary.write_hits(), 0);
+        assert_eq!(fallback.write_hits(), 1);
+        assert_eq!(final_fallback.write_hits(), 1);
+        assert_eq!(fallback.write_payloads(), vec![payload.clone()]);
+        assert_eq!(final_fallback.write_payloads(), vec![payload]);
+        assert_eq!(tracker.peak.load(Ordering::SeqCst), 1);
+
+        primary_server.shutdown().await;
+        fallback_server.shutdown().await;
+        final_server.shutdown().await;
+        cleanup_test_context(ctx, root);
+    }
+
+    #[tokio::test]
+    async fn all_cooling_write_never_replays_an_uncertain_payload_failure() {
+        let tracker = Arc::new(WriteConcurrency::default());
+        let primary = MockSiteState::new("primary", Arc::clone(&tracker))
+            .with_write_status(StatusCode::SERVICE_UNAVAILABLE);
+        let fallback = MockSiteState::new("fallback", Arc::clone(&tracker));
+        let primary_server = start_mock_server(primary.clone()).await;
+        let fallback_server = start_mock_server(fallback.clone()).await;
+        let site = test_site(primary_server.base_url(), &[fallback_server.base_url()]);
+        let (ctx, root) = build_test_context("all-cooling-unsafe-write");
+        let identity = ctx
+            .runtime_coordination
+            .site_failover_identity(&site.base_url, &site.fallback_base_urls)
+            .expect("derive test topology");
+        cool_all_addresses(&ctx, &identity).await;
+
+        let result = request_api(
+            &ctx,
+            &site,
+            Some(test_session()),
+            "/api/v1/test",
+            "POST",
+            Some(serde_json::json!({ "name": "unsafe" })),
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("503 after the selected payload must not replay to another address"),
+            Err(error) => error,
+        };
+        let failure = error
+            .downcast_ref::<SiteFailoverError>()
+            .expect("unsafe write error");
+        assert_eq!(failure.code, SiteFailoverErrorCode::UnsafeWriteNotReplayed);
+        assert_eq!(primary.probe_hits(), 1);
+        assert_eq!(primary.write_hits(), 1);
+        assert_eq!(fallback.probe_hits(), 0);
+        assert_eq!(fallback.write_hits(), 0);
+        assert_eq!(tracker.peak.load(Ordering::SeqCst), 1);
+
+        primary_server.shutdown().await;
+        fallback_server.shutdown().await;
+        cleanup_test_context(ctx, root);
+    }
+
+    #[tokio::test]
+    async fn all_cooling_write_probes_preferred_2fa_origin_before_topology_order() {
+        let tracker = Arc::new(WriteConcurrency::default());
+        let primary = MockSiteState::new("primary", Arc::clone(&tracker));
+        let origin = MockSiteState::new("origin", Arc::clone(&tracker))
+            .with_probe_status(StatusCode::SERVICE_UNAVAILABLE);
+        let fallback = MockSiteState::new("fallback", Arc::clone(&tracker));
+        let primary_server = start_mock_server(primary.clone()).await;
+        let origin_server = start_mock_server(origin.clone()).await;
+        let fallback_server = start_mock_server(fallback.clone()).await;
+        let site = test_site(
+            primary_server.base_url(),
+            &[origin_server.base_url(), fallback_server.base_url()],
+        );
+        let (ctx, root) = build_test_context("all-cooling-2fa-origin");
+        let identity = ctx
+            .runtime_coordination
+            .site_failover_identity(&site.base_url, &site.fallback_base_urls)
+            .expect("derive 2FA origin topology");
+        cool_all_addresses(&ctx, &identity).await;
+        let payload = serde_json::json!({ "code": "654321" });
+
+        let result = request_non_idempotent_operation(
+            &ctx,
+            &site,
+            None,
+            SiteRequestOperation::Api {
+                path: "/api/v1/test".to_string(),
+                method: "POST".to_string(),
+                payload: Some(payload.clone()),
+            },
+            Some(origin_server.base_url()),
+        )
+        .await
+        .expect("the primary should be selected after the preferred origin probe fails");
+
+        assert_eq!(result.base_url, primary_server.base_url());
+        assert_eq!(origin.probe_hits(), 1);
+        assert_eq!(primary.probe_hits(), 1);
+        assert_eq!(fallback.probe_hits(), 0);
+        assert_eq!(origin.write_hits(), 0);
+        assert_eq!(primary.write_hits(), 1);
+        assert_eq!(primary.write_payloads(), vec![payload]);
+        assert_eq!(fallback.write_hits(), 0);
+        assert_eq!(tracker.peak.load(Ordering::SeqCst), 1);
+
+        primary_server.shutdown().await;
+        origin_server.shutdown().await;
+        fallback_server.shutdown().await;
         cleanup_test_context(ctx, root);
     }
 
@@ -2723,9 +3008,35 @@ mod tests {
             base_url: primary.to_string(),
             fallback_base_urls: fallbacks.iter().map(|value| (*value).to_string()).collect(),
             failover_cooldown_seconds: 60,
-            max_attempts_per_address: 1,
+            retry_count_per_address: 0,
             created_at: "2026-08-11T00:00:00Z".into(),
             updated_at: "2026-08-11T00:00:00Z".into(),
+        }
+    }
+
+    async fn cool_all_addresses(ctx: &AppContext, identity: &SiteFailoverIdentity) {
+        let mut snapshot = ctx
+            .runtime_coordination
+            .load_site_failover(identity)
+            .await
+            .expect("initialize all-cooling topology");
+        for address_key in identity.topology().address_keys.iter().copied() {
+            let revision = snapshot
+                .address(&address_key)
+                .expect("all-cooling address state")
+                .cooldown_revision;
+            (_, snapshot) = ctx
+                .runtime_coordination
+                .record_site_failover_failure(
+                    identity,
+                    address_key,
+                    Some(revision),
+                    60_000,
+                    SiteFailoverFailureCategory::Transport,
+                    None,
+                )
+                .await
+                .expect("record all-cooling address");
         }
     }
 

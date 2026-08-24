@@ -1,3 +1,4 @@
+pub mod account_alert_preferences;
 pub mod accounts;
 pub mod codex_radar_fast_cache;
 pub mod codex_radar_insights_cache;
@@ -16,6 +17,7 @@ pub mod subscription_switch_rules;
 pub mod usage_history_state;
 pub mod usage_notification_outbox;
 
+pub use account_alert_preferences::*;
 pub use accounts::*;
 pub use codex_radar_fast_cache::*;
 pub use codex_radar_insights_cache::*;

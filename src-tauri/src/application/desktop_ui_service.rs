@@ -6,6 +6,8 @@ use std::{
 use anyhow::Result;
 use serde::Deserialize;
 use tauri::{AppHandle, Manager};
+#[cfg(not(target_os = "windows"))]
+use tauri_plugin_notification::NotificationExt;
 
 use crate::contracts::{
     AppLaunchMode, CloseBehavior, DesktopUiPrefs, DesktopUiPrefsPatch, FloatingNotificationDensity,
@@ -26,6 +28,8 @@ pub(crate) const MAX_FLOATING_NOTIFICATION_SOUND_VOLUME: i64 = 100;
 pub(crate) const DEFAULT_OVERVIEW_ACCOUNT_RUNTIME_TIMEOUT_MS: i64 = 4_500;
 pub(crate) const MIN_OVERVIEW_ACCOUNT_RUNTIME_TIMEOUT_MS: i64 = 1_000;
 pub(crate) const MAX_OVERVIEW_ACCOUNT_RUNTIME_TIMEOUT_MS: i64 = 30_000;
+pub(crate) const MIN_COMPLETED_TASK_RETENTION_MINUTES: i64 = 1;
+pub(crate) const MAX_COMPLETED_TASK_RETENTION_MINUTES: i64 = 1_440;
 
 fn desktop_ui_prefs_update_lock() -> &'static Mutex<()> {
     static UPDATE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -50,6 +54,13 @@ fn normalize_overview_account_runtime_timeout_ms(value: i64) -> i64 {
     value.clamp(
         MIN_OVERVIEW_ACCOUNT_RUNTIME_TIMEOUT_MS,
         MAX_OVERVIEW_ACCOUNT_RUNTIME_TIMEOUT_MS,
+    )
+}
+
+fn normalize_completed_task_retention_minutes(value: i64) -> i64 {
+    value.clamp(
+        MIN_COMPLETED_TASK_RETENTION_MINUTES,
+        MAX_COMPLETED_TASK_RETENTION_MINUTES,
     )
 }
 
@@ -190,6 +201,8 @@ fn normalize_prefs(mut prefs: DesktopUiPrefs) -> DesktopUiPrefs {
         normalize_auto_refresh_interval_seconds(prefs.auto_refresh_usage_interval_seconds);
     prefs.overview_account_runtime_timeout_ms =
         normalize_overview_account_runtime_timeout_ms(prefs.overview_account_runtime_timeout_ms);
+    prefs.completed_task_retention_minutes =
+        normalize_completed_task_retention_minutes(prefs.completed_task_retention_minutes);
     prefs
 }
 
@@ -317,6 +330,9 @@ pub fn update_desktop_ui_prefs(
         prefs.overview_account_runtime_timeout_ms =
             normalize_overview_account_runtime_timeout_ms(value);
     }
+    if let Some(value) = patch.completed_task_retention_minutes {
+        prefs.completed_task_retention_minutes = normalize_completed_task_retention_minutes(value);
+    }
     if let Some(value) = patch.theme {
         prefs.theme = normalize_theme(value);
     }
@@ -410,7 +426,7 @@ pub fn restore_default_floating_notification_sound(ctx: &AppContext) -> Result<D
     Ok(prefs)
 }
 
-/// 当前声音启动结果。系统提示音由 Windows 异步排队，无需持有 Rodio 会话。
+/// 当前声音启动结果。Windows 系统提示音由系统异步排队，其他平台使用文件音会话。
 pub(crate) enum FloatingNotificationSoundStart {
     Audio(notification_sound::ActiveNotificationSound),
     System,
@@ -444,6 +460,23 @@ pub(crate) fn show_windows_notification_with_sound(
         ),
         || schedule_floating_notification_sound(app),
     )
+}
+
+/// 显示非 Windows 桌面通知，并在插件接受后异步播放当前配置的提示音。
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn show_non_windows_notification_with_sound(
+    app: &AppHandle,
+    title: &str,
+    body: &str,
+) -> Result<()> {
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(anyhow::Error::from)?;
+    schedule_floating_notification_sound(app);
+    Ok(())
 }
 
 /// 仅切换不依赖文件路径的来源，保留受控自定义副本供用户之后继续使用。
@@ -514,6 +547,7 @@ pub(crate) fn start_floating_notification_sound(
     if volume_percent == 0 || source == FloatingNotificationSoundSource::Muted {
         return Ok(FloatingNotificationSoundStart::Muted);
     }
+    #[cfg(target_os = "windows")]
     if source == FloatingNotificationSoundSource::System {
         notification_sound::request_windows_system_notification_sound()?;
         return Ok(FloatingNotificationSoundStart::System);
@@ -545,12 +579,12 @@ fn play_floating_notification_sound(app: &AppHandle) -> Result<()> {
     Ok(())
 }
 
-/// 将 Windows Toast 成功显示后的声音准备与播放完全转入后台，不能阻塞通知投递。
+/// 将系统通知提交后的声音准备与播放完全转入后台，不能阻塞通知投递。
 pub fn schedule_floating_notification_sound(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         if let Err(error) = play_floating_notification_sound(&app) {
-            log::warn!("[notification-sound] Windows Toast 提示音播放失败: {error}");
+            log::warn!("[notification-sound] 系统通知提示音播放失败: {error}");
         }
     });
 }
@@ -672,6 +706,7 @@ mod tests {
             prefs.overview_account_runtime_timeout_ms,
             DEFAULT_OVERVIEW_ACCOUNT_RUNTIME_TIMEOUT_MS
         );
+        assert_eq!(prefs.completed_task_retention_minutes, 1);
     }
 
     #[test]
@@ -700,6 +735,7 @@ mod tests {
             auto_refresh_usage_enabled: false,
             auto_refresh_usage_interval_seconds: 0,
             overview_account_runtime_timeout_ms: 99_999,
+            completed_task_retention_minutes: 99_999,
             theme: "invalid-theme".into(),
         });
 
@@ -750,6 +786,10 @@ mod tests {
             prefs.overview_account_runtime_timeout_ms,
             MAX_OVERVIEW_ACCOUNT_RUNTIME_TIMEOUT_MS
         );
+        assert_eq!(
+            prefs.completed_task_retention_minutes,
+            MAX_COMPLETED_TASK_RETENTION_MINUTES
+        );
     }
 
     #[test]
@@ -782,6 +822,7 @@ mod tests {
             prefs.floating_notification_sound_volume,
             DEFAULT_FLOATING_NOTIFICATION_SOUND_VOLUME
         );
+        assert_eq!(prefs.completed_task_retention_minutes, 1);
         assert_eq!(prefs.theme, "titan-noir");
     }
 
@@ -884,6 +925,44 @@ mod tests {
         assert_eq!(persisted["floatingNotificationSoundSource"], "default");
         assert_eq!(persisted["floatingNotificationSoundVolume"], 100);
         assert_eq!(persisted["autoRefreshServiceStatusEnabled"], true);
+        assert_eq!(persisted["completedTaskRetentionMinutes"], 1);
+    }
+
+    #[test]
+    fn completed_task_retention_minutes_is_clamped_and_persisted() {
+        let ctx = build_test_context();
+
+        let minimum = update_desktop_ui_prefs(
+            &ctx,
+            DesktopUiPrefsPatch {
+                completed_task_retention_minutes: Some(0),
+                ..DesktopUiPrefsPatch::default()
+            },
+        )
+        .expect("persist minimum completed task retention");
+        assert_eq!(
+            minimum.completed_task_retention_minutes,
+            MIN_COMPLETED_TASK_RETENTION_MINUTES
+        );
+
+        let maximum = update_desktop_ui_prefs(
+            &ctx,
+            DesktopUiPrefsPatch {
+                completed_task_retention_minutes: Some(9_999),
+                ..DesktopUiPrefsPatch::default()
+            },
+        )
+        .expect("persist maximum completed task retention");
+        assert_eq!(
+            maximum.completed_task_retention_minutes,
+            MAX_COMPLETED_TASK_RETENTION_MINUTES
+        );
+        assert_eq!(
+            get_desktop_ui_prefs(&ctx)
+                .expect("read persisted completed task retention")
+                .completed_task_retention_minutes,
+            MAX_COMPLETED_TASK_RETENTION_MINUTES
+        );
     }
 
     #[test]

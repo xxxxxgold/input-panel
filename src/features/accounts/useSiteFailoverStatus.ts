@@ -269,6 +269,6 @@ function createSiteFailoverStatusScopeKey(site: SiteRecord | null) {
     site.baseUrl,
     site.fallbackBaseUrls,
     site.failoverCooldownSeconds,
-    site.maxAttemptsPerAddress
+    site.retryCountPerAddress
   ]);
 }

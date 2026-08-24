@@ -1,16 +1,35 @@
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let base_url = std::env::var("SUB2API_SITE_URL")
-        .map_err(|_| anyhow::anyhow!("缺少 SUB2API_SITE_URL"))?;
-    let email = std::env::var("SUB2API_EMAIL")
-        .map_err(|_| anyhow::anyhow!("缺少 SUB2API_EMAIL"))?;
-    let password = std::env::var("SUB2API_PASSWORD")
-        .map_err(|_| anyhow::anyhow!("缺少 SUB2API_PASSWORD"))?;
+    let base_url =
+        std::env::var("SUB2API_SITE_URL").map_err(|_| anyhow::anyhow!("缺少 SUB2API_SITE_URL"))?;
+    let email =
+        std::env::var("SUB2API_EMAIL").map_err(|_| anyhow::anyhow!("缺少 SUB2API_EMAIL"))?;
+    let password =
+        std::env::var("SUB2API_PASSWORD").map_err(|_| anyhow::anyhow!("缺少 SUB2API_PASSWORD"))?;
 
-    let mut client = app_lib::infrastructure::sub2api::client::Sub2ApiClient::new(&base_url, None)?;
+    let paths = app_lib::infrastructure::files::AppPaths::resolve_web()?;
+    paths.ensure()?;
+    let coordination =
+        app_lib::application::runtime_coordination_service::RuntimeCoordinationService::from_paths(
+            &paths,
+        )
+        .await?;
+    let request_coordination = coordination.site_request_coordination(&base_url)?;
+    let use_system_proxy = coordination
+        .get_upstream_network_config()
+        .await?
+        .use_system_proxy;
+    let mut client = app_lib::infrastructure::sub2api::client::Sub2ApiClient::new(
+        &base_url,
+        None,
+        request_coordination,
+        use_system_proxy,
+    )?;
     let login = client.login(&email, &password).await?;
     if login.requires2fa {
-        return Err(anyhow::anyhow!("真实站点返回了 2FA 挑战，当前 smoke 二进制未处理。"));
+        return Err(anyhow::anyhow!(
+            "真实站点返回了 2FA 挑战，当前 smoke 二进制未处理。"
+        ));
     }
 
     let cache_view = client

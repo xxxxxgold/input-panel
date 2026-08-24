@@ -4,7 +4,7 @@ export interface SiteRecord {
   baseUrl: string;
   fallbackBaseUrls: string[];
   failoverCooldownSeconds: number;
-  maxAttemptsPerAddress: number;
+  retryCountPerAddress: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -50,6 +50,12 @@ export interface AccountRecord {
   lastLoginAt?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AccountAlertPreferences {
+  lowBalanceEnabled: boolean;
+  lowBalanceThreshold: number;
+  subscriptionQuotaAlertsEnabled: boolean;
 }
 
 export interface SubscriptionQuotaWindow {
@@ -1022,7 +1028,7 @@ export interface SiteInput {
   baseUrl: string;
   fallbackBaseUrls: string[];
   failoverCooldownSeconds: number;
-  maxAttemptsPerAddress: number;
+  retryCountPerAddress: number;
 }
 
 export interface SitePatchInput {
@@ -1030,7 +1036,7 @@ export interface SitePatchInput {
   baseUrl?: string | null;
   fallbackBaseUrls?: string[] | null;
   failoverCooldownSeconds?: number | null;
-  maxAttemptsPerAddress?: number | null;
+  retryCountPerAddress?: number | null;
 }
 
 export type SiteFailoverAddressKind = "primary" | "fallback";
@@ -1100,7 +1106,13 @@ export interface AccountInput {
   siteId: string;
   label: string;
   email: string;
-  balanceWarning: number;
+  alertPreferences: AccountAlertPreferences;
+}
+
+export interface AccountUpdateInput {
+  label?: string | null;
+  email?: string | null;
+  alertPreferences?: AccountAlertPreferences | null;
 }
 
 export interface Login2faChallenge {
@@ -1150,6 +1162,7 @@ export interface DesktopUiPrefs {
   autoRefreshUsageEnabled: boolean;
   autoRefreshUsageIntervalSeconds: number;
   overviewAccountRuntimeTimeoutMs: number;
+  completedTaskRetentionMinutes: number;
   theme: "titan-noir" | "arctic-relay" | "ember-circuit" | "verdant-core" | "sakura-signal" | string;
 }
 
@@ -1173,6 +1186,7 @@ export interface DesktopUiPrefsPatch {
   autoRefreshUsageEnabled?: boolean;
   autoRefreshUsageIntervalSeconds?: number;
   overviewAccountRuntimeTimeoutMs?: number;
+  completedTaskRetentionMinutes?: number;
   theme?: "titan-noir" | "arctic-relay" | "ember-circuit" | "verdant-core" | "sakura-signal" | string;
 }
 

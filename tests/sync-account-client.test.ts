@@ -7,20 +7,23 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { invoke } from "@tauri-apps/api/core";
 
 import { refreshAccount, syncAccountData } from "../src/features/accounts/client";
+import { restoreWindow, stubWindow } from "./helpers/window";
 
 describe("syncAccountData client", () => {
   const originalWindow = globalThis.window;
   const originalFetch = globalThis.fetch;
 
+  function stubTauriWindow() {
+    stubWindow({
+      __TAURI_INTERNALS__: {}
+    } as Window & typeof globalThis);
+  }
+
   afterEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
     globalThis.fetch = originalFetch;
-    if (originalWindow) {
-      globalThis.window = originalWindow;
-    } else {
-      // @ts-expect-error test cleanup
-      delete globalThis.window;
-    }
+    restoreWindow(originalWindow);
   });
 
   it("passes scope and triggerSource through HTTP mode", async () => {
@@ -32,11 +35,21 @@ describe("syncAccountData client", () => {
           {
             accountId: "account-1",
             scope: "full",
-            state: "succeeded",
+            state: "failed",
             lastAttemptAt: "2026-06-27T00:00:00Z",
-            lastSuccessAt: "2026-06-27T00:00:00Z",
-            lastError: null,
-            itemCount: 10
+            lastSuccessAt: null,
+            lastError: "上游持续限流。",
+            itemCount: 0,
+            runId: "run-429",
+            finishedAt: "2026-06-27T00:00:05Z",
+            failure: {
+              category: "rate_limited",
+              message: "上游持续限流。",
+              httpStatus: 429,
+              retryAfterMs: 1000,
+              retryExhausted: true
+            },
+            recoveredAt: "2026-06-27T00:02:00Z"
           }
         ]
       })
@@ -55,11 +68,16 @@ describe("syncAccountData client", () => {
       })
     );
     expect(result.statuses[0].scope).toBe("full");
+    expect(result.statuses[0]).toMatchObject({
+      runId: "run-429",
+      finishedAt: "2026-06-27T00:00:05Z",
+      failure: { category: "rate_limited", retryExhausted: true },
+      recoveredAt: "2026-06-27T00:02:00Z"
+    });
   });
 
   it("passes scope and triggerSource through Tauri mode", async () => {
-    // @ts-expect-error test-only runtime flag
-    globalThis.window = { __TAURI_INTERNALS__: {} };
+    stubTauriWindow();
     vi.mocked(invoke).mockResolvedValue({
       accountId: "account-1",
       statuses: [
@@ -132,8 +150,7 @@ describe("syncAccountData client", () => {
   });
 
   it("keeps refreshAccount compatibility by returning the wrapped account in Tauri mode", async () => {
-    // @ts-expect-error test-only runtime flag
-    globalThis.window = { __TAURI_INTERNALS__: {} };
+    stubTauriWindow();
     vi.mocked(invoke).mockResolvedValue({
       account: {
         id: "account-3",

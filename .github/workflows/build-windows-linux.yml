@@ -1,0 +1,124 @@
+name: Build Windows and Linux release assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Annotated SemVer tag to build
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.release_tag }}
+      - id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag='${{ inputs.release_tag }}'
+          git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
+          test "$(git cat-file -t "$tag")" = tag
+          test "$(git rev-parse "$tag^{commit}")" = "$GITHUB_SHA"
+          version="${tag#v}"
+          test "$version" = "$(node -p "require('./package.json').version")"
+          test "$version" = "$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          test "$version" = "$(sed -n 's/^version = "\([^"]*\)"/\1/p' src-tauri/Cargo.toml | head -1)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          test -z "$(git status --porcelain)"
+
+  build:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: ubuntu-latest
+            platform: linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.release_tag }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install Linux dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf rpm xvfb
+      - name: Install dependencies
+        shell: bash
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+      - name: Quality gate
+        shell: bash
+        run: |
+          pnpm lint
+          pnpm test
+          pnpm check:css
+          pnpm build:web
+          cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml --lib -- --test-threads=1
+      - name: Build Windows bundles
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: pnpm tauri build --bundles msi nsis
+      - name: Collect and smoke Windows assets
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $version = '${{ needs.preflight.outputs.version }}'
+          New-Item -ItemType Directory -Path release-assets | Out-Null
+          Copy-Item src-tauri/target/release/bundle/msi/*.msi "release-assets/InputPanel_${version}_windows-x64.msi"
+          Copy-Item src-tauri/target/release/bundle/nsis/*-setup.exe "release-assets/InputPanel_${version}_windows-x64-setup.exe"
+          New-Item -ItemType Directory -Path portable | Out-Null
+          Copy-Item src-tauri/target/release/app.exe portable/app.exe
+          if (Test-Path src-tauri/target/release/resources) { Copy-Item src-tauri/target/release/resources portable/resources -Recurse }
+          $process = Start-Process -FilePath (Resolve-Path portable/app.exe) -PassThru
+          Start-Sleep -Seconds 8
+          if ($process.HasExited) { throw 'portable app exited during smoke test' }
+          Stop-Process -Id $process.Id
+          Compress-Archive -Path portable/* -DestinationPath "release-assets/InputPanel_${version}_windows-x64-portable.zip"
+      - name: Build Linux bundles
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: pnpm tauri build --bundles deb rpm appimage
+      - name: Collect and smoke Linux assets
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ needs.preflight.outputs.version }}'
+          mkdir release-assets
+          cp src-tauri/target/release/bundle/deb/*.deb "release-assets/InputPanel_${version}_linux-x64.deb"
+          cp src-tauri/target/release/bundle/rpm/*.rpm "release-assets/InputPanel_${version}_linux-x64.rpm"
+          cp src-tauri/target/release/bundle/appimage/*.AppImage "release-assets/InputPanel_${version}_linux-x64.AppImage"
+          chmod +x release-assets/*.AppImage
+          set +e
+          APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a timeout 15s release-assets/*.AppImage
+          status=$?
+          set -e
+          test "$status" = 124
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: InputPanel-${{ needs.preflight.outputs.version }}-${{ matrix.platform }}-x64
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7

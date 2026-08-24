@@ -50,6 +50,8 @@ const MIN_SITE_MAX_IN_FLIGHT = 1;
 const MAX_SITE_MAX_IN_FLIGHT = 8;
 const MIN_USAGE_PAGE_MAX_IN_FLIGHT = 1;
 const MAX_USAGE_PAGE_MAX_IN_FLIGHT = 16;
+const MIN_COMPLETED_TASK_RETENTION_MINUTES = 1;
+const MAX_COMPLETED_TASK_RETENTION_MINUTES = 1440;
 
 const DATABASE_MIGRATION_PHASE_LABELS: Record<string, string> = {
   idle: "就绪",
@@ -256,6 +258,7 @@ export function SystemSettingsPage({
   onUsageAutoRefreshEnabledChange,
   onUsageAutoRefreshIntervalSecondsChange,
   onOverviewAccountRuntimeTimeoutMsChange,
+  onCompletedTaskRetentionMinutesChange = () => {},
   schedulerConfig,
   schedulerConfigLoading,
   schedulerLoadError,
@@ -316,6 +319,7 @@ export function SystemSettingsPage({
   onUsageAutoRefreshEnabledChange: (value: boolean) => void;
   onUsageAutoRefreshIntervalSecondsChange: (value: number) => void;
   onOverviewAccountRuntimeTimeoutMsChange: (value: number) => void;
+  onCompletedTaskRetentionMinutesChange?: (value: number) => void;
   schedulerConfig: SchedulerConfigPayload;
   schedulerConfigLoading: boolean;
   schedulerLoadError: string | null;
@@ -630,12 +634,12 @@ export function SystemSettingsPage({
               <small>可同时显示 1 到 5 条消息。超出的消息会按顺序等待显示。</small>
             </div>
             <div className="field" aria-busy={floatingNotificationSoundAction !== null}>
-              <span>Windows Toast 提示音</span>
+              <span>桌面通知提示音</span>
               <strong>
                 {desktopUiPrefs.floatingNotificationSoundSource === "custom"
                   ? "自定义提示音"
                   : desktopUiPrefs.floatingNotificationSoundSource === "system"
-                    ? "Windows 系统提示音"
+                    ? "系统提示音"
                     : desktopUiPrefs.floatingNotificationSoundSource === "muted"
                       ? "静音"
                       : "内置默认提示音"}
@@ -648,7 +652,7 @@ export function SystemSettingsPage({
                     ) ?? "自定义提示音"
                   }`
                   : desktopUiPrefs.floatingNotificationSoundSource === "system"
-                    ? "当前使用 Windows 声音方案中的系统提示音。"
+                    ? "当前使用系统提示音。"
                     : desktopUiPrefs.floatingNotificationSoundSource === "muted"
                       ? "当前不会播放提示音。"
                       : "当前使用应用内置提示音。"}
@@ -750,7 +754,7 @@ export function SystemSettingsPage({
               </div>
               <small>
                 {desktopUiPrefs.floatingNotificationSoundSource === "system"
-                  ? "0% 可关闭系统提示音，其余音量由 Windows 声音方案管理。"
+                  ? "0% 可关闭系统提示音，其余音量按当前平台设置生效。"
                   : "0% 保持静音但不会清除选择的文件。默认 100%。"}
               </small>
             </label>
@@ -968,6 +972,37 @@ export function SystemSettingsPage({
               </button>
             </div>
             <small>总览页读取单个账号实时数据时, 最多等待多久再判定超时。最低 1000 毫秒。</small>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  function renderTaskCenterCard(extraClassName = "") {
+    return (
+      <section className={`section-card system-settings-card ${extraClassName}`.trim()}>
+        <header className="section-card-header">
+          <div className="title-with-hint">
+            <h3>任务中心</h3>
+            <TitleHint
+              content="控制已完成、失败和中断任务在任务中心中的自动保留时间。"
+              label="查看任务中心保留时间说明"
+            />
+          </div>
+        </header>
+        <div className="stack-list">
+          <div className="field">
+            <span>已完成任务保留时间(分钟)</span>
+            <SettingsNumberStepper
+              label="已完成任务保留时间"
+              value={desktopUiPrefs.completedTaskRetentionMinutes}
+              min={MIN_COMPLETED_TASK_RETENTION_MINUTES}
+              max={MAX_COMPLETED_TASK_RETENTION_MINUTES}
+              disabled={desktopUiLoading}
+              testId="completed-task-retention-minutes"
+              onChange={onCompletedTaskRetentionMinutesChange}
+            />
+            <small>已完成、失败和中断任务会在到期后自动移除。默认 1 分钟。</small>
           </div>
         </div>
       </section>
@@ -1443,6 +1478,7 @@ export function SystemSettingsPage({
       <section className="system-settings-layout system-settings-layout-desktop">
         <div className="system-settings-column">
           {renderRefreshCard()}
+          {renderTaskCenterCard()}
           {renderStorageCard()}
         </div>
         <div className="system-settings-column">
@@ -1455,6 +1491,7 @@ export function SystemSettingsPage({
       <section className="system-settings-layout-mobile">
         {renderWindowCard("system-settings-card--mobile")}
         {renderRefreshCard("system-settings-card--mobile")}
+        {renderTaskCenterCard("system-settings-card--mobile")}
         {renderSchedulerCard("system-settings-card--mobile")}
         {renderUpstreamNetworkCard("system-settings-card--mobile")}
         {renderDangerCard("system-settings-card--mobile")}

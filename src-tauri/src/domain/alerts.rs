@@ -9,7 +9,7 @@ pub fn build_alerts(
 ) -> Vec<AccountAlert> {
     let mut alerts = Vec::new();
 
-    if account.balance_warning >= 0.0 {
+    if account.balance_warning >= 0.0 && balance < account.balance_warning {
         if balance <= 0.0 {
             alerts.push(AccountAlert {
                 id: format!("{}:balance-empty", account.id),
@@ -20,7 +20,7 @@ pub fn build_alerts(
                 account_id: account.id.clone(),
                 created_at: fetched_at.to_string(),
             });
-        } else if balance <= account.balance_warning {
+        } else {
             alerts.push(AccountAlert {
                 id: format!("{}:balance-low", account.id),
                 severity: "high".into(),
@@ -99,6 +99,34 @@ mod tests {
 
         assert_eq!(alerts.len(), 1);
         assert!(alerts[0].id.ends_with(":keys-exhausted"));
+    }
+
+    #[test]
+    fn balance_warning_uses_strictly_less_than_threshold() {
+        let site = build_site();
+        let account = build_account(5.0);
+
+        assert!(build_alerts(&account, &site, 5.0, &[], "2026-06-15T00:00:00Z").is_empty());
+        assert!(build_alerts(&account, &site, 5.01, &[], "2026-06-15T00:00:00Z").is_empty());
+        assert!(
+            build_alerts(&account, &site, 4.99, &[], "2026-06-15T00:00:00Z")
+                .iter()
+                .any(|item| item.id.ends_with(":balance-low"))
+        );
+    }
+
+    #[test]
+    fn zero_threshold_only_alerts_for_negative_balance() {
+        let site = build_site();
+        let account = build_account(0.0);
+
+        assert!(build_alerts(&account, &site, 0.0, &[], "2026-06-15T00:00:00Z").is_empty());
+        assert!(build_alerts(&account, &site, 0.01, &[], "2026-06-15T00:00:00Z").is_empty());
+        assert!(
+            build_alerts(&account, &site, -0.01, &[], "2026-06-15T00:00:00Z")
+                .iter()
+                .any(|item| item.id.ends_with(":balance-empty"))
+        );
     }
 
     fn build_account(balance_warning: f64) -> AccountRecord {

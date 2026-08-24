@@ -42,6 +42,23 @@ pub fn update_account(db: &Database, account: &AccountRecord) -> Result<()> {
     Ok(())
 }
 
+/// 认证成功后只更新登录时间，不能用调用方的旧账号快照覆写表单刚保存的配置。
+pub fn touch_account_last_login(
+    db: &Database,
+    account_id: &str,
+    last_login_at: &str,
+    updated_at: &str,
+) -> Result<()> {
+    let conn = db.connect()?;
+    conn.execute(
+        "UPDATE accounts
+         SET last_login_at = ?2, updated_at = ?3
+         WHERE id = ?1",
+        params![account_id, last_login_at, updated_at],
+    )?;
+    Ok(())
+}
+
 pub fn delete_account(db: &Database, account_id: &str) -> Result<()> {
     let conn = db.connect()?;
     conn.execute("DELETE FROM accounts WHERE id = ?1", params![account_id])?;

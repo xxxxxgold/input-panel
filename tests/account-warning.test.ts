@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   DISABLED_BALANCE_WARNING,
+  alertPreferencesFromLegacyBalanceWarning,
   formatBalanceWarningSummary,
   isBalanceWarningDisabled,
+  legacyBalanceWarningFromAlertPreferences,
   normalizeBalanceWarning
 } from "../src/account-warning";
 
@@ -23,5 +25,25 @@ describe("account warning helpers", () => {
   it("formats disabled warning summary distinctly", () => {
     expect(formatBalanceWarningSummary(-1)).toBe("预警已关闭");
     expect(formatBalanceWarningSummary(5)).toBe("预警 $5.00");
+  });
+
+  it("maps legacy sentinels to explicit account alert preferences", () => {
+    expect(alertPreferencesFromLegacyBalanceWarning(-1)).toEqual({
+      lowBalanceEnabled: false,
+      lowBalanceThreshold: 0,
+      subscriptionQuotaAlertsEnabled: true
+    });
+    expect(alertPreferencesFromLegacyBalanceWarning(3.5)).toEqual({
+      lowBalanceEnabled: true,
+      lowBalanceThreshold: 3.5,
+      subscriptionQuotaAlertsEnabled: true
+    });
+    expect(
+      legacyBalanceWarningFromAlertPreferences({
+        lowBalanceEnabled: false,
+        lowBalanceThreshold: 7,
+        subscriptionQuotaAlertsEnabled: false
+      })
+    ).toBe(-1);
   });
 });

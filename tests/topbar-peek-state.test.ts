@@ -44,4 +44,11 @@ describe("topbar peek state", () => {
     expect(isTopbarPeekExpanded(state, "serviceStatus")).toBe(false);
     expect(isTopbarPeekExpanded(state, "alerts")).toBe(true);
   });
+
+  it("supports the site-endpoints panel key", () => {
+    const state = previewTopbarPeekState(CLOSED_TOPBAR_PEEK_STATE, "siteEndpoints");
+
+    expect(isTopbarPeekExpanded(state, "siteEndpoints")).toBe(true);
+    expect(clearTopbarPeekPreviewState(state, "siteEndpoints")).toEqual(CLOSED_TOPBAR_PEEK_STATE);
+  });
 });

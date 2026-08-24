@@ -75,7 +75,13 @@ import { useRuntimeCoordinationConfig } from "./useRuntimeCoordinationConfig";
 import { useSiteFailoverTransitionObserver } from "./useSiteFailoverTransitionObserver";
 import { useSystemSettingsSaveToasts } from "./useSystemSettingsSaveToasts";
 import { useUpstreamNetworkConfig } from "./useUpstreamNetworkConfig";
-import { mergeAccountSyncStatusesIntoTasks } from "./sync-task-records";
+import {
+  filterExpiredSyncTasks,
+  getExpiredSyncTasks,
+  getNextSyncTaskExpirationDelay,
+  mergeAccountSyncStatusesIntoTasks,
+  pruneSuppressedSyncTaskRuns
+} from "./sync-task-records";
 import { useAccountWorkspace } from "../features/accounts/useAccountWorkspace";
 import { clearRuntimeData } from "../features/maintenance/client";
 import { getOverviewDashboardStats, syncAllAccounts } from "../features/overview/client";
@@ -1488,6 +1494,7 @@ export function MainWindowApp() {
     return accounts.find((item) => item.id === resolvedOverviewSelection.selectedAccountId) ?? null;
   }, [accounts, resolvedOverviewSelection.selectedAccountId]);
   const previousAccountSyncStatusesRef = useRef<AccountSyncStatusRecord[]>([]);
+  const expiredSyncTaskFinishedAtRef = useRef(new Map<string, string>());
 
   useEffect(() => {
     if (!selectedAccount) {
@@ -1496,19 +1503,68 @@ export function MainWindowApp() {
     }
 
     const previousStatuses = previousAccountSyncStatusesRef.current;
+    const now = Date.now();
+    pruneSuppressedSyncTaskRuns(
+      expiredSyncTaskFinishedAtRef.current,
+      accountSyncStatuses
+    );
     setSyncTaskRecords((previousTasks) => mergeAccountSyncStatusesIntoTasks({
       previousTasks,
       previousStatuses,
       statuses: accountSyncStatuses,
       accountId: selectedAccount.id,
-      accountLabel: selectedAccount.label || "未命名账号"
+      accountLabel: selectedAccount.label || "未命名账号",
+      completedTaskRetentionMinutes: desktopUi.prefs.completedTaskRetentionMinutes,
+      suppressedTaskFinishedAt: expiredSyncTaskFinishedAtRef.current,
+      onExpiredTask: (taskId, finishedAt) => expiredSyncTaskFinishedAtRef.current.set(taskId, finishedAt),
+      onNewLegacyTask: (taskId) => expiredSyncTaskFinishedAtRef.current.delete(taskId),
+      now
     }));
 
     if (accountSyncStatuses.some((status) => status.state === "running")) {
       setSyncTaskCenterOpen(true);
     }
     previousAccountSyncStatusesRef.current = accountSyncStatuses;
-  }, [accountSyncStatuses, selectedAccount]);
+  }, [accountSyncStatuses, desktopUi.prefs.completedTaskRetentionMinutes, selectedAccount]);
+
+  // 配置或任务列表变化时只保留一个计时器，确保到期和缩短保留时间都会立即生效。
+  useEffect(() => {
+    const now = Date.now();
+    setSyncTaskRecords((tasks) => {
+      for (const task of getExpiredSyncTasks(
+        tasks,
+        desktopUi.prefs.completedTaskRetentionMinutes,
+        now
+      )) {
+        if (task.finishedAt) {
+          expiredSyncTaskFinishedAtRef.current.set(task.id, task.finishedAt);
+        }
+      }
+      return filterExpiredSyncTasks(tasks, desktopUi.prefs.completedTaskRetentionMinutes, now);
+    });
+
+    const delay = getNextSyncTaskExpirationDelay(
+      syncTaskRecords,
+      desktopUi.prefs.completedTaskRetentionMinutes,
+      now
+    );
+    if (delay === null) {
+      return;
+    }
+
+    const timer = globalThis.setTimeout(() => {
+      setSyncTaskRecords((tasks) => {
+        const retentionMinutes = desktopUi.prefs.completedTaskRetentionMinutes;
+        for (const task of getExpiredSyncTasks(tasks, retentionMinutes)) {
+          if (task.finishedAt) {
+            expiredSyncTaskFinishedAtRef.current.set(task.id, task.finishedAt);
+          }
+        }
+        return filterExpiredSyncTasks(tasks, retentionMinutes);
+      });
+    }, delay);
+    return () => globalThis.clearTimeout(timer);
+  }, [desktopUi.prefs.completedTaskRetentionMinutes, syncTaskRecords]);
   const readyOverviewAccountIds = useMemo(
     () => accounts
       .filter((account) => account.sessionState === "ready")
@@ -2107,7 +2163,7 @@ export function MainWindowApp() {
       await desktopUi.handleUseSystemFloatingNotificationSound();
       pushToast({
         tone: "success",
-        message: "已切换为 Windows 系统提示音。"
+        message: "已切换为系统提示音。"
       });
     } catch (cause) {
       pushToast({
@@ -3058,6 +3114,11 @@ export function MainWindowApp() {
               onOverviewAccountRuntimeTimeoutMsChange={(value) =>
                 void desktopUi.patchPrefs({
                   overviewAccountRuntimeTimeoutMs: value
+                }, { debounce: true })
+              }
+              onCompletedTaskRetentionMinutesChange={(value) =>
+                void desktopUi.patchPrefs({
+                  completedTaskRetentionMinutes: value
                 }, { debounce: true })
               }
               schedulerConfig={schedulerConfig}

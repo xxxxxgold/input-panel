@@ -46,11 +46,9 @@ pub async fn login_account(
         },
     )?;
 
-    let mut updated = account.clone();
     let now = now_storage_timestamp();
-    updated.last_login_at = Some(now.clone());
-    updated.updated_at = now;
-    repositories::update_account(&ctx.db, &updated)?;
+    repositories::touch_account_last_login(&ctx.db, &account.id, &now, &now)?;
+    let updated = repositories::find_account(&ctx.db, &account.id)?.context("账号不存在。")?;
 
     let runtime = finish_authenticated_login(ctx, updated)?;
     Ok(LoginFlowResult::Success { account: runtime })
@@ -90,11 +88,9 @@ pub async fn login_account_2fa(
         site_failover_service::complete_2fa(ctx, &site, temp_token, code, origin_base_url).await?;
     repositories::save_session(&ctx.db, &account.id, &result.session)?;
 
-    let mut updated = account.clone();
     let now = now_storage_timestamp();
-    updated.last_login_at = Some(now.clone());
-    updated.updated_at = now;
-    repositories::update_account(&ctx.db, &updated)?;
+    repositories::touch_account_last_login(&ctx.db, &account.id, &now, &now)?;
+    let updated = repositories::find_account(&ctx.db, &account.id)?.context("账号不存在。")?;
 
     finish_authenticated_login(ctx, updated)
 }
@@ -132,11 +128,8 @@ pub async fn relogin_with_saved_credential(
         },
     )?;
     repositories::save_session(&ctx.db, &account.id, &result.session)?;
-    let mut updated = account.clone();
     let now = now_storage_timestamp();
-    updated.last_login_at = Some(now.clone());
-    updated.updated_at = now;
-    repositories::update_account(&ctx.db, &updated)?;
+    repositories::touch_account_last_login(&ctx.db, &account.id, &now, &now)?;
     Ok(result.session)
 }
 
@@ -253,6 +246,7 @@ mod tests {
         assert!(repositories::load_session(&fixture.ctx.db, "account-1")
             .expect("load session")
             .is_some());
+        assert_login_keeps_alert_preferences(&fixture.ctx);
         wait_for_bootstrap_sync(&fixture.ctx).await;
         fixture.finish().await;
     }
@@ -341,18 +335,19 @@ mod tests {
             },
         )
         .expect("insert site");
-        repositories::insert_account(
+        repositories::insert_account_with_alert_preferences(
             &ctx.db,
             &AccountRecord {
                 id: "account-1".into(),
                 site_id: "site-1".into(),
                 label: "测试账号".into(),
                 email: "demo@example.com".into(),
-                balance_warning: -1.0,
+                balance_warning: 7.5,
                 last_login_at: None,
                 created_at: "2026-07-16T00:00:00Z".into(),
                 updated_at: "2026-07-16T00:00:00Z".into(),
             },
+            false,
         )
         .expect("insert account");
         BlockedUsageTestContext {
@@ -380,6 +375,19 @@ mod tests {
             .expect("account exists")
             .last_login_at
             .is_some());
+        assert_login_keeps_alert_preferences(ctx);
+    }
+
+    fn assert_login_keeps_alert_preferences(ctx: &AppContext) {
+        let account = repositories::find_account(&ctx.db, "account-1")
+            .expect("find account")
+            .expect("account exists");
+        assert_eq!(account.balance_warning, 7.5);
+        assert_eq!(
+            repositories::subscription_quota_alerts_enabled(&ctx.db, "account-1")
+                .expect("read account alert preference"),
+            Some(false)
+        );
     }
 
     async fn wait_for_bootstrap_sync(ctx: &AppContext) {

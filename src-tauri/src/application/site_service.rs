@@ -16,7 +16,7 @@ pub fn create_site(ctx: &AppContext, payload: SiteInput) -> Result<SiteRecord> {
         base_url: payload.base_url,
         fallback_base_urls: payload.fallback_base_urls,
         failover_cooldown_seconds: payload.failover_cooldown_seconds,
-        max_attempts_per_address: payload.max_attempts_per_address,
+        retry_count_per_address: payload.retry_count_per_address,
         created_at: now.clone(),
         updated_at: now,
     })?;
@@ -39,8 +39,8 @@ pub fn update_site(ctx: &AppContext, site_id: &str, payload: SitePatchInput) -> 
     if let Some(failover_cooldown_seconds) = payload.failover_cooldown_seconds {
         site.failover_cooldown_seconds = failover_cooldown_seconds;
     }
-    if let Some(max_attempts_per_address) = payload.max_attempts_per_address {
-        site.max_attempts_per_address = max_attempts_per_address;
+    if let Some(retry_count_per_address) = payload.retry_count_per_address {
+        site.retry_count_per_address = retry_count_per_address;
     }
     site.updated_at = now_storage_timestamp();
     let site = validate_site(site)?;
@@ -48,7 +48,12 @@ pub fn update_site(ctx: &AppContext, site_id: &str, payload: SitePatchInput) -> 
     Ok(site)
 }
 
-pub fn remove_site(ctx: &AppContext, site_id: &str) -> Result<bool> {
+/// 删除站点前排空额度提醒投递，避免级联删除后继续外发已认领事件。
+pub async fn remove_site(ctx: &AppContext, site_id: &str) -> Result<bool> {
+    let _delivery_guard = ctx
+        .live_resources
+        .acquire_subscription_quota_alert_delivery_write_gate()
+        .await;
     repositories::delete_site(&ctx.db, site_id)?;
     Ok(true)
 }
@@ -64,10 +69,6 @@ fn validate_site(mut site: SiteRecord) -> Result<SiteRecord> {
     if site.failover_cooldown_seconds == 0 {
         anyhow::bail!("冷却时长必须大于 0 秒。");
     }
-    if site.max_attempts_per_address == 0 {
-        anyhow::bail!("每个地址最大访问次数必须大于 0。");
-    }
-
     site.base_url = canonicalize_site_base_url(&site.base_url)?;
     let mut seen = HashSet::with_capacity(site.fallback_base_urls.len() + 1);
     seen.insert(site.base_url.clone());
@@ -85,7 +86,69 @@ fn validate_site(mut site: SiteRecord) -> Result<SiteRecord> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio::sync::Mutex;
+
     use super::*;
+    use crate::application::context::SyncTaskHandle;
+    use crate::application::resource_coordinator::ResourceCoordinator;
+    use crate::application::runtime_coordination_service::RuntimeCoordinationService;
+    use crate::infrastructure::files::AppPaths;
+    use crate::infrastructure::sqlite::repositories;
+    use crate::infrastructure::sqlite::Database;
+
+    struct TestContext {
+        ctx: AppContext,
+        root: std::path::PathBuf,
+    }
+
+    impl Drop for TestContext {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn build_context() -> TestContext {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace root")
+            .join("tmp")
+            .join(format!("site-service-{}", uuid::Uuid::new_v4()));
+        let paths = AppPaths::from_root(root.clone());
+        paths.ensure().expect("ensure test paths");
+        let db = Database::new(paths.db_path.clone());
+        let _ = db.connect().expect("initialize sqlite");
+        TestContext {
+            ctx: AppContext {
+                runtime_coordination: RuntimeCoordinationService::from_paths_for_test(&paths)
+                    .expect("initialize test runtime coordination"),
+                paths,
+                db,
+                sync_tasks: Arc::new(Mutex::new(HashMap::<String, Arc<SyncTaskHandle>>::new())),
+                live_resources: ResourceCoordinator::default(),
+                native_notifications_enabled: false,
+            },
+            root,
+        }
+    }
+
+    fn seed_site(ctx: &AppContext) {
+        repositories::insert_site(
+            &ctx.db,
+            &SiteRecord {
+                id: "site-1".into(),
+                name: "测试站点".into(),
+                base_url: "https://example.test".into(),
+                created_at: "2026-08-20 00:00:00".into(),
+                updated_at: "2026-08-20 00:00:00".into(),
+                ..SiteRecord::default()
+            },
+        )
+        .expect("insert site");
+    }
 
     fn valid_site() -> SiteRecord {
         SiteRecord {
@@ -93,7 +156,7 @@ mod tests {
             base_url: "HTTPS://Example.Test:443/api/".to_string(),
             fallback_base_urls: vec![" https://Fallback.Test/ ".to_string()],
             failover_cooldown_seconds: 60,
-            max_attempts_per_address: 1,
+            retry_count_per_address: 0,
             ..SiteRecord::default()
         }
     }
@@ -120,13 +183,45 @@ mod tests {
     }
 
     #[test]
-    fn validation_requires_positive_numeric_configuration() {
+    fn validation_requires_positive_cooldown_and_allows_zero_retries() {
         let mut zero_cooldown = valid_site();
         zero_cooldown.failover_cooldown_seconds = 0;
         assert!(validate_site(zero_cooldown).is_err());
 
-        let mut zero_attempts = valid_site();
-        zero_attempts.max_attempts_per_address = 0;
-        assert!(validate_site(zero_attempts).is_err());
+        let mut zero_retries = valid_site();
+        zero_retries.retry_count_per_address = 0;
+        assert!(validate_site(zero_retries).is_ok());
+    }
+
+    #[tokio::test]
+    async fn removing_a_site_waits_for_active_quota_alert_delivery() {
+        let fixture = build_context();
+        seed_site(&fixture.ctx);
+
+        let dispatch_guard = fixture
+            .ctx
+            .live_resources
+            .acquire_subscription_quota_alert_delivery_read_gate()
+            .await;
+        let remove_ctx = fixture.ctx.clone();
+        let mut remove_task = tokio::spawn(async move { remove_site(&remove_ctx, "site-1").await });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut remove_task)
+                .await
+                .is_err()
+        );
+        assert!(repositories::find_site(&fixture.ctx.db, "site-1")
+            .expect("find site while dispatch is active")
+            .is_some());
+
+        drop(dispatch_guard);
+        assert!(remove_task
+            .await
+            .expect("remove task should join")
+            .expect("remove site"));
+        assert!(repositories::find_site(&fixture.ctx.db, "site-1")
+            .expect("find removed site")
+            .is_none());
     }
 }

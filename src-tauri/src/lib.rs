@@ -2361,9 +2361,6 @@ fn toggle_floating_panel_native(shared: &Arc<Mutex<FloatingNativeState>>) {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn toggle_floating_panel_native(_shared: &Arc<Mutex<FloatingNativeState>>) {}
-
 fn resolve_floating_notification_hit_regions_for_items(
     item_heights: &[i32],
     detail_open: bool,
@@ -5144,6 +5141,7 @@ pub fn run() {
             adapters::desktop::commands::list_site_failover_transitions,
             adapters::desktop::commands::create_account,
             adapters::desktop::commands::update_account,
+            adapters::desktop::commands::query_account_alert_preferences,
             adapters::desktop::commands::remove_account,
             adapters::desktop::commands::login_account,
             adapters::desktop::commands::persist_account_credential,

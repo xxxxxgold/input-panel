@@ -4323,9 +4323,27 @@ mod tests {
         seed_account(&db, "account-1");
 
         let rows = [
-            ("rollup-filter-a", "2026-08-09T08:00:00+08:00", "gpt-5.4", "openai", Some(100)),
-            ("rollup-filter-b", "2026-08-10T09:00:00+08:00", "gpt-5.4-mini", "openai", None),
-            ("rollup-filter-c", "2026-08-10T10:00:00+08:00", "claude-sonnet", "anthropic", Some(300)),
+            (
+                "rollup-filter-a",
+                "2026-08-09T08:00:00+08:00",
+                "gpt-5.4",
+                "openai",
+                Some(100),
+            ),
+            (
+                "rollup-filter-b",
+                "2026-08-10T09:00:00+08:00",
+                "gpt-5.4-mini",
+                "openai",
+                None,
+            ),
+            (
+                "rollup-filter-c",
+                "2026-08-10T10:00:00+08:00",
+                "claude-sonnet",
+                "anthropic",
+                Some(300),
+            ),
         ]
         .into_iter()
         .map(|(id, created_at, model, platform, duration_ms)| {
@@ -4364,16 +4382,27 @@ mod tests {
             let rollup_stats = summarize_usage_rollup_filtered(&db, "account-1", &filter)
                 .expect("summarize rollup rows");
             assert_eq!(detail_stats.total_requests, rollup_stats.total_requests);
-            assert_eq!(detail_stats.total_input_tokens, rollup_stats.total_input_tokens);
-            assert_eq!(detail_stats.total_output_tokens, rollup_stats.total_output_tokens);
-            assert_eq!(detail_stats.total_cache_tokens, rollup_stats.total_cache_tokens);
+            assert_eq!(
+                detail_stats.total_input_tokens,
+                rollup_stats.total_input_tokens
+            );
+            assert_eq!(
+                detail_stats.total_output_tokens,
+                rollup_stats.total_output_tokens
+            );
+            assert_eq!(
+                detail_stats.total_cache_tokens,
+                rollup_stats.total_cache_tokens
+            );
             assert_eq!(detail_stats.total_tokens, rollup_stats.total_tokens);
             assert!((detail_stats.total_cost - rollup_stats.total_cost).abs() < 1e-9);
             assert!((detail_stats.total_actual_cost - rollup_stats.total_actual_cost).abs() < 1e-9);
-            assert!((detail_stats.average_duration_ms - rollup_stats.average_duration_ms).abs() < 1e-9);
+            assert!(
+                (detail_stats.average_duration_ms - rollup_stats.average_duration_ms).abs() < 1e-9
+            );
 
-            let detail_models = list_usage_models_filtered(&db, "account-1", &filter)
-                .expect("list detail models");
+            let detail_models =
+                list_usage_models_filtered(&db, "account-1", &filter).expect("list detail models");
             let rollup_models = list_usage_models_rollup_filtered(&db, "account-1", &filter)
                 .expect("list rollup models");
             assert_eq!(
@@ -4381,8 +4410,8 @@ mod tests {
                 serde_json::to_value(rollup_models).expect("serialize rollup models")
             );
 
-            let detail_trend = list_usage_trend_filtered(&db, "account-1", &filter)
-                .expect("list detail trend");
+            let detail_trend =
+                list_usage_trend_filtered(&db, "account-1", &filter).expect("list detail trend");
             let rollup_trend = list_usage_trend_rollup_filtered(&db, "account-1", &filter)
                 .expect("list rollup trend");
             assert_eq!(

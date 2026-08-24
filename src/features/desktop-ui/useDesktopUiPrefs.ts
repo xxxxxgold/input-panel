@@ -61,6 +61,7 @@ const defaultPrefs: DesktopUiPrefs = {
   autoRefreshUsageEnabled: true,
   autoRefreshUsageIntervalSeconds: DEFAULT_AUTO_REFRESH_INTERVAL_SECONDS,
   overviewAccountRuntimeTimeoutMs: 4500,
+  completedTaskRetentionMinutes: 1,
   theme: DEFAULT_THEME_ID
 };
 
@@ -72,6 +73,8 @@ export const MIN_FLOATING_NOTIFICATION_DURATION_MS = 3000;
 export const MAX_FLOATING_NOTIFICATION_DURATION_MS = 30000;
 export const MIN_FLOATING_NOTIFICATION_SOUND_VOLUME = 0;
 export const MAX_FLOATING_NOTIFICATION_SOUND_VOLUME = 100;
+export const MIN_COMPLETED_TASK_RETENTION_MINUTES = 1;
+export const MAX_COMPLETED_TASK_RETENTION_MINUTES = 1440;
 const CUSTOM_NOTIFICATION_SOUND_STORAGE_KEY_PATTERN =
   /^notification-sound-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.(?:mp3|wav)$/;
 
@@ -109,6 +112,16 @@ export function normalizeFloatingNotificationSoundVolume(value: number) {
   return Math.min(
     Math.max(Math.round(value), MIN_FLOATING_NOTIFICATION_SOUND_VOLUME),
     MAX_FLOATING_NOTIFICATION_SOUND_VOLUME
+  );
+}
+
+export function normalizeCompletedTaskRetentionMinutes(value: number) {
+  if (!Number.isFinite(value)) {
+    return defaultPrefs.completedTaskRetentionMinutes;
+  }
+  return Math.min(
+    Math.max(Math.round(value), MIN_COMPLETED_TASK_RETENTION_MINUTES),
+    MAX_COMPLETED_TASK_RETENTION_MINUTES
   );
 }
 
@@ -171,6 +184,8 @@ export function isDesktopUiPrefsPayload(value: unknown): value is DesktopUiPrefs
       typeof candidate.autoRefreshUsageIntervalSeconds === "number") &&
     (candidate.overviewAccountRuntimeTimeoutMs === undefined ||
       typeof candidate.overviewAccountRuntimeTimeoutMs === "number") &&
+    (candidate.completedTaskRetentionMinutes === undefined ||
+      typeof candidate.completedTaskRetentionMinutes === "number") &&
     typeof candidate.theme === "string"
   );
 }
@@ -237,6 +252,9 @@ function normalizeDesktopUiPrefs(prefs: Partial<DesktopUiPrefs> & {
     autoRefreshUsageIntervalSeconds: normalizeAutoRefreshIntervalSeconds(merged.autoRefreshUsageIntervalSeconds),
     overviewAccountRuntimeTimeoutMs: normalizeOverviewAccountRuntimeTimeoutMs(
       merged.overviewAccountRuntimeTimeoutMs
+    ),
+    completedTaskRetentionMinutes: normalizeCompletedTaskRetentionMinutes(
+      merged.completedTaskRetentionMinutes
     ),
     theme: normalizeThemeId(merged.theme)
   };

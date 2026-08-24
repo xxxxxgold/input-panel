@@ -22,7 +22,7 @@ export interface SiteConfigDraft {
   baseUrl: string;
   fallbackAddresses: SiteFallbackAddressDraft[];
   failoverCooldownSeconds: string;
-  maxAttemptsPerAddress: string;
+  retryCountPerAddress: string;
 }
 
 export function createSiteFallbackAddressDraft(baseUrl = ""): SiteFallbackAddressDraft {
@@ -40,7 +40,7 @@ export function createSiteConfigDraft(site?: SiteRecord | null): SiteConfigDraft
       baseUrl: "https://ai.input.im",
       fallbackAddresses: [],
       failoverCooldownSeconds: "60",
-      maxAttemptsPerAddress: "1"
+      retryCountPerAddress: "0"
     };
   }
 
@@ -51,7 +51,7 @@ export function createSiteConfigDraft(site?: SiteRecord | null): SiteConfigDraft
       createSiteFallbackAddressDraft(baseUrl)
     ),
     failoverCooldownSeconds: String(site.failoverCooldownSeconds),
-    maxAttemptsPerAddress: String(site.maxAttemptsPerAddress)
+    retryCountPerAddress: String(site.retryCountPerAddress)
   };
 }
 
@@ -82,9 +82,9 @@ export function siteInputFromDraft(draft: SiteConfigDraft): SiteInput {
       draft.failoverCooldownSeconds,
       "冷却时长"
     ),
-    maxAttemptsPerAddress: parsePositiveU32(
-      draft.maxAttemptsPerAddress,
-      "每地址最大访问次数"
+    retryCountPerAddress: parseNonNegativeU32(
+      draft.retryCountPerAddress,
+      "重试次数"
     )
   };
 }
@@ -121,6 +121,18 @@ export function parsePositiveU32(value: string, label: string) {
   const parsed = Number(normalized);
   if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > MAX_U32) {
     throw new Error(`${label}必须是 1 到 ${MAX_U32} 之间的整数。`);
+  }
+  return parsed;
+}
+
+export function parseNonNegativeU32(value: string, label: string) {
+  const normalized = value.trim();
+  if (!/^\d+$/.test(normalized)) {
+    throw new Error(`${label}必须是非负整数。`);
+  }
+  const parsed = Number(normalized);
+  if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > MAX_U32) {
+    throw new Error(`${label}必须是 0 到 ${MAX_U32} 之间的整数。`);
   }
   return parsed;
 }

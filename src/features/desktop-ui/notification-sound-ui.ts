@@ -13,7 +13,7 @@ const FLOATING_NOTIFICATION_SOUND_FAILURE_MESSAGES: Record<
   select: "提示音文件导入失败，请重试。",
   preview: "提示音试听失败，请重试。",
   restore: "恢复默认提示音失败，请重试。",
-  system: "切换 Windows 系统提示音失败，请重试。",
+  system: "切换系统提示音失败，请重试。",
   mute: "静音提示音失败，请重试。",
   custom: "已保存的自定义提示音不可用，请重新选择文件。"
 };

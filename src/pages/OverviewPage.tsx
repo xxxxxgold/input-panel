@@ -235,12 +235,7 @@ export function OverviewPage({
       setUsageInsightRangeDraft(usageInsightRange);
     }
   }, [usageInsightRange?.startDate, usageInsightRange?.endDate]);
-  // 当前账号没有独立 usage 统计时，回退到 overview 缓存，保持总览缓存兼容合同。
-  const effectiveUsageStats = selectedAccountScopeUnavailable
-    ? null
-    : resolvedUsageStatsMode === "selected-account"
-      ? usageStats ?? buildOverviewUsageStatsFromStats(scopedCurrentAccountStats)
-      : usageStats;
+  const effectiveUsageStats = selectedAccountScopeUnavailable ? null : usageStats;
   const effectiveTotalUsageStats = selectedAccountScopeUnavailable ? null : totalUsageStats;
   const effectiveUsageStatsRows = selectedAccountScopeUnavailable ? [] : usageStatsRows;
   const resolvedCurrentAccountSubscriptions = resolveOverviewSubscriptionPlatforms(
@@ -1408,37 +1403,6 @@ function buildOverviewAverageResponseHint(usageStats: UsageStatsRecord | null) {
     return "当前没有响应样本";
   }
   return `基于 ${usageStats.totalRequests.toLocaleString()} 次请求`;
-}
-
-/** 将 overview cacheView 里的当前账号统计转换为页面统一的 usage 展示结构。 */
-function buildOverviewUsageStatsFromStats(
-  stats: NonNullable<AccountRuntime["cacheView"]>["stats"] | null
-): UsageStatsRecord | null {
-  if (!stats) {
-    return null;
-  }
-
-  const windowMinutes = Math.max(inferOverviewTodayWindowMinutes(), 1);
-  return {
-    totalRequests: stats.todayRequests,
-    totalInputTokens: stats.todayInputTokens,
-    totalOutputTokens: stats.todayOutputTokens,
-    totalCacheTokens: null,
-    totalCacheCreationTokens: null,
-    totalCacheReadTokens: null,
-    totalTokens: stats.todayTokens,
-    totalCost: stats.todayCost,
-    totalActualCost: stats.todayActualCost,
-    averageDurationMs: stats.averageDurationMs,
-    rpm: stats.todayRequests / windowMinutes,
-    tpm: stats.todayTokens / windowMinutes
-  };
-}
-
-function inferOverviewTodayWindowMinutes(now: Date = new Date()) {
-  const startOfDay = new Date(now);
-  startOfDay.setHours(0, 0, 0, 0);
-  return Math.max((now.getTime() - startOfDay.getTime()) / 60000, 1);
 }
 
 function buildOverviewAverageResponseModeHint(

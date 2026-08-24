@@ -57,6 +57,7 @@ describe("UsagePage image billing presentation", () => {
               imageOutputSize: null,
               imageOutputTokens: 26000,
               imageOutputCost: 0,
+              imageInputCost: 0,
               imageSizeSource: "input",
               imageSizeBreakdown: null,
               mediaType: null,
@@ -73,7 +74,7 @@ describe("UsagePage image billing presentation", () => {
           previousCursor: null,
           hasNext: false,
           hasPrevious: false,
-          total: 1,
+          total: 1
         },
         usagePageSize: 20,
         usagePageSizeOptions: [10, 20, 50, 100],
@@ -106,5 +107,7 @@ describe("UsagePage image billing presentation", () => {
     expect(html).toContain("$0.804000");
     expect(html).toContain(">图片输出 Token<");
     expect(html).toContain("26.0K");
+    expect(html).not.toContain('<div class="detail-item"><span>服务档位</span>');
+    expect(html).not.toContain(">图片输入费用<");
   });
 });

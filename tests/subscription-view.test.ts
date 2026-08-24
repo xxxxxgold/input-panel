@@ -18,6 +18,9 @@ describe("mergeSubscriptionRecords", () => {
     const cacheViewSubscriptions: SubscriptionRecord[] = [
       {
         id: "sub-yearly",
+        subscriptionKey: "group:4",
+        identityKind: "group",
+        identityAmbiguous: false,
         groupId: 4,
         name: "CodeX Plus 年度",
         status: "active",
@@ -39,6 +42,9 @@ describe("mergeSubscriptionRecords", () => {
     const cacheViewSubscriptions: SubscriptionRecord[] = [
       {
         id: "sub-yearly",
+        subscriptionKey: "group:4",
+        identityKind: "group",
+        identityAmbiguous: false,
         groupId: 4,
         name: "CodeX Plus 年度",
         status: "active",
@@ -97,6 +103,9 @@ describe("mergeSubscriptionRecords", () => {
     });
     expect(merged[1]).toMatchObject({
       id: "sub-yearly",
+      subscriptionKey: "group:4",
+      identityKind: "group",
+      identityAmbiguous: false,
       groupId: 4,
       platform: "openai",
       daily: {
@@ -105,6 +114,96 @@ describe("mergeSubscriptionRecords", () => {
         windowStart: "2026-06-10T00:00:00+08:00"
       }
     });
+  });
+
+  it("uses a unique name match only for display and never borrows its canonical identity", () => {
+    const cacheViewSubscriptions: SubscriptionRecord[] = [{
+      id: "upstream-plan",
+      subscriptionKey: "upstream:plan-a",
+      identityKind: "upstream",
+      identityAmbiguous: false,
+      groupId: null,
+      name: "Shared Plan",
+      groupName: "Shared Plan",
+      status: "active",
+      platform: "openai",
+      expiresAt: null,
+      daily: { current: 1, limit: 100, windowStart: "2026-08-01" },
+      weekly: null,
+      monthly: null
+    }];
+    const summary: SubscriptionSummaryPayload = {
+      activeCount: 1,
+      totalUsedUsd: 42,
+      subscriptions: [{
+        id: 9001,
+        groupId: 77,
+        groupName: "Shared Plan",
+        status: "active",
+        dailyUsedUsd: 42,
+        dailyLimitUsd: 100,
+        weeklyUsedUsd: 42,
+        monthlyUsedUsd: 42,
+        expiresAt: null
+      }]
+    };
+
+    expect(mergeSubscriptionRecords(cacheViewSubscriptions, summary)).toEqual([
+      expect.objectContaining({
+        id: "summary-9001",
+        subscriptionKey: "",
+        identityKind: "fallback",
+        identityAmbiguous: true,
+        groupId: 77,
+        platform: "openai",
+        daily: expect.objectContaining({ current: 42, windowStart: "2026-08-01" })
+      })
+    ]);
+  });
+
+  it("does not pick the first canonical identity when display names collide", () => {
+    const cacheViewSubscriptions: SubscriptionRecord[] = ["a", "b"].map((suffix) => ({
+      id: `upstream-${suffix}`,
+      subscriptionKey: `upstream:${suffix}`,
+      identityKind: "upstream" as const,
+      identityAmbiguous: false,
+      groupId: null,
+      name: "Duplicate Plan",
+      groupName: "Duplicate Plan",
+      status: "active",
+      platform: "openai",
+      expiresAt: null,
+      daily: null,
+      weekly: null,
+      monthly: null
+    }));
+    const summary: SubscriptionSummaryPayload = {
+      activeCount: 1,
+      totalUsedUsd: 10,
+      subscriptions: [{
+        id: 9002,
+        groupId: 0,
+        groupName: "Duplicate Plan",
+        status: "active",
+        dailyUsedUsd: 10,
+        dailyLimitUsd: 100,
+        weeklyUsedUsd: 10,
+        monthlyUsedUsd: 10,
+        expiresAt: null
+      }]
+    };
+
+    const merged = mergeSubscriptionRecords(cacheViewSubscriptions, summary);
+    expect(merged).toHaveLength(3);
+    expect(merged[0]).toMatchObject({
+      id: "summary-9002",
+      subscriptionKey: "",
+      identityAmbiguous: true
+    });
+    expect(merged.slice(1).map((item) => item.subscriptionKey)).toEqual([
+      "upstream:a",
+      "upstream:b"
+    ]);
   });
 });
 
@@ -136,6 +235,9 @@ describe("buildTopbarSubscriptionPreviewRecords", () => {
     const overviewSubscriptions: OverviewSubscriptionRecord[] = [
       {
         id: "sub-monthly",
+        subscriptionKey: "group:3",
+        identityKind: "group",
+        identityAmbiguous: false,
         accountId: "account-1",
         accountLabel: "主账号",
         siteId: "site-1",
@@ -156,6 +258,9 @@ describe("buildTopbarSubscriptionPreviewRecords", () => {
       },
       {
         id: "sub-yearly",
+        subscriptionKey: "group:4",
+        identityKind: "group",
+        identityAmbiguous: false,
         accountId: "account-2",
         accountLabel: "副账号",
         siteId: "site-1",
@@ -214,6 +319,9 @@ describe("buildTopbarSubscriptionPreviewRecords", () => {
     const fallbackSubscriptions: SubscriptionRecord[] = [
       {
         id: "sub-current",
+        subscriptionKey: "group:7",
+        identityKind: "group",
+        identityAmbiguous: false,
         groupId: 7,
         name: "Starter",
         groupName: "Starter",
@@ -369,6 +477,9 @@ describe("buildSubscriptionUsageInsights", () => {
     const cacheViewSubscriptions: SubscriptionRecord[] = [
       {
         id: "sub-current",
+        subscriptionKey: "group:7",
+        identityKind: "group",
+        identityAmbiguous: false,
         groupId: 7,
         name: "Starter",
         groupName: "Starter",

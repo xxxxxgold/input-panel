@@ -1,6 +1,6 @@
 {
   "name": "input-panel",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,8 +13,8 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "check:css": "node scripts/check-css-duplicates.mjs",
-    "build:desktop": "pwsh -NoLogo -NoProfile -File ./scripts/prepare-desktop-build.ps1 && pnpm tauri build --no-bundle",
-    "build:desktop:debug": "pwsh -NoLogo -NoProfile -File ./scripts/prepare-desktop-build.ps1 && pnpm tauri build --debug --no-bundle",
+    "build:desktop": "node ./scripts/prepare-desktop-build.mjs && pnpm tauri build --no-bundle",
+    "build:desktop:debug": "node ./scripts/prepare-desktop-build.mjs && pnpm tauri build --debug --no-bundle",
     "preview": "vite preview",
     "start": "pnpm tauri dev",
     "test": "vitest run",
