@@ -1,4 +1,4 @@
-name: Build Windows and Linux release assets
+name: Build Windows release assets
 
 on:
   workflow_dispatch:
@@ -44,8 +44,6 @@ jobs:
         include:
           - os: windows-latest
             platform: windows
-          - os: ubuntu-latest
-            platform: linux
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -59,13 +57,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - name: Install Linux dependencies
-        if: matrix.platform == 'linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf rpm xvfb
       - name: Set Windows timezone
-        if: matrix.platform == 'windows'
         shell: pwsh
         run: |
           tzutil /s "China Standard Time"
@@ -85,11 +77,9 @@ jobs:
           cargo check --manifest-path src-tauri/Cargo.toml
           cargo test --manifest-path src-tauri/Cargo.toml --lib -- --test-threads=1
       - name: Build Windows bundles
-        if: matrix.platform == 'windows'
         shell: pwsh
         run: pnpm tauri build --bundles msi nsis
       - name: Collect and smoke Windows assets
-        if: matrix.platform == 'windows'
         shell: pwsh
         run: |
           $version = '${{ needs.preflight.outputs.version }}'
@@ -104,26 +94,6 @@ jobs:
           if ($process.HasExited) { throw 'portable app exited during smoke test' }
           Stop-Process -Id $process.Id
           Compress-Archive -Path portable/* -DestinationPath "release-assets/InputPanel_${version}_windows-x64-portable.zip"
-      - name: Build Linux bundles
-        if: matrix.platform == 'linux'
-        shell: bash
-        run: pnpm tauri build --bundles deb rpm appimage
-      - name: Collect and smoke Linux assets
-        if: matrix.platform == 'linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          version='${{ needs.preflight.outputs.version }}'
-          mkdir release-assets
-          cp src-tauri/target/release/bundle/deb/*.deb "release-assets/InputPanel_${version}_linux-x64.deb"
-          cp src-tauri/target/release/bundle/rpm/*.rpm "release-assets/InputPanel_${version}_linux-x64.rpm"
-          cp src-tauri/target/release/bundle/appimage/*.AppImage "release-assets/InputPanel_${version}_linux-x64.AppImage"
-          chmod +x release-assets/*.AppImage
-          set +e
-          APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a timeout 15s release-assets/*.AppImage
-          status=$?
-          set -e
-          test "$status" = 124
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: InputPanel-${{ needs.preflight.outputs.version }}-${{ matrix.platform }}-x64
